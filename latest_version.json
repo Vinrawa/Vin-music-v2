@@ -1,7 +1,7 @@
 {
-  "latestVersionCode": 4,
-  "latestVersionName": "2.1.2",
-  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.2/app-debug.apk",
+  "latestVersionCode": 5,
+  "latestVersionName": "2.1.3",
+  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.3/app-release.apk",
   "forceUpdate": false,
-  "releaseNotes": "Improved recommendation playlist UI with better loading states. Removed daily mixes and discover sections. Enhanced streaming quality support."
+  "releaseNotes": "Implemented double-click home navigation shortcut to collapse player. Personalized Discover Mix with dynamic queries based on top artists and history."
 }
