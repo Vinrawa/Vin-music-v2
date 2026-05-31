@@ -1,0 +1,32 @@
+# Gradle files
+.gradle/
+build/
+/*/build/
+/out/
+
+# Local configuration files (contains local SDK paths etc.)
+local.properties
+
+# Log files (JVM crash logs and replay logs)
+*.log
+
+# Database files (local databases)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+vin_music*.db
+
+# Android Studio/IntelliJ files
+.idea/
+*.iml
+.cxx/
+/captures/
+.navigation/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Kotlin-specific
+.kotlin/

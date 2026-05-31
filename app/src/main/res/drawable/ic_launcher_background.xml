@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Deep space dark background -->
+    <path
+        android:fillColor="#0A0A12"
+        android:pathData="M0,0 L108,0 L108,108 L0,108 Z"/>
+
+    <!-- Subtle purple gradient overlay top-left -->
+    <path
+        android:fillColor="#1A0A2E"
+        android:pathData="M0,0 Q54,0 54,54 Q0,54 0,0 Z"/>
+
+    <!-- Subtle accent bottom-right -->
+    <path
+        android:fillColor="#0F0820"
+        android:pathData="M108,108 Q54,108 54,54 Q108,54 108,108 Z"/>
+
+</vector>

@@ -1,0 +1,9 @@
+-keep class com.vinmusic.** { *; }
+-keepattributes *Annotation*
+-keep class com.google.gson.** { *; }
+-keep class androidx.media3.** { *; }
+-keep class okhttp3.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn java.beans.**
+-dontwarn org.mozilla.javascript.**
