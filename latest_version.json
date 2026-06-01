@@ -1,7 +1,7 @@
 {
-  "latestVersionCode": 5,
-  "latestVersionName": "2.1.3",
-  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.3/app-release.apk",
+  "latestVersionCode": 6,
+  "latestVersionName": "2.1.4",
+  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.4/app-debug.apk",
   "forceUpdate": false,
-  "releaseNotes": "Implemented double-click home navigation shortcut to collapse player. Personalized Discover Mix with dynamic queries based on top artists and history."
+  "releaseNotes": "Clean removal of Spotify API connections (OAuth verifiers, connection cards, custom credential forms, and WebView login dialogs) for a simplified UI, full preservation of the zero-credential public Spotify playlist link importer, and significant Jetpack Compose LazyColumn scrolling performance optimizations."
 }
