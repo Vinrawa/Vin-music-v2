@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "635095210195",
+    "project_id": "vin-music-c8f81",
+    "storage_bucket": "vin-music-c8f81.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:635095210195:android:880d231c09ad605d44dc26",
+        "android_client_info": {
+          "package_name": "com.vinmusic"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "635095210195-1fp3pevjat304tkcvm3p1hv31hhdkp6o.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.vinmusic",
+            "certificate_hash": "4494212e5c44bb7ec7e968c86cb1c01f1c4aedb8"
+          }
+        },
+        {
+          "client_id": "635095210195-j8359m5105v2khcog0k6mi2t5ri9cq9k.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBdKnccZXSt--UOrscP9s6Nn6tJYfvb90I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "635095210195-j8359m5105v2khcog0k6mi2t5ri9cq9k.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -368,7 +368,10 @@ fun DiscoverScreen(
 
             // Stack & Control layout
             Column(
-                modifier = Modifier.fillMaxSize().padding(top = 80.dp, bottom = 24.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .padding(top = 80.dp, bottom = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
@@ -480,7 +483,10 @@ fun DiscoverScreen(
             visible = showToastMessage != null,
             enter = fadeIn() + slideInVertically(initialOffsetY = { it / 2 }),
             exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 2 }),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 120.dp)
         ) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF10B981)),

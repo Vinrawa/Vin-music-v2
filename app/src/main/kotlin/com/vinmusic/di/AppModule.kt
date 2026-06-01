@@ -38,6 +38,8 @@ object AppModule {
     fun provideRecommendationRepository(
         @ApplicationContext ctx: Context,
         db: VinDatabase
-    ): com.vinmusic.recommendation.RecommendationRepository =
-        com.vinmusic.recommendation.RecommendationRepository(ctx, db)
+    ): com.vinmusic.recommendation.RecommendationRepository {
+        com.vinmusic.innertube.YTMusicApi.attachContext(ctx)
+        return com.vinmusic.recommendation.RecommendationRepository(ctx, db)
+    }
 }

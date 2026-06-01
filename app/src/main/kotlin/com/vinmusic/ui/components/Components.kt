@@ -44,7 +44,7 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
 
-    // Dynamic dominant color extraction for ambient glow
+    // Dynamic dominant color extraction for progress bar
     var dominantColor by remember(song.videoId) { mutableStateOf(VinColors.Accent) }
     LaunchedEffect(song.thumbnail) {
         try {
@@ -63,17 +63,6 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
             repeatMode = RepeatMode.Restart
         ),
         label = "wavePhase"
-    )
-
-    // Breathing glow animation
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.2f,
-        targetValue = 0.5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "glowAlpha"
     )
 
     // Animated multipliers to achieve smooth sleeping/breathing transition when paused
@@ -95,34 +84,16 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 6.dp)
             .offset { androidx.compose.ui.unit.IntOffset(offsetX.value.roundToInt(), 0) }
     ) {
-        // ── Dominant Color Breathing Ambient Glow behind the capsule ──
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .padding(4.dp)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(dominantColor.copy(alpha = glowAlpha), Color.Transparent)
-                    ),
-                    shape = RoundedCornerShape(20.dp)
-                )
-        )
-
         // The actual capsule
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
-                .background(VinColors.Surface2.copy(alpha = 0.9f))
+                .background(VinColors.Surface2)
                 .border(
                     BorderStroke(
                         0.8.dp,
-                        Brush.linearGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.18f),
-                                dominantColor.copy(alpha = 0.45f)
-                            )
-                        )
+                        Color.White.copy(alpha = 0.08f)
                     ),
                     RoundedCornerShape(20.dp)
                 )
@@ -203,12 +174,12 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
                 drawPath(path3, color = dominantColor.copy(alpha = 0.5f))
             }
 
-            // Progress bar at bottom, overlaid cleanly on top of waves
+            // Progress bar at bottom
             LinearProgressIndicator(
                 progress = { vm.progress },
                 modifier = Modifier.fillMaxWidth().height(2.dp).align(Alignment.BottomStart),
                 color    = dominantColor,
-                trackColor = Color.Transparent
+                trackColor = Color.White.copy(alpha = 0.05f)
             )
 
             Row(
@@ -289,25 +260,32 @@ fun BottomNavBar(currentRoute: String, onNavigate: (String) -> Unit) {
             .fillMaxWidth()
             .background(Color.Transparent)
             .navigationBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 8.dp) // margins to make it float!
+            .padding(horizontal = 20.dp, vertical = 10.dp) // premium floating margin
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(60.dp) // sleek, compact capsule height
-                .clip(CircleShape) // perfect capsule shape
-                .background(VinColors.Surface) // solid dark charcoal
+                .height(64.dp) // sleek, premium capsule height
+                .clip(CircleShape)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.08f),
+                            Color.Black.copy(alpha = 0.65f)
+                        )
+                    )
+                )
                 .border(
-                    BorderStroke(1.dp, VinColors.GlassBorder),
+                    BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
                     CircleShape
                 )
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 10.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
             NAV_ITEMS.forEach { item ->
                 val selected = currentRoute == item.route
-                Column(
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .clickable(
@@ -315,22 +293,38 @@ fun BottomNavBar(currentRoute: String, onNavigate: (String) -> Unit) {
                             indication = null
                         ) { onNavigate(item.route) }
                         .padding(vertical = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = item.icon,
-                        contentDescription = item.label,
-                        tint = if (selected) Color.White else Color.White.copy(alpha = 0.4f),
-                        modifier = Modifier.size(24.dp)
+                    val scale by animateFloatAsState(
+                        targetValue = if (selected) 1.15f else 1.0f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        ),
+                        label = "active_nav_scale"
                     )
-                    if (selected) {
-                        Spacer(Modifier.height(4.dp))
-                        Box(
-                            Modifier
-                                .size(4.dp)
-                                .clip(CircleShape)
-                                .background(VinColors.AccentLight)
+
+                    Column(
+                        modifier = Modifier
+                            .scale(scale)
+                            .clip(CircleShape)
+                            .background(
+                                if (selected) Color.White.copy(alpha = 0.08f) else Color.Transparent
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) Color.White.copy(alpha = 0.15f) else Color.Transparent,
+                                shape = CircleShape
+                            )
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = if (selected) VinColors.AccentLight else Color.White.copy(alpha = 0.45f),
+                            modifier = Modifier.size(22.dp)
                         )
                     }
                 }
@@ -652,6 +646,8 @@ private fun OptionRow(
 @Composable
 fun PlaylistOptionsSheet(
     playlistName: String,
+    isPinned: Boolean = false,
+    onTogglePin: () -> Unit,
     onDownloadPlaylist: () -> Unit,
     onDeletePlaylist: () -> Unit,
     onDismiss: () -> Unit
@@ -692,6 +688,16 @@ fun PlaylistOptionsSheet(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                OptionRow(
+                    icon = Icons.Default.PushPin,
+                    iconTint = if (isPinned) VinColors.AccentLight else VinColors.Primary,
+                    text = if (isPinned) "Unpin Playlist" else "Pin Playlist",
+                    onClick = {
+                        onTogglePin()
+                        onDismiss()
+                    }
+                )
+
                 OptionRow(
                     icon = Icons.Default.Download,
                     text = "Download Playlist Songs",
@@ -915,7 +921,7 @@ fun UserAvatar(
 ) {
     val gradients = remember {
         listOf(
-            listOf(Color(0xFF2575FC), Color(0xFF6A11CB)), // Blue-Purple
+            listOf(Color(0xFFEF4444), Color(0xFF991B1B)), // Solid Premium Red
             listOf(Color(0xFFFF416C), Color(0xFFFF4B2B)), // Pink-Orange
             listOf(Color(0xFF11998e), Color(0xFF38ef7d)), // Green-Teal
             listOf(Color(0xFF8A2387), Color(0xFFE94057))  // Violet-Pink-Red

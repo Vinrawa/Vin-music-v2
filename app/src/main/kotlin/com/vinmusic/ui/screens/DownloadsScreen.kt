@@ -41,6 +41,7 @@ fun DownloadsScreen(
     val ctx   = LocalContext.current
     val db    = VinDatabase.getInstance(ctx)
     val scope = rememberCoroutineScope()
+    
     var downloads by remember { mutableStateOf<List<DownloadEntity>>(emptyList()) }
 
     LaunchedEffect(Unit) {
@@ -65,7 +66,11 @@ fun DownloadsScreen(
             verticalAlignment = Alignment.CenterVertically) {
             Column {
                 Text("Downloads", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
-                Text("${downloads.size} songs", fontSize = 13.sp, color = VinColors.Secondary)
+                Text(
+                    "${downloads.size} songs",
+                    fontSize = 13.sp,
+                    color = VinColors.Secondary
+                )
             }
             val completedSongs = downloads.filter { it.status == "completed" }.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
             if (completedSongs.isNotEmpty()) {
@@ -75,7 +80,9 @@ fun DownloadsScreen(
             }
         }
 
-        // Offline storage and cleanup panel
+        Spacer(Modifier.height(4.dp))
+
+        // Offline storage and cleanup panel for Downloads
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -92,7 +99,7 @@ fun DownloadsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Offline Cache", fontSize = 12.sp, color = VinColors.Secondary, fontWeight = FontWeight.Medium)
+                    Text("Offline Downloads", fontSize = 12.sp, color = VinColors.Secondary, fontWeight = FontWeight.Medium)
                     Text(usedText, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
                 }
 
@@ -102,6 +109,7 @@ fun DownloadsScreen(
                             val failedOrQueued = downloads.filter { it.status == "failed" || it.status == "queued" }
                             var cleanedCount = 0
                             val cache = PlayerSingleton.getCache(ctx)
+                            val downloadCache = PlayerSingleton.getDownloadCache(ctx)
                             failedOrQueued.forEach { dl ->
                                 try {
                                     val intent = Intent(ctx, DownloadService::class.java).apply {
@@ -110,6 +118,7 @@ fun DownloadsScreen(
                                     }
                                     ctx.startService(intent)
                                     cache?.removeResource(dl.videoId)
+                                    downloadCache?.removeResource(dl.videoId)
                                 } catch (_: Exception) {}
                                 db.downloadDao().delete(dl.videoId)
                                 cleanedCount++
@@ -149,10 +158,7 @@ fun DownloadsScreen(
                         .clip(CircleShape)
                         .background(
                             androidx.compose.ui.graphics.Brush.horizontalGradient(
-                                colors = listOf(
-                                    VinColors.Accent,
-                                    Color(0xFFC084FC)
-                                )
+                                colors = listOf(VinColors.Accent, Color(0xFFC084FC))
                             )
                         )
                 )
@@ -173,7 +179,7 @@ fun DownloadsScreen(
             }
         } else {
             LazyColumn(contentPadding = PaddingValues(bottom = 140.dp)) {
-                items(downloads) { dl ->
+                items(downloads, key = { it.videoId }) { dl ->
                     val song = VideoItem(dl.videoId, dl.title, dl.author, dl.durationText)
                     val isCompleted = dl.status == "completed"
                     val isDownloading = dl.status == "downloading"
@@ -191,17 +197,21 @@ fun DownloadsScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)) {
 
                         Box(modifier = Modifier.size(52.dp).clip(RoundedCornerShape(8.dp))) {
-                            AsyncImage(model = song.thumbnail, contentDescription = null,
+                            // Use local thumbnail if available, otherwise fall back to YouTube CDN
+                            val thumbnailModel = if (dl.thumbnailPath != null && File(dl.thumbnailPath!!).exists()) {
+                                File(dl.thumbnailPath!!)
+                            } else {
+                                song.thumbnail
+                            }
+                            AsyncImage(model = thumbnailModel, contentDescription = null,
                                 modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             if (isCompleted) {
-                                // Offline badge
                                 Box(modifier = Modifier.align(Alignment.BottomEnd).size(18.dp)
                                     .clip(CircleShape).background(VinColors.Success),
                                     contentAlignment = Alignment.Center) {
                                     Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(10.dp))
                                 }
                             } else if (isDownloading || isQueued) {
-                                // Loading spinner overlay
                                 Box(modifier = Modifier.fillMaxSize().background(Color(0x80000000)),
                                     contentAlignment = Alignment.Center) {
                                     CircularProgressIndicator(color = VinColors.AccentLight, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -227,7 +237,6 @@ fun DownloadsScreen(
                         }
 
                         if (isDownloading) {
-                            // Pause/Cancel button
                             IconButton(onClick = {
                                 val intent = Intent(ctx, DownloadService::class.java).apply {
                                     action = DownloadService.ACTION_PAUSE
@@ -238,7 +247,6 @@ fun DownloadsScreen(
                                 Icon(Icons.Default.Pause, null, tint = VinColors.AccentLight, modifier = Modifier.size(18.dp))
                             }
                         } else if (isFailed) {
-                            // Retry button
                             IconButton(onClick = {
                                 val intent = Intent(ctx, DownloadService::class.java).apply {
                                     action = DownloadService.ACTION_RESUME

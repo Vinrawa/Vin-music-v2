@@ -78,6 +78,17 @@ object InnerTube {
         }
     }
 
+    // Helper to dynamically match the User-Agent based on googlevideo URL params
+    fun getUserAgentForUrl(url: String): String {
+        return when {
+            url.contains("c=ANDROID_VR") -> "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip"
+            url.contains("c=ANDROID") -> "com.google.android.youtube/17.31.35(Linux; U; Android 11) gzip"
+            url.contains("c=IOS") -> "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X) AppleWebKit/605.1.15"
+            url.contains("c=TVHTML5") -> "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 TV Safari/538.1"
+            else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    }
+
     // ── Main entry ────────────────────────────────────────────────────────────
     fun getStreamUrl(videoId: String, quality: String? = null): String? {
         log("getStreamUrl videoId=$videoId quality=$quality")
@@ -86,7 +97,7 @@ object InnerTube {
         // 1. Fetch visitor token (bypasses LOGIN_REQUIRED for most music)
         ensureVisitorData()
 
-        // 2. NewPipeExtractor — handles n-param + cipher decryption natively
+        // 2. Try NewPipeExtractor first (deciphers both signature and n-parameter for unthrottled streaming)
         log("Trying NewPipeExtractor...")
         try {
             NewPipeInit.init()
@@ -117,7 +128,8 @@ object InnerTube {
             log("NewPipe FAILED: ${e.javaClass.simpleName}: ${e.message?.take(100)}")
         }
 
-        // 3. InnerTube direct client fallbacks
+        // 3. Fallback to InnerTube direct clients
+        log("Trying InnerTube direct clients as fallback...")
         for (client in CLIENTS) {
             log("Trying ${client.name}...")
             try {
@@ -131,7 +143,7 @@ object InnerTube {
             }
         }
 
-        log("ALL clients failed for $videoId")
+        log("ALL clients and fallbacks failed for $videoId")
         return null
     }
 
@@ -238,7 +250,7 @@ object InnerTube {
             )
             val url = info.videoStreams
                 .filter { it.content?.isNotEmpty() == true }
-                .minByOrNull { it.resolution ?: "" }?.content
+                .minByOrNull { it.getResolution() ?: "" }?.content
             if (!url.isNullOrEmpty()) {
                 log("Video URL via NewPipe: ${url.take(60)}")
                 return url
@@ -480,7 +492,13 @@ object InnerTube {
                                         val thumb = ((mtr["thumbnailRenderer"] as? Map<*, *>)
                                             ?.get("musicThumbnailRenderer") as? Map<*, *>)
                                             ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } }
+                                            ?.let {
+                                                var url = it
+                                                if (url.startsWith("//")) url = "https:$url"
+                                                if (url.startsWith("http://")) url = url.replace("http://", "https://")
+                                                url
+                                            } ?: ""
                                         val subtitle = ((mtr["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
                                             ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
 
@@ -513,7 +531,13 @@ object InnerTube {
                                             ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
                                         val thumb = ((mrli["thumbnail"] as? Map<*, *>)?.get("musicThumbnailRenderer") as? Map<*, *>)
                                             ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } }
+                                            ?.let {
+                                                var url = it
+                                                if (url.startsWith("//")) url = "https:$url"
+                                                if (url.startsWith("http://")) url = url.replace("http://", "https://")
+                                                url
+                                            } ?: ""
 
                                         if (navId.isNotEmpty() && title.isNotEmpty()) {
                                             val albumItem = AlbumItem(navId, title, artistName, thumb, subtitle)
@@ -859,7 +883,12 @@ object InnerTube {
                         val subs = (cr["subscriberCountText"] as? Map<*, *>)?.get("simpleText") as? String ?: ""
                         val thumb = ((cr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
                             ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
-                            ?.let { if (it.startsWith("//")) "https:$it" else it } ?: ""
+                            ?.let {
+                                var url = it
+                                if (url.startsWith("//")) url = "https:$url"
+                                if (url.startsWith("http://")) url = url.replace("http://", "https://")
+                                url
+                            } ?: ""
                         artists.add(ArtistItem(id, name, thumb, subs))
                     }
 
@@ -888,7 +917,7 @@ object InnerTube {
         search("$artistName top songs")
 
     // ── Channel browse (artist banner + bio) ─────────────────────────────────
-    data class ChannelData(val bannerUrl: String = "", val bio: String = "", val subscriberCount: String = "", val title: String = "")
+    data class ChannelData(val bannerUrl: String = "", val bio: String = "", val subscriberCount: String = "", val title: String = "", val avatarUrl: String = "")
 
     fun fetchChannelData(channelId: String): ChannelData {
         if (channelId.isBlank()) return ChannelData()
@@ -906,13 +935,27 @@ object InnerTube {
             val hdr  = (root["header"] as? Map<*, *>)?.get("c4TabbedHeaderRenderer") as? Map<*, *>
             val banner = ((hdr?.get("banner") as? Map<*, *>)?.get("thumbnails") as? List<*>)
                 ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
-                ?.let { if (it.startsWith("//")) "https:$it" else it } ?: ""
+                ?.let {
+                    var url = it
+                    if (url.startsWith("//")) url = "https:$url"
+                    if (url.startsWith("http://")) url = url.replace("http://", "https://")
+                    url
+                } ?: ""
+            val avatarNode = hdr?.get("avatar") as? Map<*, *>
+            val avatar = (avatarNode?.get("thumbnails") as? List<*>)
+                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                ?.let {
+                    var url = it
+                    if (url.startsWith("//")) url = "https:$url"
+                    if (url.startsWith("http://")) url = url.replace("http://", "https://")
+                    url
+                } ?: ""
             val subs = (hdr?.get("subscriberCountText") as? Map<*, *>)?.get("simpleText") as? String ?: ""
             val title = ((root["metadata"] as? Map<*, *>)
                 ?.get("channelMetadataRenderer") as? Map<*, *>)?.get("title") as? String ?: ""
             val bio  = ((root["metadata"] as? Map<*, *>)
                 ?.get("channelMetadataRenderer") as? Map<*, *>)?.get("description") as? String ?: ""
-            ChannelData(banner, bio, subs, title)
+            ChannelData(banner, bio, subs, title, avatar)
         } catch (e: Exception) { ChannelData() }
     }
 
@@ -1246,13 +1289,48 @@ data class ArtistItem(
     val subscriberCount: String = ""
 )
 
-data class AlbumItem(
+class AlbumItem(
     val playlistId: String,
     val title: String,
     val author: String,
-    val thumbnail: String,
+    thumbnail: String,
     val songCount: String = ""
-)
+) {
+    val thumbnail: String = if (thumbnail.startsWith("//")) "https:$thumbnail" else if (thumbnail.startsWith("http://")) thumbnail.replace("http://", "https://") else thumbnail
+
+    operator fun component1() = playlistId
+    operator fun component2() = title
+    operator fun component3() = author
+    operator fun component4() = this.thumbnail
+    operator fun component5() = songCount
+
+    fun copy(
+        playlistId: String = this.playlistId,
+        title: String = this.title,
+        author: String = this.author,
+        thumbnail: String = this.thumbnail,
+        songCount: String = this.songCount
+    ) = AlbumItem(playlistId, title, author, thumbnail, songCount)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is AlbumItem) return false
+        return playlistId == other.playlistId && title == other.title && author == other.author && thumbnail == other.thumbnail && songCount == other.songCount
+    }
+
+    override fun hashCode(): Int {
+        var result = playlistId.hashCode()
+        result = 31 * result + title.hashCode()
+        result = 31 * result + author.hashCode()
+        result = 31 * result + thumbnail.hashCode()
+        result = 31 * result + songCount.hashCode()
+        return result
+    }
+
+    override fun toString(): String {
+        return "AlbumItem(playlistId=$playlistId, title=$title, author=$author, thumbnail=$thumbnail, songCount=$songCount)"
+    }
+}
 
 data class AllSearchResults(
     val songs:   List<VideoItem>   = emptyList(),

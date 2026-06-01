@@ -105,6 +105,17 @@ object YTMusicApi {
         }
     }
 
+    /**
+     * Normalize thumbnail URLs to HTTPS.
+     * Handles "//" prefix (protocol-relative) and "http://" (insecure).
+     */
+    private fun String.normalizeUrl(): String {
+        var url = this
+        if (url.startsWith("//")) url = "https:$url"
+        if (url.startsWith("http://")) url = "https://" + url.removePrefix("http://")
+        return url
+    }
+
     /** Official personalized home shelves (FEmusic_home). */
     fun getHomePage(continuation: String? = null, params: String? = null): YTMusicHomePage {
         val raw = if (continuation != null) {
@@ -146,7 +157,8 @@ object YTMusicApi {
                                 val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
                                 val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
                                 val thumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } ?: ""
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,
@@ -170,7 +182,8 @@ object YTMusicApi {
                                 val thumbnailRenderer = responsive["thumbnail"] as? Map<*, *>
                                 val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
                                 val thumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } ?: ""
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,

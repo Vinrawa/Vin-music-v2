@@ -45,7 +45,28 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
-private val CATEGORIES = listOf("All", "For You", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Hip Hop", "Indie", "K-Pop", "90s Hits")
+private val CATEGORIES = listOf("All", "For You", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits")
+
+data class RapSubCategory(
+    val name: String,
+    val icon: String,
+    val queries: List<String>  // multiple queries for richer results
+)
+
+private val RAP_SUB_CATEGORIES = listOf(
+    RapSubCategory("All Rap",        "🎤", listOf("best rap songs 2025", "top rap hits")),
+    RapSubCategory("Lyrical",        "📝", listOf("lyrical rap deep bars", "lyrical hip hop conscious rap")),
+    RapSubCategory("Storytelling",   "📖", listOf("storytelling rap songs", "narrative rap best songs")),
+    RapSubCategory("Vibe",           "🌊", listOf("chill vibe rap songs", "vibe rap relaxed flow")),
+    RapSubCategory("Sad",            "😢", listOf("sad rap songs emotional", "sad rap heartbreak")),
+    RapSubCategory("Happy",          "😄", listOf("happy upbeat rap songs", "feel good rap")),
+    RapSubCategory("Aggressive",     "🔥", listOf("aggressive rap hard bars", "aggressive trap rap")),
+    RapSubCategory("Desi Hip-Hop",   "🇮🇳", listOf("desi hip hop indian rap", "indian rap songs 2025")),
+    RapSubCategory("Old School",     "📼", listOf("old school hip hop classic", "90s rap golden era")),
+    RapSubCategory("Trap",           "💣", listOf("trap music best songs", "trap rap hard beats")),
+    RapSubCategory("Drill",          "🔫", listOf("drill rap songs", "uk drill rap")),
+    RapSubCategory("Freestyle",      "⚡", listOf("freestyle rap best", "freestyle rap cypher"))
+)
 
 private val SIMILAR_ARTISTS_MAP = mapOf(
     "j. cole" to listOf("Kendrick Lamar", "Drake", "JID", "Cordae", "Joey Bada\$\$", "Kanye West"),
@@ -134,6 +155,11 @@ fun HomeScreen(
 
     var categorySongs  by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isCategoryLoading by remember { mutableStateOf(false) }
+
+    // Rap sub-category state
+    var rapSubFilter by remember { mutableStateOf("All Rap") }
+    var rapSubSections by remember { mutableStateOf<List<Pair<String, List<VideoItem>>>>(emptyList()) }
+    var isRapSubLoading by remember { mutableStateOf(false) }
 
     // Home Screen Sections Data
     var recentlyPlayed  by remember { mutableStateOf<List<com.vinmusic.data.db.HistoryEntry>>(emptyList()) }
@@ -842,6 +868,23 @@ fun HomeScreen(
                     withContext(Dispatchers.Main) { isMoodLoading = false }
                 }
             }
+        } else if (filter == "Rap") {
+            // Rap parent selected — don't load generic flat list, sub-categories handle it
+            // Trigger sub-category loading
+            isRapSubLoading = true
+            rapSubSections = emptyList()
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val sections = loadRapSubSections(rapSubFilter, recentlyPlayed)
+                    withContext(Dispatchers.Main) {
+                        rapSubSections = sections
+                        isRapSubLoading = false
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("HomeScreen", "Rap sub-category failed: ${e.message}")
+                    withContext(Dispatchers.Main) { isRapSubLoading = false }
+                }
+            }
         } else {
             // Genre chip — standard flat list
             isCategoryLoading = true
@@ -850,7 +893,6 @@ fun HomeScreen(
                     val query = when (filter) {
                         "Bollywood" -> "bollywood hits 2025 official audio"
                         "Lo-fi"     -> "lofi hindi beats chill"
-                        "Hip Hop"   -> "hip hop rap hits"
                         "Indie"     -> "indie pop songs chill"
                         "K-Pop"     -> "kpop hits music"
                         "90s Hits"  -> "90s bollywood classic hits"
@@ -865,6 +907,25 @@ fun HomeScreen(
                     android.util.Log.e("HomeScreen", "Failed to load category songs: ${e.message}")
                     withContext(Dispatchers.Main) { isCategoryLoading = false }
                 }
+            }
+        }
+    }
+
+    // ── Rap Sub-Category auto-reload when sub-filter changes ──
+    LaunchedEffect(rapSubFilter) {
+        if (filter != "Rap") return@LaunchedEffect
+        isRapSubLoading = true
+        rapSubSections = emptyList()
+        scope.launch(Dispatchers.IO) {
+            try {
+                val sections = loadRapSubSections(rapSubFilter, recentlyPlayed)
+                withContext(Dispatchers.Main) {
+                    rapSubSections = sections
+                    isRapSubLoading = false
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("HomeScreen", "Rap sub-filter changed failed: ${e.message}")
+                withContext(Dispatchers.Main) { isRapSubLoading = false }
             }
         }
     }
@@ -932,57 +993,6 @@ fun HomeScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // ── 1. Dynamic Animated Lava Lamp Fluid Background ──
-        val infiniteTransition = rememberInfiniteTransition(label = "home_bg_anims")
-        val blob1X by infiniteTransition.animateFloat(
-            initialValue = -100f, targetValue = 400f,
-            animationSpec = infiniteRepeatable(tween(35000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob1X"
-        )
-        val blob2Y by infiniteTransition.animateFloat(
-            initialValue = 800f, targetValue = -150f,
-            animationSpec = infiniteRepeatable(tween(42000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob2Y"
-        )
-        val blob3X by infiniteTransition.animateFloat(
-            initialValue = 500f, targetValue = -200f,
-            animationSpec = infiniteRepeatable(tween(48000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob3X"
-        )
-
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            // Blob 1: Dynamic Royal Purple aura
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF6338EC).copy(alpha = 0.16f), Color.Transparent),
-                    center = Offset(blob1X.dp.toPx(), 220.dp.toPx()),
-                    radius = size.width * 0.75f
-                ),
-                radius = size.width * 0.75f,
-                center = Offset(blob1X.dp.toPx(), 220.dp.toPx())
-            )
-            // Blob 2: Vibrant Glowing Neon Pink aura
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFFEC4899).copy(alpha = 0.12f), Color.Transparent),
-                    center = Offset(100.dp.toPx(), blob2Y.dp.toPx()),
-                    radius = size.width * 0.65f
-                ),
-                radius = size.width * 0.65f,
-                center = Offset(100.dp.toPx(), blob2Y.dp.toPx())
-            )
-            // Blob 3: Sleek Dark Blue/Indigo aura
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF1E3A8A).copy(alpha = 0.14f), Color.Transparent),
-                    center = Offset(blob3X.dp.toPx(), 620.dp.toPx()),
-                    radius = size.width * 0.70f
-                ),
-                radius = size.width * 0.70f,
-                center = Offset(blob3X.dp.toPx(), 620.dp.toPx())
-            )
-        }
-
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = { triggerRefresh() },
@@ -1906,6 +1916,135 @@ fun HomeScreen(
                     }
                 }
             }
+            "Rap" -> {
+                // ── Sub-Category Chips Row ──
+                item {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "🎤 Rap Sub-Genres",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        ) {
+                            items(RAP_SUB_CATEGORIES) { sub ->
+                                val active = sub.name == rapSubFilter
+                                val interactionSource = remember { MutableInteractionSource() }
+                                val isPressed by interactionSource.collectIsPressedAsState()
+                                val scale by animateFloatAsState(
+                                    targetValue = if (isPressed) 0.93f else 1f,
+                                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                                    label = "rap_chip_scale"
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .graphicsLayer(
+                                            scaleX = scale,
+                                            scaleY = scale,
+                                            shadowElevation = if (active) 8.dp.value else 0f,
+                                            shape = RoundedCornerShape(20.dp),
+                                            clip = false
+                                        )
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(
+                                            if (active) {
+                                                Brush.horizontalGradient(
+                                                    listOf(Color(0xFFFF6B35), Color(0xFFEF4444), Color(0xFF991B1B))
+                                                )
+                                            } else {
+                                                Brush.verticalGradient(
+                                                    listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.04f))
+                                                )
+                                            }
+                                        )
+                                        .border(
+                                            BorderStroke(
+                                                if (active) 0.dp else 0.8.dp,
+                                                if (active) Color.Transparent else Color.White.copy(alpha = 0.12f)
+                                            ),
+                                            RoundedCornerShape(20.dp)
+                                        )
+                                        .clickable(
+                                            interactionSource = interactionSource,
+                                            indication = null
+                                        ) { rapSubFilter = sub.name }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Text(
+                                            text = sub.icon,
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            text = sub.name,
+                                            fontSize = 12.sp,
+                                            color = if (active) Color.White else Color.White.copy(alpha = 0.75f),
+                                            fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Sub-Category Loading State ──
+                if (isRapSubLoading && rapSubSections.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(300.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(color = Color(0xFFFF6B35), modifier = Modifier.size(36.dp))
+                                Text(
+                                    "Loading $rapSubFilter tracks...",
+                                    color = VinColors.Secondary,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // ── Sub-Category Sections ──
+                    rapSubSections.forEach { (title, songs) ->
+                        if (songs.isNotEmpty()) {
+                            item {
+                                SectionTitle(title)
+                                Spacer(Modifier.height(10.dp))
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.padding(bottom = 24.dp)
+                                ) {
+                                    items(songs) { song ->
+                                        TrackCard(song = song) {
+                                            onSongClick(song, songs)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (rapSubSections.isEmpty() && !isRapSubLoading) {
+                        item { EmptyScreenState("No ${rapSubFilter} songs found. Try another sub-genre or check your internet.") }
+                    }
+                }
+            }
             else -> {
                 val moodChips = setOf("Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party")
                 if (filter in moodChips) {
@@ -2400,6 +2539,60 @@ fun HomeScreen(
             }
         }
     }
+}
+
+/**
+ * Helper function to load rap sub-section data.
+ * Handles both the initial rap sub-section loading and updates when the sub-filter changes.
+ */
+private suspend fun loadRapSubSections(
+    rapSubFilter: String,
+    recentlyPlayed: List<com.vinmusic.data.db.HistoryEntry>
+): List<Pair<String, List<VideoItem>>> {
+    val sections = mutableListOf<Pair<String, List<VideoItem>>>()
+    
+    val sub = RAP_SUB_CATEGORIES.firstOrNull { it.name == rapSubFilter } ?: RAP_SUB_CATEGORIES[0]
+
+    coroutineScope {
+        val deferreds = sub.queries.map { q ->
+            async(Dispatchers.IO) {
+                try {
+                    InnerTube.search(q).take(10)
+                } catch (_: Exception) { emptyList<VideoItem>() }
+            }
+        }
+        val results = deferreds.awaitAll()
+        // First query -> "Top [SubGenre] Picks"
+        if (results.isNotEmpty() && results[0].isNotEmpty()) {
+            sections.add("Top ${sub.name} Picks" to results[0])
+        }
+        // Second query -> "More [SubGenre]"
+        if (results.size > 1 && results[1].isNotEmpty()) {
+            sections.add("More ${sub.name}" to results[1])
+        }
+    }
+
+    // Also load artist-specific rap from history
+    val topArtists = recentlyPlayed
+        .map { it.author.trim() }
+        .filter { it.isNotBlank() && it.lowercase() != "unknown" && !com.vinmusic.recommendation.RecommendationManager.isCorporateOrDistributorChannel(it) }
+        .groupBy { it }
+        .entries.sortedByDescending { it.value.size }
+        .map { it.key }
+        .distinct()
+        .take(3)
+
+    for (artistName in topArtists) {
+        try {
+            val keyword = sub.queries.firstOrNull()?.split(" ")?.take(2)?.joinToString(" ") ?: "rap"
+            val artistResults = InnerTube.search("$artistName $keyword").take(6)
+            if (artistResults.isNotEmpty()) {
+                sections.add("$artistName · ${sub.name}" to artistResults)
+            }
+        } catch (_: Exception) {}
+    }
+
+    return sections
 }
 
 // ── HomeScreen Sub-components ──────────────────────────────────────────────────

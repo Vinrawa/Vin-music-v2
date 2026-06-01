@@ -12,6 +12,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheWriter
+import androidx.room.withTransaction
 import com.vinmusic.data.db.*
 import com.vinmusic.innertube.InnerTube
 import com.vinmusic.player.PlayerSingleton
@@ -35,6 +36,7 @@ class DownloadService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_AUTHOR = "author"
         const val EXTRA_DURATION = "duration"
+        const val EXTRA_THUMBNAIL = "thumbnail"
     }
 
     private val serviceJob = SupervisorJob()
@@ -63,7 +65,8 @@ class DownloadService : Service() {
                     val title = intent.getStringExtra(EXTRA_TITLE) ?: "Unknown"
                     val author = intent.getStringExtra(EXTRA_AUTHOR) ?: "Unknown"
                     val duration = intent.getStringExtra(EXTRA_DURATION) ?: ""
-                    enqueueDownload(videoId, title, author, duration)
+                    val thumbnail = intent.getStringExtra(EXTRA_THUMBNAIL)
+                    enqueueDownload(videoId, title, author, duration, thumbnail)
                 }
                 ACTION_PAUSE, ACTION_CANCEL -> {
                     cancelDownload(videoId)
@@ -73,7 +76,7 @@ class DownloadService : Service() {
                         val db = VinDatabase.getInstance(applicationContext)
                         val entity = withContext(Dispatchers.IO) { db.downloadDao().get(videoId) }
                         if (entity != null) {
-                            enqueueDownload(entity.videoId, entity.title, entity.author, entity.durationText)
+                            enqueueDownload(entity.videoId, entity.title, entity.author, entity.durationText, entity.thumbnailUrl)
                         }
                     }
                 }
@@ -85,7 +88,7 @@ class DownloadService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun enqueueDownload(videoId: String, title: String, author: String, duration: String) {
+    private fun enqueueDownload(videoId: String, title: String, author: String, duration: String, thumbnailUrl: String? = null) {
         serviceScope.launch {
             val db = VinDatabase.getInstance(applicationContext)
             withContext(Dispatchers.IO) {
@@ -100,7 +103,8 @@ class DownloadService : Service() {
                             filePath = "cache",
                             sizeBytes = 0,
                             status = "queued",
-                            progress = 0
+                            progress = 0,
+                            thumbnailUrl = thumbnailUrl
                         )
                     )
                 }
@@ -164,12 +168,23 @@ class DownloadService : Service() {
             }
 
             // Create a copying entity storing the stream url in filePath
-            val downloadingEntity = entity.copy(status = "downloading", progress = 0, filePath = url)
+            var thumbnailPath: String? = null
+            if (entity.thumbnailUrl != null) {
+                try {
+                    thumbnailPath = downloadThumbnail(videoId, entity.thumbnailUrl!!)
+                    Log.d(TAG, "Thumbnail downloaded for $videoId: $thumbnailPath")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to download thumbnail for $videoId: ${e.message}")
+                    // Continue with download even if thumbnail fails
+                }
+            }
+            
+            val downloadingEntity = entity.copy(status = "downloading", progress = 0, filePath = url, thumbnailPath = thumbnailPath)
             db.downloadDao().insert(downloadingEntity)
             updateNotification()
 
             try {
-                val cache = PlayerSingleton.getCache(applicationContext)
+                val cache = PlayerSingleton.getDownloadCache(applicationContext)
                 if (cache == null) {
                     Log.e(TAG, "SimpleCache not available for download: $videoId")
                     db.downloadDao().insert(downloadingEntity.copy(status = "failed"))
@@ -178,12 +193,21 @@ class DownloadService : Service() {
                     return@launch
                 }
 
+                val resolvedUa = InnerTube.getUserAgentForUrl(url)
+                val requestProps = buildMap<String, String> {
+                    if (resolvedUa.startsWith("Mozilla")) {
+                        put("Origin", "https://www.youtube.com")
+                        put("Referer", "https://www.youtube.com/")
+                    }
+                    put("Accept-Encoding", "identity")
+                }
+
                 val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-                    .setUserAgent("com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X) AppleWebKit/605.1.15")
-                    .setDefaultRequestProperties(mapOf(
-                        "Origin"  to "https://www.youtube.com",
-                        "Referer" to "https://www.youtube.com/"
-                    ))
+                    .setUserAgent(resolvedUa)
+                    .setConnectTimeoutMs(30_000)
+                    .setReadTimeoutMs(30_000)
+                    .setAllowCrossProtocolRedirects(true)
+                    .setDefaultRequestProperties(requestProps)
 
                 val cacheDataSource = CacheDataSource.Factory()
                     .setCache(cache)
@@ -194,71 +218,105 @@ class DownloadService : Service() {
                 val clenStr = uriParsed.getQueryParameter("clen")
                 val contentLength = clenStr?.toLongOrNull() ?: -1L
 
-                val dataSpec = DataSpec.Builder()
-                    .setUri(uriParsed)
-                    .setKey(videoId)
-                    .apply {
-                        if (contentLength > 0) {
-                            setLength(contentLength)
-                        }
+                var totalLength = contentLength
+                if (totalLength <= 0) {
+                    try {
+                        val spec = DataSpec.Builder()
+                            .setUri(uriParsed)
+                            .setKey(videoId)
+                            .build()
+                        totalLength = cacheDataSource.open(spec)
+                        cacheDataSource.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to resolve content length: ${e.message}")
+                        totalLength = 10 * 1024 * 1024L // 10MB fallback
                     }
-                    .build()
+                }
 
-                Log.d(TAG, "Starting CacheWriter download for: $videoId. clen parameter: $contentLength. url: ${url.take(120)}")
+                Log.d(TAG, "Starting chunked download for: $videoId. clen: $totalLength. url: ${url.take(120)}")
 
-                val cacheWriter = CacheWriter(
-                    cacheDataSource,
-                    dataSpec,
-                    ByteArray(128 * 1024),
-                    object : CacheWriter.ProgressListener {
-                        private var lastUpdate = 0L
-                        override fun onProgress(requestLength: Long, bytesCached: Long, newBytesCached: Long) {
-                            val now = System.currentTimeMillis()
-                            val pct = if (requestLength > 0) (bytesCached * 100 / requestLength).toInt() else 0
-                            
-                            Log.d(TAG, "Download progress videoId=$videoId: bytesCached=$bytesCached, requestLength=$requestLength, pct=$pct%")
+                val chunkSize = 1024 * 1024L // 1MB chunks
+                var bytesCached = 0L
 
-                            if (now - lastUpdate > 1000) {
-                                lastUpdate = now
-                                serviceScope.launch(Dispatchers.IO) {
-                                    db.downloadDao().insert(
-                                        downloadingEntity.copy(
-                                            progress = pct,
-                                            sizeBytes = bytesCached
-                                        )
-                                    )
-                                    updateNotification()
-                                }
-                            }
-                        }
-                    }
-                )
+                while (bytesCached < totalLength) {
+                    yield() // Check for coroutine cancellation gracefully
 
-                cacheWriter.cache()
+                    val chunkEnd = minOf(bytesCached + chunkSize, totalLength)
+                    val chunkLength = chunkEnd - bytesCached
 
-                val finalCachedBytes = cache.getCachedBytes(videoId, 0, -1)
-                db.downloadDao().insert(
-                    downloadingEntity.copy(
-                        status = "completed",
-                        progress = 100,
-                        sizeBytes = finalCachedBytes
+                    val chunkDataSpec = DataSpec.Builder()
+                        .setUri(uriParsed)
+                        .setKey(videoId)
+                        .setPosition(bytesCached)
+                        .setLength(chunkLength)
+                        .build()
+
+                    val chunkWriter = CacheWriter(
+                        cacheDataSource,
+                        chunkDataSpec,
+                        ByteArray(128 * 1024), // 128KB buffer for caching chunks
+                        null
                     )
-                )
-                // Update interaction signal for downloaded status
-                val sig = db.interactionSignalDao().get(videoId)
-                if (sig != null) {
-                    sig.isDownloaded = true
-                    db.interactionSignalDao().insert(sig)
-                } else {
-                    db.interactionSignalDao().insert(
-                        InteractionSignal(
-                            videoId = videoId,
-                            title = downloadingEntity.title,
-                            author = downloadingEntity.author,
-                            durationText = downloadingEntity.durationText,
-                            isDownloaded = true
+
+                    try {
+                        chunkWriter.cache()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error caching chunk starting at $bytesCached: ${e.message}")
+                        throw e
+                    }
+
+                    bytesCached = chunkEnd
+                    val pct = if (totalLength > 0) (bytesCached * 100 / totalLength).toInt().coerceIn(0, 100) else 0
+
+                    db.downloadDao().insert(
+                        downloadingEntity.copy(
+                            progress = pct,
+                            sizeBytes = bytesCached
                         )
                     )
+                    updateNotification()
+                }
+
+                val finalCachedBytes = cache.getCachedBytes(videoId, 0, -1)
+                
+                // Verify download is actually complete before marking as done
+                if (finalCachedBytes < 100_000L) {
+                    Log.e(TAG, "Download verification failed: $videoId only has $finalCachedBytes bytes cached")
+                    db.downloadDao().insert(downloadingEntity.copy(status = "failed", progress = 0))
+                    return@launch
+                }
+                
+                // Update DB atomically using transaction
+                try {
+                    db.withTransaction {
+                        db.downloadDao().insert(
+                            downloadingEntity.copy(
+                                status = "completed",
+                                progress = 100,
+                                sizeBytes = finalCachedBytes,
+                                thumbnailPath = downloadingEntity.thumbnailPath  // Preserve thumbnail path
+                            )
+                        )
+                        // Update interaction signal for downloaded status
+                        val sig = db.interactionSignalDao().get(videoId)
+                        if (sig != null) {
+                            sig.isDownloaded = true
+                            db.interactionSignalDao().insert(sig)
+                        } else {
+                            db.interactionSignalDao().insert(
+                                InteractionSignal(
+                                    videoId = videoId,
+                                    title = downloadingEntity.title,
+                                    author = downloadingEntity.author,
+                                    durationText = downloadingEntity.durationText,
+                                    isDownloaded = true
+                                )
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to update download completion for $videoId: ${e.message}")
+                    throw e
                 }
                 Log.d(TAG, "Download finished successfully: $videoId. Total cached bytes stored: $finalCachedBytes. Expected content length: $contentLength")
 
@@ -268,7 +326,12 @@ class DownloadService : Service() {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Error downloading $videoId: ${e.message}", e)
-                db.downloadDao().insert(downloadingEntity.copy(status = "failed"))
+                val current = db.downloadDao().get(videoId)
+                if (current != null) {
+                    db.downloadDao().insert(current.copy(status = "failed"))
+                } else {
+                    db.downloadDao().insert(downloadingEntity.copy(status = "failed"))
+                }
             } finally {
                 activeJobs.remove(videoId)
                 updateNotification()
@@ -281,8 +344,10 @@ class DownloadService : Service() {
     private fun updateNotification() {
         val activeCount = activeJobs.size
         if (activeCount == 0) {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIFICATION_ID, buildServiceNotification("All downloads complete or idle", 0))
+            nm.cancel(NOTIFICATION_ID)
             return
         }
 
@@ -308,6 +373,29 @@ class DownloadService : Service() {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Downloads", NotificationManager.IMPORTANCE_LOW)
             )
+        }
+    }
+
+    private suspend fun downloadThumbnail(videoId: String, thumbnailUrl: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val thumbnailDir = File(applicationContext.cacheDir, "thumbnails")
+            if (!thumbnailDir.exists()) {
+                thumbnailDir.mkdirs()
+            }
+            
+            val thumbnailFile = File(thumbnailDir, "$videoId.jpg")
+            
+            java.net.URL(thumbnailUrl).openStream().use { input ->
+                thumbnailFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            
+            Log.d(TAG, "Thumbnail saved: ${thumbnailFile.absolutePath}")
+            return@withContext thumbnailFile.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "Error downloading thumbnail for $videoId: ${e.message}")
+            return@withContext null
         }
     }
 

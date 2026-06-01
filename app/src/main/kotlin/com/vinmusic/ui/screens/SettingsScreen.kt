@@ -38,6 +38,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.vinmusic.player.AuthViewModel
 
 
 
@@ -52,6 +56,7 @@ private val SUGGESTED_SONGS = listOf(
 @Composable
 fun SettingsScreen(
     vm: PlayerViewModel, 
+    authVm: AuthViewModel,
     onBack: () -> Unit,
     onSongClick: (VideoItem, List<VideoItem>) -> Unit
 ) {
@@ -393,6 +398,167 @@ fun SettingsScreen(
                     )
                 }
                 Icon(Icons.Default.ChevronRight, null, tint = VinColors.Accent, modifier = Modifier.size(24.dp))
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        // ── Google Cloud Sync Card ──
+        val currentUser = authVm.currentUser
+        val syncState = authVm.syncState
+        val lastSyncMessage = authVm.lastSyncMessage
+        
+        val googleSignInClient = remember(ctx) { authVm.getGoogleSignInClient(ctx) }
+        val launcher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                try {
+                    val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                    if (account != null) {
+                        authVm.signInWithGoogle(account)
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(ctx, "Google Sign-In failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(Color(0xFF1E1A3C), Color(0xFF0F0B1E))
+                    )
+                )
+                .border(1.dp, VinColors.AccentLight.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                .padding(18.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(VinColors.AccentLight.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudQueue,
+                            contentDescription = null,
+                            tint = VinColors.AccentLight,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Cloud Sync & Backup",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VinColors.Primary
+                        )
+                        Text(
+                            text = if (currentUser != null) "Backup linked to ${currentUser.email}"
+                                   else "Tap Connect to backup your playlists & likes",
+                            fontSize = 12.sp,
+                            color = VinColors.Secondary,
+                            lineHeight = 16.sp
+                        )
+                    }
+                    if (currentUser == null) {
+                        Button(
+                            onClick = {
+                                if (!authVm.isGoogleConfigured(ctx)) {
+                                    Toast.makeText(ctx, "Google Sign-In is not configured in this build. Please configure Google Auth in your Firebase console first, add your SHA-1 fingerprint, and download the new google-services.json.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    launcher.launch(googleSignInClient.signInIntent)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("Connect", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
+                if (currentUser != null) {
+                    HorizontalDivider(color = VinColors.GlassBorder.copy(alpha = 0.3f))
+                    
+                    if (lastSyncMessage.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (syncState is AuthViewModel.SyncState.Syncing) {
+                                CircularProgressIndicator(
+                                    color = VinColors.AccentLight,
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = if (syncState is AuthViewModel.SyncState.Error) Icons.Default.ErrorOutline else Icons.Default.CheckCircleOutline,
+                                    contentDescription = null,
+                                    tint = if (syncState is AuthViewModel.SyncState.Error) Color(0xFFFF4D4D) else Color(0xFF4CAF50),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Text(
+                                text = lastSyncMessage,
+                                fontSize = 12.sp,
+                                color = VinColors.Secondary
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { authVm.backupDataToCloud() },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, VinColors.GlassBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                        ) {
+                            Icon(Icons.Default.CloudUpload, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Backup", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        
+                        OutlinedButton(
+                            onClick = { authVm.restoreCloudData() },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, VinColors.GlassBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                        ) {
+                            Icon(Icons.Default.CloudDownload, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Restore", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        IconButton(
+                            onClick = { authVm.signOut(ctx) },
+                            modifier = Modifier
+                                .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(10.dp))
+                        ) {
+                            Icon(Icons.Default.ExitToApp, null, tint = Color(0xFFFF4D4D))
+                        }
+                    }
+                }
             }
         }
 
@@ -1111,7 +1277,6 @@ fun SettingsScreen(
             }
         }
     }
-
     if (showSleepTimerDialog) {
         AlertDialog(
             onDismissRequest = { showSleepTimerDialog = false },

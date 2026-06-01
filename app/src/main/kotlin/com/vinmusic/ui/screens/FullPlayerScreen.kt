@@ -4,6 +4,10 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
@@ -91,6 +95,44 @@ fun FullPlayerScreen(
         animationSpec = tween(durationMillis = 1000),
         label = "animatedAccent"
     )
+    
+    // DJ Scratching & Visualizer Customization States
+    var isDjMode by remember { mutableStateOf(false) }
+    var visualizerStyle by remember { mutableStateOf("Halo") }
+    var toastMessage by remember { mutableStateOf("") }
+    var toastTrigger by remember { mutableStateOf(false) }
+    var scratchAngleOffset by remember { mutableFloatStateOf(0f) }
+    var isScratching by remember { mutableStateOf(false) }
+    var lastAngle by remember { mutableFloatStateOf(0f) }
+    var wasPlayingBeforeScratch by remember { mutableStateOf(false) }
+
+    // Cleanup DJ synthesizer when leaving player screen
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isDjMode) {
+                ScratchSoundSynthesizer.release()
+            }
+        }
+    }
+
+    val particles = remember {
+        List(18) {
+            mapOf(
+                "x" to (0.1f + 0.8f * Math.random().toFloat()),
+                "y" to Math.random().toFloat(),
+                "speed" to (0.005f + 0.012f * Math.random().toFloat()),
+                "baseSize" to (3f + 5f * Math.random().toFloat())
+            )
+        }
+    }
+
+    LaunchedEffect(toastTrigger) {
+        if (toastMessage.isNotEmpty()) {
+            kotlinx.coroutines.delay(1500)
+            toastMessage = ""
+        }
+    }
+
     var showOptionsSheet by remember { mutableStateOf(false) }
     var showSleepDialog  by remember { mutableStateOf(false) }
     var showAddPlaylist  by remember { mutableStateOf(false) }
@@ -151,22 +193,16 @@ fun FullPlayerScreen(
         label = "needleAngle"
     )
 
-    val pulsatingAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 0.65f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+    // Pulsating animations only run when music is actually playing (saves CPU when paused/loading)
+    val isActuallyPlaying = vm.isPlaying && !vm.isLoading
+    val pulsatingAlpha by animateFloatAsState(
+        targetValue = if (isActuallyPlaying) 0.45f else 0.25f,
+        animationSpec = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
         label = "pulsatingAlpha"
     )
-    val pulsatingScale by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+    val pulsatingScale by animateFloatAsState(
+        targetValue = if (isActuallyPlaying) 1.03f else 1.0f,
+        animationSpec = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
         label = "pulsatingScale"
     )
 
@@ -203,17 +239,38 @@ fun FullPlayerScreen(
         )
 
 
+        val scrollState = rememberScrollState()
+        val dragToCloseConnection = remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    // When dragging DOWN (positive y) and scroll is at top, intercept for dismiss
+                    if (available.y > 0f && scrollState.value == 0) {
+                        dragY += available.y
+                        return Offset(0f, available.y) // consume vertical
+                    }
+                    // When dragging UP and we have accumulated dragY, reduce it first
+                    if (available.y < 0f && dragY > 0f) {
+                        val consumed = maxOf(available.y, -dragY)
+                        dragY += consumed
+                        return Offset(0f, consumed)
+                    }
+                    return Offset.Zero
+                }
+                override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                    if (dragY > 120f) {
+                        onClose()
+                    }
+                    dragY = 0f
+                    return androidx.compose.ui.unit.Velocity.Zero
+                }
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .graphicsLayer { translationY = (dragY * 0.25f) }
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures(
-                        onDragEnd   = { if (dragY > 120f) onClose(); dragY = 0f },
-                        onVerticalDrag = { c, amt -> c.consume(); if (amt > 0) dragY += amt }
-                    )
-                },
+                .nestedScroll(dragToCloseConnection)
+                .verticalScroll(scrollState, enabled = !isDjMode)
+                .graphicsLayer { translationY = (dragY * 0.25f) },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(8.dp))
@@ -241,6 +298,25 @@ fun FullPlayerScreen(
                     textAlign = TextAlign.Center
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        isDjMode = !isDjMode
+                        // Lazy init/release AudioTrack to save resources
+                        if (isDjMode) {
+                            ScratchSoundSynthesizer.initialize()
+                        } else {
+                            ScratchSoundSynthesizer.release()
+                        }
+                        toastMessage = if (isDjMode) "DJ Scratch Mode: ON 💿" else "DJ Scratch Mode: OFF 🎵"
+                        toastTrigger = !toastTrigger
+                        scratchAngleOffset = 0f
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Headset,
+                            contentDescription = "DJ Scratch Mode",
+                            tint = if (isDjMode) animatedAccent else VinColors.Primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                     val shareScope = rememberCoroutineScope()
                     IconButton(onClick = {
                         shareScope.launch {
@@ -330,10 +406,11 @@ fun FullPlayerScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // Centered Album Art with premium drop glow spot shadow
-            // Breathtaking Ambient Breathing Glow Spot Shadow
+            // Centered Album Art with premium drop glow spot shadow and multi-visualizer selection
+            val density = androidx.compose.ui.platform.LocalDensity.current
             Box(
-                modifier = Modifier.size(280.dp),
+                modifier = Modifier
+                    .size(if (isDjMode) 370.dp else 320.dp),
                 contentAlignment = Alignment.Center
             ) {
                 // Pulsating glowing backdrop (warm golden glow)
@@ -345,29 +422,227 @@ fun FullPlayerScreen(
                             scaleY = pulsatingScale
                         }
                         .alpha(pulsatingAlpha)
-                        .background(Color(0xFFFFB800), CircleShape)
+                        .background(animatedAccent, CircleShape)
                         .blur(36.dp)
                 )
 
-                // Master Circular Disc with Swipe gesture listener
+                // ── Interactive Multi-Style Beat-Visualizer ──
+                Box(
+                    modifier = Modifier
+                        .size(320.dp)
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            visualizerStyle = when (visualizerStyle) {
+                                "Halo" -> "Retro Bars"
+                                "Retro Bars" -> "Waveform Ripple"
+                                "Waveform Ripple" -> "Star Dust"
+                                else -> "Halo"
+                            }
+                            toastMessage = "Visualizer: $visualizerStyle ⚡"
+                            toastTrigger = !toastTrigger
+                        }
+                ) {
+                    // Only draw visualizer when music is actually playing
+                    if (isActuallyPlaying) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                if (visualizerStyle == "Halo") {
+                                    rotationZ = currentRotation * 0.5f
+                                }
+                                scaleX = pulsatingScale
+                                scaleY = pulsatingScale
+                            }
+                            .alpha(pulsatingAlpha)
+                    ) {
+                        val centerPoint = Offset(size.width / 2, size.height / 2)
+                        
+                        when (visualizerStyle) {
+                            "Halo" -> {
+                                val innerRadius = 145.dp.toPx()
+                                val numBars = 48
+                                val angleStep = (2 * Math.PI / numBars).toFloat()
+                                
+                                for (i in 0 until numBars) {
+                                    val angle = i * angleStep
+                                    val wave = (kotlin.math.sin((i * 3.14f / 4f).toDouble()).toFloat() + 1f) / 2f
+                                    val barLength = 8.dp.toPx() + (12.dp.toPx() * wave) * ((pulsatingScale - 1f) * 16.6f) 
+                                    
+                                    val startX = centerPoint.x + kotlin.math.cos(angle.toDouble()).toFloat() * innerRadius
+                                    val startY = centerPoint.y + kotlin.math.sin(angle.toDouble()).toFloat() * innerRadius
+                                    val endX = centerPoint.x + kotlin.math.cos(angle.toDouble()).toFloat() * (innerRadius + barLength)
+                                    val endY = centerPoint.y + kotlin.math.sin(angle.toDouble()).toFloat() * (innerRadius + barLength)
+                                    
+                                    drawLine(
+                                        color = animatedAccent,
+                                        start = Offset(startX, startY),
+                                        end = Offset(endX, endY),
+                                        strokeWidth = 3.dp.toPx(),
+                                        cap = StrokeCap.Round
+                                    )
+                                }
+                            }
+                            "Retro Bars" -> {
+                                val barWidth = 6.dp.toPx()
+                                val barSpacing = 4.dp.toPx()
+                                val totalBars = 18
+                                val startX = (size.width - (totalBars * (barWidth + barSpacing) - barSpacing)) / 2
+                                val startY = size.height * 0.88f
+                                
+                                for (i in 0 until totalBars) {
+                                    val wave = (kotlin.math.sin((i * 0.5f + (rotationAngle / 15f)).toDouble()).toFloat() + 1f) / 2f
+                                    val barHeight = 8.dp.toPx() + (45.dp.toPx() * wave) * (pulsatingScale * 0.9f)
+                                    val x = startX + i * (barWidth + barSpacing)
+                                    
+                                    // Segmented blocks drawing
+                                    val numBlocks = 6
+                                    val blockHeight = barHeight / numBlocks
+                                    for (j in 0 until numBlocks) {
+                                        val blockY = startY - j * (blockHeight + 2.dp.toPx())
+                                        val blockAlpha = 0.2f + 0.8f * (j.toFloat() / numBlocks)
+                                        drawRect(
+                                            color = animatedAccent.copy(alpha = blockAlpha),
+                                            topLeft = Offset(x, blockY),
+                                            size = androidx.compose.ui.geometry.Size(barWidth, blockHeight)
+                                        )
+                                    }
+                                }
+                            }
+                            "Waveform Ripple" -> {
+                                val path = Path()
+                                val numPoints = 60
+                                val stepX = size.width / numPoints
+                                val midY = size.height * 0.85f // aligned bottom
+                                
+                                path.moveTo(0f, midY)
+                                for (i in 0..numPoints) {
+                                    val x = i * stepX
+                                    val angle1 = (i * 0.18f) + (rotationAngle * 0.12f)
+                                    val angle2 = (i * 0.35f) - (rotationAngle * 0.06f)
+                                    val amp = 6.dp.toPx() + (26.dp.toPx() * (pulsatingScale - 1f) * 12f)
+                                    
+                                    val y = midY + (kotlin.math.sin(angle1.toDouble()).toFloat() * amp * 0.7f) + 
+                                            (kotlin.math.cos(angle2.toDouble()).toFloat() * amp * 0.3f)
+                                    path.lineTo(x, y)
+                                }
+                                
+                                drawPath(
+                                    path = path,
+                                    color = animatedAccent,
+                                    style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
+                                )
+                                
+                                // Secondary faint depth wave
+                                val path2 = Path()
+                                path2.moveTo(0f, midY)
+                                for (i in 0..numPoints) {
+                                    val x = i * stepX
+                                    val angle = (i * 0.22f) - (rotationAngle * 0.09f)
+                                    val amp = 4.dp.toPx() + (18.dp.toPx() * (pulsatingScale - 1f) * 9f)
+                                    val y = midY + (kotlin.math.sin(angle.toDouble()).toFloat() * amp)
+                                    path2.lineTo(x, y)
+                                }
+                                
+                                drawPath(
+                                    path = path2,
+                                    color = animatedAccent.copy(alpha = 0.4f),
+                                    style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                                )
+                            }
+                            "Star Dust" -> {
+                                particles.forEach { p ->
+                                    val pX = p["x"]!! * size.width
+                                    val drift = (rotationAngle * p["speed"]!!) % 1f
+                                    val baseRealY = p["y"]!! - drift
+                                    val realY = (if (baseRealY < 0f) baseRealY + 1f else baseRealY) * size.height
+                                    
+                                    val sizeMultiplier = 1f + (pulsatingScale - 1f) * 8f
+                                    val pSize = p["baseSize"]!! * sizeMultiplier
+                                    
+                                    drawCircle(
+                                        color = animatedAccent.copy(alpha = 0.8f),
+                                        radius = pSize / 2,
+                                        center = Offset(pX, realY)
+                                    )
+                                    drawCircle(
+                                        color = animatedAccent.copy(alpha = 0.22f),
+                                        radius = pSize,
+                                        center = Offset(pX, realY)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    } // end if(isActuallyPlaying) for visualizer Canvas
+                }
+
+                // Master Circular Disc with swipe-to-skip or DJ scratch support
+                val sizePx = with(density) { 280.dp.toPx() }
+                val discCenter = Offset(sizePx / 2, sizePx / 2)
                 Box(
                     modifier = Modifier
                         .size(280.dp)
-                        .shadow(elevation = 24.dp, shape = CircleShape, clip = false, spotColor = Color(0xFFFFB800))
+                        .shadow(elevation = 24.dp, shape = CircleShape, clip = false, spotColor = animatedAccent)
                         .clip(CircleShape)
                         .border(1.5.dp, Color.White.copy(alpha = 0.15f), CircleShape)
                         .graphicsLayer {
-                            rotationZ = currentRotation
+                            rotationZ = currentRotation + scratchAngleOffset
                             translationX = swipeX * 0.08f
                         }
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    when { swipeX < -80f -> vm.playNext(); swipeX > 80f -> vm.playPrev() }
-                                    swipeX = 0f
-                                },
-                                onHorizontalDrag = { c, amt -> c.consume(); swipeX += amt }
-                            )
+                        .pointerInput(isDjMode) {
+                            if (!isDjMode) {
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        when { swipeX < -80f -> vm.playNext(); swipeX > 80f -> vm.playPrev() }
+                                        swipeX = 0f
+                                    },
+                                    onHorizontalDrag = { c, amt -> c.consume(); swipeX += amt }
+                                )
+                            } else {
+                                detectDragGestures(
+                                    onDragStart = { offset ->
+                                        isScratching = true
+                                        wasPlayingBeforeScratch = vm.isPlaying
+                                        if (vm.isPlaying) {
+                                            vm.pauseSilently()
+                                        }
+                                        val dx = offset.x - discCenter.x
+                                        val dy = offset.y - discCenter.y
+                                        lastAngle = Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                                    },
+                                    onDrag = { change, _ ->
+                                        change.consume()
+                                        val position = change.position
+                                        val dx = position.x - discCenter.x
+                                        val dy = position.y - discCenter.y
+                                        val currentAngle = Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+                                        
+                                        var angleDiff = currentAngle - lastAngle
+                                        if (angleDiff > 180f) angleDiff -= 360f
+                                        if (angleDiff < -180f) angleDiff += 360f
+                                        
+                                        scratchAngleOffset += angleDiff
+                                        lastAngle = currentAngle
+                                        
+                                        com.vinmusic.player.ScratchSoundSynthesizer.playScratch(angleDiff)
+                                    },
+                                    onDragEnd = {
+                                        isScratching = false
+                                        if (wasPlayingBeforeScratch) {
+                                            vm.playSilently()
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        isScratching = false
+                                        if (wasPlayingBeforeScratch) {
+                                            vm.playSilently()
+                                        }
+                                    }
+                                )
+                            }
                         }
                 ) {
                     // Beautiful Circular Artwork
@@ -381,7 +656,6 @@ fun FullPlayerScreen(
                     // Concentric Groove Circles Drawing
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val centerPoint = Offset(size.width / 2, size.height / 2)
-                        // concentric vinyl grooves
                         for (i in 1..8) {
                             drawCircle(
                                 color = Color.Black.copy(alpha = 0.18f),
@@ -390,7 +664,6 @@ fun FullPlayerScreen(
                                 style = Stroke(width = 1.dp.toPx())
                             )
                         }
-                        // Center label boundary
                         drawCircle(
                             color = Color.Black.copy(alpha = 0.35f),
                             radius = (size.width / 2) * 0.28f,
@@ -409,8 +682,6 @@ fun FullPlayerScreen(
                     )
                 }
 
-
-
                 if (vm.isLoading) {
                     Box(
                         modifier = Modifier
@@ -420,6 +691,99 @@ fun FullPlayerScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(color = VinColors.AccentLight, modifier = Modifier.size(36.dp))
+                    }
+                }
+
+                // ── Vertical DJ Pitch Fader ──
+                if (isDjMode) {
+                    val faderProgress = ((vm.playbackSpeed - 0.5f) / 1.0f).coerceIn(0f, 1f)
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 4.dp)
+                            .width(36.dp)
+                            .height(210.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(VinColors.Surface2.copy(alpha = 0.90f))
+                            .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(12.dp))
+                            .padding(vertical = 10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("+50%", fontSize = 8.sp, color = VinColors.Secondary, fontWeight = FontWeight.Bold)
+
+                        val updateSpeedCallback = rememberUpdatedState { speed: Float ->
+                            vm.updatePlaybackSpeed(speed)
+                        }
+                        val updatePitchCallback = rememberUpdatedState { pitch: Float ->
+                            vm.updatePlaybackPitch(pitch)
+                        }
+
+                        BoxWithConstraints(
+                            modifier = Modifier
+                                .weight(1f)
+                                .width(24.dp)
+                                .pointerInput(Unit) {
+                                    detectVerticalDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        val heightPx = size.height
+                                        if (heightPx > 0) {
+                                            val delta = -dragAmount / heightPx
+                                            val newProgress = (faderProgress + delta).coerceIn(0f, 1f)
+                                            val newSpeed = 0.5f + (newProgress * 1.0f)
+                                            updateSpeedCallback.value(newSpeed)
+                                            updatePitchCallback.value(newSpeed)
+                                        }
+                                    }
+                                }
+                        ) {
+                            val fHeight = maxHeight
+                            
+                            // Tick marks
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val midX = size.width / 2
+                                val step = size.height / 10
+                                for (i in 0..10) {
+                                    val y = i * step
+                                    val tickW = if (i == 5) 12.dp.toPx() else 6.dp.toPx()
+                                    drawLine(
+                                        color = Color.White.copy(alpha = 0.15f),
+                                        start = Offset(midX - tickW / 2, y),
+                                        end = Offset(midX + tickW / 2, y),
+                                        strokeWidth = 1.dp.toPx()
+                                    )
+                                }
+                            }
+
+                            // Track line
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .fillMaxHeight()
+                                    .width(2.dp)
+                                    .background(Color.White.copy(alpha = 0.2f))
+                            )
+
+                            // Slider Thumb position
+                            val thumbHeight = 16.dp
+                            val dragRange = fHeight - thumbHeight
+                            val yOffset = dragRange * (1f - faderProgress)
+
+                            Box(
+                                modifier = Modifier
+                                    .offset(y = yOffset)
+                                    .size(20.dp, thumbHeight)
+                                    .align(Alignment.TopCenter)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(Color(0xFFE5E7EB))
+                                    .border(1.dp, Color(0xFF374151), RoundedCornerShape(3.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(Modifier.fillMaxWidth().height(1.5.dp).background(Color(0xFF1F2937)))
+                            }
+                        }
+
+                        Text("-50%", fontSize = 8.sp, color = VinColors.Secondary, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -550,9 +914,43 @@ fun FullPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { vm.shuffle = !vm.shuffle }) {
-                    Icon(Icons.Default.Shuffle, "Shuffle",
-                        tint = if (vm.shuffle) VinColors.AccentLight else VinColors.Secondary, modifier = Modifier.size(22.dp))
+                IconButton(onClick = {
+                    when {
+                        !vm.shuffle -> {
+                            vm.shuffle = true
+                            vm.smartShuffle = false
+                        }
+                        vm.shuffle && !vm.smartShuffle -> {
+                            vm.shuffle = true
+                            vm.smartShuffle = true
+                        }
+                        else -> {
+                            vm.shuffle = false
+                            vm.smartShuffle = false
+                        }
+                    }
+                }) {
+                    Box(modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = if (vm.shuffle) VinColors.AccentLight else VinColors.Secondary,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .align(Alignment.Center)
+                                .alpha(if (vm.shuffle && !vm.smartShuffle) 0.5f else 1.0f)
+                        )
+                        if (vm.shuffle && vm.smartShuffle) {
+                            // Glowing Amber-Gold dot indicator in top-right corner
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .align(Alignment.TopEnd)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFEAB308))
+                            )
+                        }
+                    }
                 }
                 IconButton(onClick = { vm.playPrev() }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.SkipPrevious, "Previous", tint = VinColors.Primary, modifier = Modifier.size(36.dp))
@@ -728,6 +1126,29 @@ fun FullPlayerScreen(
             onEndOfSong = { vm.setSleepTimerEndOfSong(); showSleepDialog = false },
             onDismiss = { showSleepDialog = false })
     }
+
+    // Beautiful floating visualizer style badge
+    AnimatedVisibility(
+        visible = toastMessage.isNotEmpty(),
+        enter = fadeIn() + scaleIn(initialScale = 0.9f),
+        exit = fadeOut() + scaleOut(targetScale = 0.9f),
+        modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.82f))
+                .border(1.dp, VinColors.GlassBorder, CircleShape)
+                .padding(horizontal = 18.dp, vertical = 10.dp)
+        ) {
+            Text(
+                text = toastMessage,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        }
+    }
 }
 }
 
@@ -787,6 +1208,7 @@ fun LyricsPanel(vm: PlayerViewModel) {
             ) {
                 // Left: Source and Offset Tuner
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -798,7 +1220,10 @@ fun LyricsPanel(vm: PlayerViewModel) {
                     Text(
                         text = sourceText,
                         fontSize = 10.sp,
-                        color = VinColors.AccentLight
+                        color = VinColors.AccentLight,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
 
                     if (vm.lyricsResult is LyricsResult.Synced) {
@@ -860,13 +1285,38 @@ fun LyricsPanel(vm: PlayerViewModel) {
                 // Right: Refetch + Edit Buttons
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    // Translate Button
+                    IconButton(
+                        onClick = { vm.transliterateLyricsToHinglish() },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(VinColors.White10)
+                            .border(1.dp, VinColors.GlassBorder, CircleShape)
+                    ) {
+                        if (vm.isTransliterating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = VinColors.AccentLight,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                text = "Aa",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = VinColors.AccentLight
+                            )
+                        }
+                    }
+
                     // Refetch Button
                     IconButton(
                         onClick = { vm.refetchLyrics() },
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(42.dp)
                             .clip(CircleShape)
                             .background(VinColors.White10)
                             .border(1.dp, VinColors.GlassBorder, CircleShape)
@@ -875,7 +1325,7 @@ fun LyricsPanel(vm: PlayerViewModel) {
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Refetch Lyrics",
                             tint = VinColors.AccentLight,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
@@ -900,7 +1350,7 @@ fun LyricsPanel(vm: PlayerViewModel) {
                             showEditDialog = true
                         },
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(42.dp)
                             .clip(CircleShape)
                             .background(VinColors.White10)
                             .border(1.dp, VinColors.GlassBorder, CircleShape)
@@ -909,7 +1359,7 @@ fun LyricsPanel(vm: PlayerViewModel) {
                             imageVector = Icons.Default.Edit,
                             contentDescription = "Edit Lyrics",
                             tint = VinColors.Primary,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
@@ -1262,6 +1712,17 @@ fun RemixPanel(vm: PlayerViewModel) {
                     }
                 )
             }
+            item {
+                SmartEQPresetChip(
+                    name = "Slowed + Reverb",
+                    icon = "",
+                    gradient = Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFF4C1D95))),
+                    active = vm.isSlowedReverb,
+                    onClick = {
+                        vm.toggleSlowedReverb()
+                    }
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -1606,6 +2067,7 @@ fun LyricsPreviewCard(vm: PlayerViewModel, onExpand: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .height(200.dp)
             .padding(horizontal = 20.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(VinColors.Surface2.copy(alpha = 0.8f))
@@ -1659,7 +2121,7 @@ fun LyricsPreviewCard(vm: PlayerViewModel, onExpand: () -> Unit) {
                     val displayLines = remember(activeIndex, lines) {
                         val list = mutableListOf<Pair<Int, String>>()
                         val start = (activeIndex - 1).coerceAtLeast(0)
-                        val end = (activeIndex + 2).coerceAtMost(lines.size - 1)
+                        val end = (activeIndex + 3).coerceAtMost(lines.size - 1)
                         for (i in start..end) {
                             list.add(Pair(i, lines[i].text))
                         }
@@ -2227,7 +2689,7 @@ fun AmbientFluidGlowBackground(palette: ColorExtractor.MusicPalette) {
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .blur(100.dp)
+            .blur(40.dp)
     ) {
         val w = size.width
         val h = size.height

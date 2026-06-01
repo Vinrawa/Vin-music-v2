@@ -81,5 +81,21 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Home Screen Music Widget -->
+        <receiver
+            android:name=".widget.MusicWidgetProvider"
+            android:exported="true"
+            android:label="Vin Music Controller">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.vinmusic.widget.ACTION_WIDGET_PLAY_PAUSE" />
+                <action android:name="com.vinmusic.widget.ACTION_WIDGET_NEXT" />
+                <action android:name="com.vinmusic.widget.ACTION_WIDGET_PREVIOUS" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/music_widget_info" />
+        </receiver>
+
     </application>
 </manifest>

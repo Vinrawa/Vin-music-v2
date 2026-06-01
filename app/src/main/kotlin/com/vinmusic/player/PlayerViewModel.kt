@@ -50,6 +50,10 @@ class PlayerViewModel @Inject constructor(
         get() = PlayerSingleton.shuffle
         set(value) { PlayerSingleton.shuffle = value }
 
+    var smartShuffle: Boolean
+        get() = PlayerSingleton.smartShuffle
+        set(value) { PlayerSingleton.setSmartShuffle(value) }
+
     // ── Progress (isolated — only progress composables recompose) ─────────────
     var progress      by mutableFloatStateOf(0f)
     var currentTimeMs by mutableLongStateOf(0L)
@@ -61,7 +65,41 @@ class PlayerViewModel @Inject constructor(
     // ── Lyrics ─────────────────────────────────────────────────────────────────
     var lyricsResult      by mutableStateOf<LyricsResult>(LyricsResult.NotFound)
     var isLyricsLoading   by mutableStateOf(false)
+    var isTransliterating by mutableStateOf(false)
     var currentLyricIndex by mutableIntStateOf(-1)  // for synced lyrics highlight
+
+    fun transliterateLyricsToHinglish() {
+        val currentResult = lyricsResult
+        if (currentResult is LyricsResult.NotFound) return
+        if (currentResult is LyricsResult.Synced && currentResult.source.contains("Transliterated")) return
+        if (currentResult is LyricsResult.Plain && currentResult.source.contains("Transliterated")) return
+        isTransliterating = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val newResult = when (currentResult) {
+                    is LyricsResult.Synced -> {
+                        val newLines = currentResult.lines.map { 
+                            it.copy(text = LyricsHelper.transliterateToHinglish(it.text))
+                        }
+                        LyricsResult.Synced(newLines, currentResult.source + " (Transliterated)")
+                    }
+                    is LyricsResult.Plain -> {
+                        LyricsResult.Plain(LyricsHelper.transliterateToHinglish(currentResult.text), currentResult.source + " (Transliterated)")
+                    }
+                    else -> currentResult
+                }
+                withContext(Dispatchers.Main) {
+                    lyricsResult = newResult
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Transliteration failed", e)
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isTransliterating = false
+                }
+            }
+        }
+    }
 
     // ── Sleep timer ────────────────────────────────────────────────────────────
     var sleepTimerMinutes by mutableIntStateOf(0)
@@ -106,6 +144,10 @@ class PlayerViewModel @Inject constructor(
     // EQ apply handler — debounce rapid slider changes to avoid audio artifacts
     private val eqHandler = Handler(Looper.getMainLooper())
     private val eqApplyRunnable = Runnable { applyEQInternal() }
+
+    // Playback-params handler — debounce rapid speed/pitch slider moves (120ms) to prevent native audio crashes
+    private val pbHandler = Handler(Looper.getMainLooper())
+    private val pbApplyRunnable = Runnable { applyPlaybackParametersInternal() }
 
     // ── Jobs ──────────────────────────────────────────────────────────────────
     private var fetchJob:    Job? = null
@@ -252,6 +294,22 @@ class PlayerViewModel @Inject constructor(
         PlayerSingleton.seekToMs(ms)
     }
 
+    /**
+     * Pause playback without updating isPlaying state.
+     * Used for scratching during DJ mode where the playback state should not change.
+     */
+    fun pauseSilently() {
+        exoPlayer.pause()
+    }
+
+    /**
+     * Resume playback without updating isPlaying state.
+     * Used for scratching during DJ mode where the playback state should not change.
+     */
+    fun playSilently() {
+        exoPlayer.play()
+    }
+
     // ── Progress ──────────────────────────────────────────────────────────────
 
     private fun startProgressJob() {
@@ -321,36 +379,48 @@ class PlayerViewModel @Inject constructor(
         isLyricsLoading = true
         previousLyricsVideoId = song.videoId
         viewModelScope.launch(Dispatchers.IO) {
-            val cached = db.cachedLyricsDao().get(song.videoId)
-            if (cached != null) {
-                lyricsResult = when (cached.lyricsType) {
-                    "synced" -> {
-                        val lines = com.google.gson.Gson().fromJson(cached.content, Array<LyricsLine>::class.java).toList()
-                        LyricsResult.Synced(lines, "Local Cache")
+            try {
+                val cached = db.cachedLyricsDao().get(song.videoId)
+                if (cached != null) {
+                    val res = when (cached.lyricsType) {
+                        "synced" -> {
+                            val lines = com.google.gson.Gson().fromJson(cached.content, Array<LyricsLine>::class.java).toList()
+                            LyricsResult.Synced(lines, "Local Cache")
+                        }
+                        "plain" -> LyricsResult.Plain(cached.content, "Local Cache")
+                        else -> LyricsResult.NotFound
                     }
-                    "plain" -> LyricsResult.Plain(cached.content, "Local Cache")
-                    else -> LyricsResult.NotFound
+                    withContext(Dispatchers.Main) {
+                        lyricsResult = res
+                    }
+                    return@launch
                 }
-                isLyricsLoading = false
-                return@launch
-            }
 
-            val prefs = getApplication<Application>().getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
-            val provider = prefs.getString("lyrics_provider", "Auto") ?: "Auto"
-            lyricsResult    = LyricsHelper.fetch(song.title, song.author, song.videoId, provider)
-            isLyricsLoading = false
+                val prefs = getApplication<Application>().getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
+                val provider = prefs.getString("lyrics_provider", "Auto") ?: "Auto"
+                val res = LyricsHelper.fetch(song.title, song.author, song.videoId, provider)
+                withContext(Dispatchers.Main) {
+                    lyricsResult = res
+                }
 
-            val type = when (lyricsResult) {
-                is LyricsResult.Synced -> "synced"
-                is LyricsResult.Plain -> "plain"
-                is LyricsResult.NotFound -> "not_found"
+                val type = when (res) {
+                    is LyricsResult.Synced -> "synced"
+                    is LyricsResult.Plain -> "plain"
+                    is LyricsResult.NotFound -> "not_found"
+                }
+                val content = when (res) {
+                    is LyricsResult.Synced -> com.google.gson.Gson().toJson(res.lines)
+                    is LyricsResult.Plain -> res.text
+                    is LyricsResult.NotFound -> ""
+                }
+                db.cachedLyricsDao().insert(CachedLyricsEntity(song.videoId, type, content))
+            } catch (e: Exception) {
+                Log.e(TAG, "Load lyrics failed", e)
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isLyricsLoading = false
+                }
             }
-            val content = when (val res = lyricsResult) {
-                is LyricsResult.Synced -> com.google.gson.Gson().toJson(res.lines)
-                is LyricsResult.Plain -> res.text
-                is LyricsResult.NotFound -> ""
-            }
-            db.cachedLyricsDao().insert(CachedLyricsEntity(song.videoId, type, content))
         }
     }
 
@@ -363,26 +433,36 @@ class PlayerViewModel @Inject constructor(
         isLyricsLoading = true
         previousLyricsVideoId = song.videoId
         viewModelScope.launch(Dispatchers.IO) {
-            // Delete cached lyrics so we get fresh ones
-            db.cachedLyricsDao().delete(song.videoId)
+            try {
+                // Delete cached lyrics so we get fresh ones
+                db.cachedLyricsDao().delete(song.videoId)
 
-            val prefs = getApplication<Application>().getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
-            val provider = prefs.getString("lyrics_provider", "Auto") ?: "Auto"
-            lyricsResult = LyricsHelper.fetch(song.title, song.author, song.videoId, provider)
-            isLyricsLoading = false
+                val prefs = getApplication<Application>().getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
+                val provider = prefs.getString("lyrics_provider", "Auto") ?: "Auto"
+                val res = LyricsHelper.fetch(song.title, song.author, song.videoId, provider)
+                withContext(Dispatchers.Main) {
+                    lyricsResult = res
+                }
 
-            val type = when (lyricsResult) {
-                is LyricsResult.Synced -> "synced"
-                is LyricsResult.Plain -> "plain"
-                is LyricsResult.NotFound -> "not_found"
-            }
-            val content = when (val res = lyricsResult) {
-                is LyricsResult.Synced -> com.google.gson.Gson().toJson(res.lines)
-                is LyricsResult.Plain -> res.text
-                is LyricsResult.NotFound -> ""
-            }
-            if (content.isNotEmpty()) {
-                db.cachedLyricsDao().insert(CachedLyricsEntity(song.videoId, type, content))
+                val type = when (res) {
+                    is LyricsResult.Synced -> "synced"
+                    is LyricsResult.Plain -> "plain"
+                    is LyricsResult.NotFound -> "not_found"
+                }
+                val content = when (res) {
+                    is LyricsResult.Synced -> com.google.gson.Gson().toJson(res.lines)
+                    is LyricsResult.Plain -> res.text
+                    is LyricsResult.NotFound -> ""
+                }
+                if (content.isNotEmpty()) {
+                    db.cachedLyricsDao().insert(CachedLyricsEntity(song.videoId, type, content))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Refetch lyrics failed", e)
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isLyricsLoading = false
+                }
             }
         }
     }
@@ -503,6 +583,7 @@ class PlayerViewModel @Inject constructor(
 
         playbackSpeed = 1.0f
         playbackPitch = 1.0f
+        isSlowedReverb = false
         applyPlaybackParameters()
     }
 
@@ -516,9 +597,54 @@ class PlayerViewModel @Inject constructor(
         applyPlaybackParameters()
     }
 
+    // ── Slowed + Reverb Mode ──────────────────────────────────────────────────
+    var isSlowedReverb by mutableStateOf(false)
+
+    fun toggleSlowedReverb() {
+        isSlowedReverb = !isSlowedReverb
+        if (isSlowedReverb) {
+            // Slowed + Reverb: pitch down, slightly slow, boost bass & sub-bass for warmth
+            playbackSpeed = 0.92f
+            playbackPitch = 0.85f
+            eqSubBass = 8f
+            eqBass = 6f
+            eqLowMid = 2f
+            eqMid = -2f
+            eqTreble = -1f
+            eqAir = 3f
+            loudnessGain = 300f
+            eqPreset = "Slowed + Reverb"
+            applyEQ()
+        } else {
+            playbackSpeed = 1.0f
+            playbackPitch = 1.0f
+            eqSubBass = 0f; eqBass = 0f; eqLowMid = 0f
+            eqMid = 0f; eqTreble = 0f; eqAir = 0f
+            loudnessGain = 0f
+            eqPreset = "Flat"
+            applyEQ()
+        }
+        applyPlaybackParameters()
+    }
+
     private fun applyPlaybackParameters() {
+        // Store in singleton immediately so they persist across song transitions
+        PlayerSingleton.storedSpeed = playbackSpeed
+        PlayerSingleton.storedPitch = playbackPitch
+        // Debounce the actual ExoPlayer update — 120ms rate-limit prevents native audio crashes
+        pbHandler.removeCallbacks(pbApplyRunnable)
+        pbHandler.postDelayed(pbApplyRunnable, 120)
+    }
+
+    /** Internal: actually push params to ExoPlayer (called via debounced handler) */
+    private fun applyPlaybackParametersInternal() {
         try {
-            PlayerSingleton.player.playbackParameters = androidx.media3.common.PlaybackParameters(playbackSpeed, playbackPitch)
+            val p = PlayerSingleton.player
+            // Only apply when player is in a stable state
+            if (p.playbackState == androidx.media3.common.Player.STATE_READY ||
+                p.playbackState == androidx.media3.common.Player.STATE_BUFFERING) {
+                p.playbackParameters = androidx.media3.common.PlaybackParameters(playbackSpeed, playbackPitch)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply playback parameters: ${e.message}")
         }
@@ -585,6 +711,7 @@ class PlayerViewModel @Inject constructor(
         bassBoostFx?.release()
         loudnessFx?.release()
         eqHandler.removeCallbacks(eqApplyRunnable)
+        pbHandler.removeCallbacks(pbApplyRunnable)
         prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         super.onCleared()
     }

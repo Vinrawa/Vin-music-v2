@@ -37,14 +37,17 @@ data class DownloadEntity(
     val sizeBytes:   Long   = 0L,
     val downloadedAt: Long  = System.currentTimeMillis(),
     val status:      String = "completed", // queued / downloading / completed / failed
-    val progress:    Int    = 0
+    val progress:    Int    = 0,
+    val thumbnailPath: String? = null,  // Local path to cached thumbnail
+    val thumbnailUrl: String? = null    // Original YouTube thumbnail URL
 )
 
 @Entity(tableName = "playlists")
 data class PlaylistEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name:      String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val isPinned:  Boolean = false
 )
 
 @Entity(tableName = "playlist_songs",
@@ -122,6 +125,16 @@ data class SongCacheMeta(
     val totalPlayTime: Long = 0L,
 )
 
+@Entity(tableName = "followed_artists")
+data class FollowedArtist(
+    @PrimaryKey val channelId: String,
+    val name: String,
+    val thumbnail: String,
+    val subscriberCount: String = "",
+    val followedAt: Long = System.currentTimeMillis()
+)
+
+
 // ── DAOs ──────────────────────────────────────────────────────────────────────
 
 @Dao
@@ -180,10 +193,10 @@ interface DownloadDao {
 
 @Dao
 interface PlaylistDao {
-    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    @Query("SELECT * FROM playlists ORDER BY isPinned DESC, createdAt DESC")
     fun getAllFlow(): Flow<List<PlaylistEntity>>
 
-    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    @Query("SELECT * FROM playlists ORDER BY isPinned DESC, createdAt DESC")
     suspend fun getAll(): List<PlaylistEntity>
 
     @Query("SELECT * FROM playlists WHERE id = :id LIMIT 1")
@@ -191,6 +204,9 @@ interface PlaylistDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylist(p: PlaylistEntity): Long
+
+    @Query("UPDATE playlists SET isPinned = NOT isPinned WHERE id = :id")
+    suspend fun togglePin(id: Long)
 
     @Query("DELETE FROM playlists WHERE id = :id")
     suspend fun deletePlaylist(id: Long)
@@ -334,14 +350,32 @@ interface UserAccountDao {
     suspend fun insert(account: UserAccount): Long
 }
 
+@Dao
+interface FollowedArtistDao {
+    @Query("SELECT * FROM followed_artists ORDER BY followedAt DESC")
+    fun getAllFlow(): Flow<List<FollowedArtist>>
+
+    @Query("SELECT * FROM followed_artists ORDER BY followedAt DESC")
+    suspend fun getAll(): List<FollowedArtist>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(artist: FollowedArtist)
+
+    @Query("DELETE FROM followed_artists WHERE channelId = :channelId")
+    suspend fun delete(channelId: String)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM followed_artists WHERE channelId = :channelId)")
+    suspend fun isFollowing(channelId: String): Boolean
+}
+
 // ── Database ──────────────────────────────────────────────────────────────────
 
 @Database(
     entities  = [LikedSong::class, HistoryEntry::class, DownloadEntity::class,
                  PlaylistEntity::class, PlaylistSongEntity::class, QueueEntity::class,
                  InteractionSignal::class, CachedLyricsEntity::class, UserAccount::class,
-                 RelatedSongMap::class, SongCacheMeta::class],
-    version   = 8,
+                 RelatedSongMap::class, SongCacheMeta::class, FollowedArtist::class],
+    version   = 11,
     exportSchema = false
 )
 abstract class VinDatabase : RoomDatabase() {
@@ -355,15 +389,40 @@ abstract class VinDatabase : RoomDatabase() {
     abstract fun userAccountDao(): UserAccountDao
     abstract fun relatedSongDao(): RelatedSongDao
     abstract fun songCacheMetaDao(): SongCacheMetaDao
+    abstract fun followedArtistDao(): FollowedArtistDao
 
     companion object {
         @Volatile private var INSTANCE: VinDatabase? = null
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Create followed_artists table if it doesn't exist
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `followed_artists` (
+                        `channelId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `thumbnail` TEXT NOT NULL,
+                        `subscriberCount` TEXT NOT NULL DEFAULT '',
+                        `followedAt` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`channelId`)
+                    )
+                """.trimIndent())
+            }
+        }
+
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE playlists ADD COLUMN isPinned INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(ctx: Context): VinDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(ctx, VinDatabase::class.java, "vin_music.db")
+                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10)
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
     }
 }
+

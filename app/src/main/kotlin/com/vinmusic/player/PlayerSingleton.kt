@@ -1,6 +1,8 @@
 package com.vinmusic.player
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.compose.runtime.*
 import androidx.media3.common.AudioAttributes
@@ -14,6 +16,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
+import androidx.room.withTransaction
 import com.vinmusic.data.db.*
 import com.vinmusic.innertube.InnerTube
 import com.vinmusic.innertube.VideoItem
@@ -29,6 +32,25 @@ import java.io.File
 @UnstableApi
 object PlayerSingleton {
     private const val TAG = "VIN_PLAYER"
+
+    private data class CacheCheckResult(
+        val isDownloadCacheValid: Boolean,
+        val isPlayerCached: Boolean,
+        val isCachedComplete: Boolean,
+        val totalCachedBytes: Long,
+        val isDeviceOnline: Boolean
+    )
+
+    private fun isOnline(ctx: Context): Boolean {
+        return try {
+            val connectivityManager = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     @Volatile private var _player: ExoPlayer? = null
 
@@ -46,8 +68,14 @@ object PlayerSingleton {
     var queueIndex     by mutableIntStateOf(-1)
     var repeat         by mutableStateOf(false)
     var shuffle        by mutableStateOf(false)
+    private var _smartShuffle by mutableStateOf(false)
+    val smartShuffle get() = _smartShuffle
     var smartAutoplayEnabled by mutableStateOf(true)
     var isAutoplayLoading by mutableStateOf(false)
+
+    // Stored playback parameters — survive across song transitions
+    var storedSpeed by mutableFloatStateOf(1.0f)
+    var storedPitch by mutableFloatStateOf(1.0f)
 
 
     var nextStreamUrlDeferred: Pair<String, Deferred<String?>>? = null
@@ -61,56 +89,60 @@ object PlayerSingleton {
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
 
     private fun acquireWakeLocks(ctx: Context) {
-        try {
-            if (wakeLock == null) {
-                val powerManager = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "VinMusic::TransitionWakeLock").apply {
-                    setReferenceCounted(false)
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (wakeLock == null) {
+                    val powerManager = ctx.applicationContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "VinMusic::TransitionWakeLock").apply {
+                        setReferenceCounted(false)
+                    }
                 }
+                wakeLock?.acquire(60 * 60 * 1000L) // 1 hour timeout (resilient background)
+                Log.d(TAG, "WakeLock acquired")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to acquire WakeLock: ${e.message}")
             }
-            wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes max timeout
-            Log.d(TAG, "WakeLock acquired")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire WakeLock: ${e.message}")
-        }
 
-        try {
-            if (wifiLock == null) {
-                val wifiManager = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-                val lockType = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                } else {
-                    @Suppress("DEPRECATION")
-                    android.net.wifi.WifiManager.WIFI_MODE_FULL
+            try {
+                if (wifiLock == null) {
+                    val wifiManager = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                    val lockType = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                    } else {
+                        @Suppress("DEPRECATION")
+                        android.net.wifi.WifiManager.WIFI_MODE_FULL
+                    }
+                    wifiLock = wifiManager.createWifiLock(lockType, "VinMusic::TransitionWifiLock").apply {
+                        setReferenceCounted(false)
+                    }
                 }
-                wifiLock = wifiManager.createWifiLock(lockType, "VinMusic::TransitionWifiLock").apply {
-                    setReferenceCounted(false)
-                }
+                wifiLock?.acquire()
+                Log.d(TAG, "WifiLock acquired")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to acquire WifiLock: ${e.message}")
             }
-            wifiLock?.acquire()
-            Log.d(TAG, "WifiLock acquired")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire WifiLock: ${e.message}")
         }
     }
 
     private fun releaseWakeLocks() {
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-                Log.d(TAG, "WakeLock released")
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (wakeLock?.isHeld == true) {
+                    wakeLock?.release()
+                    Log.d(TAG, "WakeLock released")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to release WakeLock: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to release WakeLock: ${e.message}")
-        }
 
-        try {
-            if (wifiLock?.isHeld == true) {
-                wifiLock?.release()
-                Log.d(TAG, "WifiLock released")
+            try {
+                if (wifiLock?.isHeld == true) {
+                    wifiLock?.release()
+                    Log.d(TAG, "WifiLock released")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to release WifiLock: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to release WifiLock: ${e.message}")
         }
     }
 
@@ -146,6 +178,7 @@ object PlayerSingleton {
                 recommendationRepository = RecommendationRepository(ctx, db!!)
                 prefs = ctx.getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
                 smartAutoplayEnabled = prefs?.getBoolean("smart_autoplay", true) ?: true
+                _smartShuffle = prefs?.getBoolean("smart_shuffle", false) ?: false
 
                 
                 buildPlayer(ctx).also { playerInstance ->
@@ -161,6 +194,12 @@ object PlayerSingleton {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 Log.d(TAG, "isPlaying = $playing")
+                if (playing) {
+                    context?.let { acquireWakeLocks(it) }
+                } else {
+                    releaseWakeLocks()
+                }
+                context?.let { com.vinmusic.widget.MusicWidgetProvider.updateAllWidgets(it) }
             }
             override fun onPlaybackStateChanged(state: Int) {
                 val stateStr = when(state) {
@@ -175,7 +214,8 @@ object PlayerSingleton {
                     Player.STATE_READY     -> {
                         isLoading  = false
                         errorMessage = null
-                        releaseWakeLocks()
+                        // Re-apply stored playback parameters after song loads
+                        reapplyPlaybackParameters()
                         prefetchNextSong()
                     }
                     Player.STATE_BUFFERING -> isLoading = true
@@ -202,7 +242,7 @@ object PlayerSingleton {
             try {
                 // Determine next index and next song
                 val nextIndex = if (shuffle) {
-                    queue.indices.random()
+                    if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
                 } else {
                     (queueIndex + 1) % queue.size
                 }
@@ -229,7 +269,7 @@ object PlayerSingleton {
                                 
                                 // Re-evaluate next song with newly appended items
                                 val newNextIndex = if (shuffle) {
-                                    queue.indices.random()
+                                    if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
                                 } else {
                                     (queueIndex + 1) % queue.size
                                 }
@@ -247,12 +287,19 @@ object PlayerSingleton {
                     return@launch
                 }
                 
-                // If it's already downloaded, skip network prefetching
+                // Verify actual cached bytes exist before skipping network prefetching!
                 val isDownloaded = withContext(Dispatchers.IO) {
-                    db?.downloadDao()?.get(nextSong.videoId)?.status == "completed"
+                    val isComplete = db?.downloadDao()?.get(nextSong.videoId)?.status == "completed"
+                    if (isComplete) {
+                        val dlCache = getDownloadCache(context!!)
+                        val dlCacheBytes = dlCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
+                        dlCacheBytes > 100_000L
+                    } else {
+                        false
+                    }
                 }
                 if (isDownloaded) {
-                    Log.d(TAG, "Next song ${nextSong.title} is downloaded. Skipping network prefetch.")
+                    Log.d(TAG, "Next song ${nextSong.title} is downloaded and cache is valid. Skipping network prefetch.")
                     return@launch
                 }
                 
@@ -280,6 +327,12 @@ object PlayerSingleton {
 
     @Volatile private var _cache: androidx.media3.datasource.cache.SimpleCache? = null
     @Volatile private var _cacheFailed = false
+    @Volatile private var _dbProvider: androidx.media3.database.DatabaseProvider? = null
+
+    @Synchronized
+    private fun getDatabaseProvider(context: Context): androidx.media3.database.DatabaseProvider {
+        return _dbProvider ?: androidx.media3.database.StandaloneDatabaseProvider(context.applicationContext).also { _dbProvider = it }
+    }
 
     @Synchronized
     fun getCache(context: Context): androidx.media3.datasource.cache.SimpleCache? {
@@ -288,7 +341,7 @@ object PlayerSingleton {
             try {
                 val cacheDir = File(context.cacheDir, "player_cache")
                 val evictor = androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor(1024L * 1024L * 1024L) // 1 GB Cache
-                val dbProvider = androidx.media3.database.StandaloneDatabaseProvider(context)
+                val dbProvider = getDatabaseProvider(context)
                 androidx.media3.datasource.cache.SimpleCache(cacheDir, evictor, dbProvider).also { _cache = it }
             } catch (e: Exception) {
                 Log.e(TAG, "SimpleCache init failed: ${e.message}. Dynamic cache disabled.", e)
@@ -298,27 +351,73 @@ object PlayerSingleton {
         }
     }
 
-    private fun buildPlayer(ctx: Context): ExoPlayer {
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X) AppleWebKit/605.1.15")
-            .setConnectTimeoutMs(30_000)
-            .setReadTimeoutMs(30_000)
-            .setAllowCrossProtocolRedirects(true)
-            .setDefaultRequestProperties(mapOf(
-                "Origin"  to "https://www.youtube.com",
-                "Referer" to "https://www.youtube.com/"
-            ))
+    @Volatile private var _downloadCache: androidx.media3.datasource.cache.SimpleCache? = null
+    @Volatile private var _downloadCacheFailed = false
 
+    @Synchronized
+    fun getDownloadCache(context: Context): androidx.media3.datasource.cache.SimpleCache? {
+        if (_downloadCacheFailed) return null
+        return _downloadCache ?: run {
+            try {
+                val downloadCacheDir = File(context.filesDir, "downloads")
+                val evictor = androidx.media3.datasource.cache.NoOpCacheEvictor()
+                val dbProvider = getDatabaseProvider(context)
+                androidx.media3.datasource.cache.SimpleCache(downloadCacheDir, evictor, dbProvider).also { _downloadCache = it }
+            } catch (e: Exception) {
+                Log.e(TAG, "SimpleCache downloads init failed: ${e.message}.", e)
+                _downloadCacheFailed = true
+                null
+            }
+        }
+    }
+
+    private fun createDynamicHttpDataSourceFactory(): androidx.media3.datasource.DataSource.Factory {
+        return androidx.media3.datasource.DataSource.Factory {
+            object : androidx.media3.datasource.DataSource {
+                private var currentDataSource: androidx.media3.datasource.DataSource? = null
+                override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
+                override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                    val url = dataSpec.uri.toString()
+                    val resolvedUa = com.vinmusic.innertube.InnerTube.getUserAgentForUrl(url)
+                    val requestProps = buildMap<String, String> {
+                        if (resolvedUa.startsWith("Mozilla")) {
+                            put("Origin", "https://www.youtube.com")
+                            put("Referer", "https://www.youtube.com/")
+                        }
+                    }
+                    val source = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                        .setUserAgent(resolvedUa)
+                        .setConnectTimeoutMs(30_000)
+                        .setReadTimeoutMs(30_000)
+                        .setAllowCrossProtocolRedirects(true)
+                        .setDefaultRequestProperties(requestProps)
+                        .createDataSource()
+                    currentDataSource = source
+                    return source.open(dataSpec)
+                }
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    return currentDataSource?.read(buffer, offset, length) ?: -1
+                }
+                override fun getUri(): android.net.Uri? = currentDataSource?.uri
+                override fun close() {
+                    currentDataSource?.close()
+                }
+            }
+        }
+    }
+
+    private fun buildPlayer(ctx: Context): ExoPlayer {
+        val dynamicHttpFactory = createDynamicHttpDataSourceFactory()
         val cacheObj = getCache(ctx)
         val dataSourceFactory = if (cacheObj != null) {
             Log.d(TAG, "ExoPlayer initialized with 1GB automatic cache")
             androidx.media3.datasource.cache.CacheDataSource.Factory()
                 .setCache(cacheObj)
-                .setUpstreamDataSourceFactory(httpDataSourceFactory)
+                .setUpstreamDataSourceFactory(dynamicHttpFactory)
                 .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         } else {
             Log.d(TAG, "ExoPlayer initialized with standard direct streaming (no-cache fallback)")
-            httpDataSourceFactory
+            dynamicHttpFactory
         }
 
         return ExoPlayer.Builder(ctx)
@@ -332,12 +431,12 @@ object PlayerSingleton {
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK) // Keep CPU awake for streaming in background
-
             .build()
     }
 
     // ── Queue & Playback Functions (Service/Background Safe) ─────────────────
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun playSong(song: VideoItem) {
         context?.let { acquireWakeLocks(it) }
         fetchJob?.cancel()
@@ -346,6 +445,7 @@ object PlayerSingleton {
         recordEnd()
 
         currentSong   = song
+        context?.let { com.vinmusic.widget.MusicWidgetProvider.updateAllWidgets(it) }
         isLoading     = true
         isPlaying     = false
         errorMessage  = null
@@ -371,23 +471,74 @@ object PlayerSingleton {
             try {
                 Log.d(TAG, "Fetching stream/download for videoId=${song.videoId}")
 
-                // Check if song is downloaded in cache
-                val localDownload = withContext(Dispatchers.IO) { database.downloadDao().get(song.videoId) }
-                val isCachedComplete = localDownload?.status == "completed"
-
-                val url: String
-                val artBytes: ByteArray?
-
-                if (isCachedComplete) {
-                    Log.d(TAG, "Playing fully cached offline song: videoId=${song.videoId}")
-                    url = if (!localDownload?.filePath.isNullOrBlank() && localDownload?.filePath != "cache") {
-                        localDownload.filePath
-                    } else {
-                        "https://dummy.com/${song.videoId}.m4a"
+                // 1. Offload SimpleCache queries, DB checks, and network checks entirely to Dispatchers.IO to avoid blocking the Main UI Thread and causing stuttering!
+                val cacheResult = withContext(Dispatchers.IO) {
+                    val ctx = context ?: return@withContext CacheCheckResult(false, false, false, 0L, false)
+                    
+                    val localDownload = database.downloadDao().get(song.videoId)
+                    val isDownloadCompleted = localDownload?.status == "completed"
+                    val dlCache = if (isDownloadCompleted) getDownloadCache(ctx) else null
+                    val dlCacheBytes = dlCache?.getCachedBytes(song.videoId, 0, -1) ?: 0L
+                    
+                    // Healing Mechanism: If DB says downloaded but actual cached bytes are missing, heal DB state!
+                    // Use transaction for atomic multi-table update
+                    if (isDownloadCompleted && dlCacheBytes < 100_000L) {
+                        Log.w(TAG, "Download DB says completed, but cached bytes are missing ($dlCacheBytes). Healing DB.")
+                        try {
+                            database.withTransaction {
+                                database.downloadDao().delete(song.videoId)
+                                val sig = database.interactionSignalDao().get(song.videoId)
+                                if (sig != null) {
+                                    sig.isDownloaded = false
+                                    database.interactionSignalDao().insert(sig)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to heal database for song $song.videoId: ${e.message}")
+                        }
                     }
-                    artBytes = null
 
-                    val artBytesDeferred = async(Dispatchers.IO) { InnerTube.loadThumbnailBytes(song.thumbnailHd) }
+                    val isDownloadCacheValid = isDownloadCompleted && dlCacheBytes > 100_000L
+                    val pCache = getCache(ctx)
+                    val pCacheBytes = pCache?.getCachedBytes(song.videoId, 0, -1) ?: 0L
+                    val isPlayerCached = pCacheBytes > 1_000_000L
+                    val isCachedComplete = isDownloadCacheValid || isPlayerCached
+                    val totalCachedBytes = if (isDownloadCacheValid) dlCacheBytes else if (isPlayerCached) pCacheBytes else 0L
+                    val onlineState = isOnline(ctx)
+
+                    CacheCheckResult(
+                        isDownloadCacheValid = isDownloadCacheValid,
+                        isPlayerCached = isPlayerCached,
+                        isCachedComplete = isCachedComplete,
+                        totalCachedBytes = totalCachedBytes,
+                        isDeviceOnline = onlineState
+                    )
+                }
+
+                val isDownloadCacheValid = cacheResult.isDownloadCacheValid
+                val isPlayerCached = cacheResult.isPlayerCached
+                var isCachedComplete = cacheResult.isCachedComplete
+                var totalCachedBytes = cacheResult.totalCachedBytes
+                val isDeviceOnline = cacheResult.isDeviceOnline
+
+                Log.d(TAG, "Cache check: isDownloadCacheValid=$isDownloadCacheValid isPlayerCached=$isPlayerCached isCachedComplete=$isCachedComplete totalCachedBytes=$totalCachedBytes isDeviceOnline=$isDeviceOnline")
+
+                var url: String
+                var artBytes: ByteArray? = null
+                var onlineAndCached = isCachedComplete && isDeviceOnline
+
+                // If cached but offline, we play entirely using local cache placeholder
+                if (isCachedComplete && !onlineAndCached) {
+                    Log.d(TAG, "Playing fully cached offline song (device is offline): videoId=${song.videoId}")
+                    url = "https://music.youtube.com/cache/${song.videoId}"
+
+                    val artBytesDeferred = async(Dispatchers.IO) {
+                        try {
+                            InnerTube.loadThumbnailBytes(song.thumbnailHd)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
                     launch(Dispatchers.IO) {
                         val loadedBytes = runCatching { artBytesDeferred.await() }.getOrNull()
                         if (loadedBytes != null) {
@@ -413,12 +564,30 @@ object PlayerSingleton {
                     } else {
                         val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
                         async(Dispatchers.IO) {
-                            InnerTube.getStreamUrl(song.videoId, quality)
+                            try {
+                                InnerTube.getStreamUrl(song.videoId, quality)
+                            } catch (e: Exception) {
+                                null
+                            }
                         }
                     }
-                    val artBytesDeferred = async(Dispatchers.IO) { InnerTube.loadThumbnailBytes(song.thumbnailHd) }
+                    val artBytesDeferred = async(Dispatchers.IO) {
+                        try {
+                            InnerTube.loadThumbnailBytes(song.thumbnailHd)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
 
-                    val fetchedUrl = urlDeferred.await()
+                    var fetchedUrl = urlDeferred.await()
+                    
+                    // Graceful Fallback: If network stream fetch fails but song is cached, fall back to offline playback instead of failing!
+                    if (fetchedUrl == null && isCachedComplete) {
+                        Log.w(TAG, "Online stream fetch failed for cached song. Falling back to local offline playback.")
+                        onlineAndCached = false
+                        fetchedUrl = "https://music.youtube.com/cache/${song.videoId}"
+                    }
+
                     if (fetchedUrl == null) {
                         isLoading    = false
                         errorMessage = "[Error] ${InnerTube.lastDebugMsg}"
@@ -484,29 +653,63 @@ object PlayerSingleton {
                     player.clearMediaItems()
                     
                     if (isCachedComplete) {
-                        val cache = getCache(context!!)
+                        val cache = if (isDownloadCacheValid) getDownloadCache(context!!) else getCache(context!!)
                         if (cache != null) {
-                            val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                                .setCache(cache)
-                                .setUpstreamDataSourceFactory {
-                                    object : androidx.media3.datasource.DataSource {
-                                        private var uri: android.net.Uri? = null
-                                        override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
-                                        override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
-                                            uri = dataSpec.uri
-                                            return 0L
-                                        }
-                                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-                                            return C.RESULT_END_OF_INPUT
-                                        }
-                                        override fun getUri(): android.net.Uri? = uri
-                                        override fun close() {}
+                            if (onlineAndCached) {
+                                Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=${song.videoId}")
+                                val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                                    .setCache(cache)
+                                    .setUpstreamDataSourceFactory(createDynamicHttpDataSourceFactory()) // Stream if there's any gap!
+                                    .setCacheKeyFactory { dataSpec ->
+                                        dataSpec.key ?: song.videoId
                                     }
-                                }
-                                .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                            val mediaSource = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
-                                .createMediaSource(mediaItem)
-                            player.setMediaSource(mediaSource)
+                                    .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                                val mediaSource = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
+                                    .createMediaSource(mediaItem)
+                                player.setMediaSource(mediaSource)
+                            } else {
+                                Log.d(TAG, "Offline playback: using cache=${if (isDownloadCacheValid) "download" else "player"}, totalCachedBytes=$totalCachedBytes for videoId=${song.videoId}")
+                                val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                                    .setCache(cache)
+                                    .setCacheKeyFactory { dataSpec ->
+                                        dataSpec.key ?: song.videoId
+                                    }
+                                    .setUpstreamDataSourceFactory {
+                                        // Fixed upstream that reports bytesRemaining correctly relative to requested position
+                                        object : androidx.media3.datasource.DataSource {
+                                            private var uri: android.net.Uri? = null
+                                            private var bytesRemaining = 0L
+
+                                            override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
+                                            
+                                            override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                                                uri = dataSpec.uri
+                                                val position = dataSpec.position
+                                                bytesRemaining = if (totalCachedBytes > position) {
+                                                    totalCachedBytes - position
+                                                } else {
+                                                    0L
+                                                }
+                                                Log.d(TAG, "Offline upstream open: position=$position, totalCachedBytes=$totalCachedBytes, bytesRemaining=$bytesRemaining")
+                                                return bytesRemaining
+                                            }
+                                            
+                                            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                                                if (bytesRemaining <= 0) {
+                                                    return androidx.media3.common.C.RESULT_END_OF_INPUT
+                                                }
+                                                Log.w(TAG, "Offline cache miss at remaining=$bytesRemaining, requesting length=$length")
+                                                return androidx.media3.common.C.RESULT_END_OF_INPUT
+                                            }
+                                            
+                                            override fun getUri(): android.net.Uri? = uri
+                                            override fun close() {}
+                                        }
+                                    }
+                                val mediaSource = androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
+                                    .createMediaSource(mediaItem)
+                                player.setMediaSource(mediaSource)
+                            }
                         } else {
                             player.setMediaItem(mediaItem)
                         }
@@ -560,17 +763,35 @@ object PlayerSingleton {
                             playSong(queue[queueIndex])
                         }
                     } else {
-                        val next = if (shuffle) queue.indices.random() else 0
+                        val next = if (shuffle) {
+                            if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
+                        } else 0
+                        if (next < 0 || next >= queue.size) return@launch
                         queueIndex = next
                         playSong(queue[next])
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to fetch autoplay recommendations: ${e.message}")
-                    val next = if (shuffle) queue.indices.random() else 0
+                    val next = if (shuffle) {
+                        if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
+                    } else 0
+                    if (next < 0 || next >= queue.size) return@launch
                     queueIndex = next
                     playSong(queue[next])
                 } finally {
                     isAutoplayLoading = false
+                }
+            }
+            return
+        }
+
+        if (shuffle && smartShuffle) {
+            scope.launch {
+                val next = getSmartShuffleNextIndex()
+                if (next < 0 || next >= queue.size) return@launch
+                withContext(Dispatchers.Main) {
+                    queueIndex = next
+                    playSong(queue[next])
                 }
             }
             return
@@ -583,14 +804,16 @@ object PlayerSingleton {
 
     fun playPrev() {
         if (queue.isEmpty()) return
-        if (player.currentPosition > 3000) { player.seekTo(0); return }
+        val activePlayer = _player ?: return
+        if (activePlayer.currentPosition > 3000) { activePlayer.seekTo(0); return }
         val prev = if (queueIndex > 0) queueIndex - 1 else queue.size - 1
         queueIndex = prev
         playSong(queue[prev])
     }
 
     fun togglePlay() {
-        if (player.isPlaying) player.pause() else player.play()
+        val activePlayer = _player ?: return
+        if (activePlayer.isPlaying) activePlayer.pause() else activePlayer.play()
     }
 
     fun seekTo(fraction: Float) {
@@ -602,9 +825,59 @@ object PlayerSingleton {
         player.seekTo(ms)
     }
 
+    /** Re-apply stored speed/pitch after song transition so params don't reset */
+    private fun reapplyPlaybackParameters() {
+        if (storedSpeed == 1.0f && storedPitch == 1.0f) return // nothing to reapply
+        try {
+            player.playbackParameters = androidx.media3.common.PlaybackParameters(storedSpeed, storedPitch)
+            Log.d(TAG, "Re-applied playback params: speed=$storedSpeed, pitch=$storedPitch")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to reapply playback parameters: ${e.message}")
+        }
+    }
+
     fun setSmartAutoplay(enabled: Boolean) {
         smartAutoplayEnabled = enabled
         prefs?.edit()?.putBoolean("smart_autoplay", enabled)?.apply()
+    }
+
+    fun setSmartShuffle(enabled: Boolean) {
+        _smartShuffle = enabled
+        prefs?.edit()?.putBoolean("smart_shuffle", enabled)?.apply()
+    }
+
+    private suspend fun getSmartShuffleNextIndex(): Int {
+        val dbObj = db ?: return queue.indices.random()
+        val profile = try {
+            com.vinmusic.recommendation.RecommendationManager.buildTasteProfile(dbObj)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to build taste profile for smart shuffle: ${e.message}")
+            null
+        }
+        
+        if (profile == null) {
+            return queue.indices.random()
+        }
+
+        val dna = profile.tasteDNA
+        
+        val candidates = queue.indices.filter { it != queueIndex }
+        if (candidates.isEmpty()) return if (repeat) queueIndex else -1
+
+        val scoredCandidates = candidates.map { idx ->
+            val item = queue[idx]
+            val meta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(item)
+            val score = com.vinmusic.recommendation.RecommendationManager.calculateTasteSimilarity(meta, dna)
+            idx to score
+        }
+
+        val sorted = scoredCandidates.sortedByDescending { it.second }
+        
+        // Pick randomly from the top 3 or top 30% of candidates (whichever is larger)
+        val poolSize = maxOf(3, (sorted.size * 0.3).toInt()).coerceAtMost(sorted.size)
+        val bestCandidates = sorted.take(poolSize)
+        
+        return bestCandidates.random().first
     }
 
     private fun prefetchNextSongs() {
@@ -617,14 +890,21 @@ object PlayerSingleton {
                 // Wait a bit to let the active song start playing smoothly
                 delay(3000)
                 
-                val nextIndex = if (shuffle) queue.indices.random() else (queueIndex + 1) % queue.size
+                val nextIndex = if (shuffle) {
+                    if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
+                } else {
+                    (queueIndex + 1) % queue.size
+                }
                 if (nextIndex !in queue.indices) return@launch
                 val nextSong = queue[nextIndex]
                 
-                // If it is already downloaded, skip
+                // Verify actual cached bytes exist in the download cache before skipping prefetch
                 val localDownload = db?.downloadDao()?.get(nextSong.videoId)
-                if (localDownload?.status == "completed") {
-                    Log.d(TAG, "prefetchNextSongs: Next song is already downloaded offline. Skipping prefetch.")
+                val isComplete = localDownload?.status == "completed"
+                val dlCache = if (isComplete) ctx.let { getDownloadCache(it) } else null
+                val dlCacheBytes = dlCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
+                if (isComplete && dlCacheBytes > 100_000L) {
+                    Log.d(TAG, "prefetchNextSongs: Next song is already downloaded offline and cache is valid. Skipping prefetch.")
                     return@launch
                 }
                 
@@ -649,7 +929,7 @@ object PlayerSingleton {
                 Log.d(TAG, "prefetchNextSongs: Starting prefetch of 2.5MB for song ${nextSong.title} (videoId=${nextSong.videoId})")
                 
                 val httpFactory = DefaultHttpDataSource.Factory()
-                    .setUserAgent("com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X) AppleWebKit/605.1.15")
+                    .setUserAgent("com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip")
                     .setConnectTimeoutMs(30_000)
                     .setReadTimeoutMs(30_000)
                     .setAllowCrossProtocolRedirects(true)
@@ -748,6 +1028,18 @@ object PlayerSingleton {
                 signal.repeatCount += 1
             }
             database.interactionSignalDao().insert(signal)
+
+            // Log song playback event to Firebase Analytics
+            context?.let { ctx ->
+                val isOffline = database.downloadDao().get(song.videoId)?.status == "completed"
+                com.vinmusic.analytics.AnalyticsHelper.logSongPlaybackStarted(
+                    context = ctx,
+                    videoId = song.videoId,
+                    title = song.title,
+                    artist = song.author,
+                    isOffline = isOffline
+                )
+            }
         }
     }
 

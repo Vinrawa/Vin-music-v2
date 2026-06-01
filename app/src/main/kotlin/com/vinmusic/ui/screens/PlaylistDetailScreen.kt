@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -46,7 +47,8 @@ import kotlinx.coroutines.withContext
 fun PlaylistDetailScreen(
     playlistId: Long,
     vm: PlayerViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onSongMore: (VideoItem) -> Unit
 ) {
     val ctx = LocalContext.current
     val db = VinDatabase.getInstance(ctx)
@@ -55,12 +57,26 @@ fun PlaylistDetailScreen(
     var playlist by remember { mutableStateOf<PlaylistEntity?>(null) }
     var songs by remember { mutableStateOf<List<PlaylistSongEntity>>(emptyList()) }
 
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredSongs = remember(songs, searchQuery) {
+        if (searchQuery.isBlank()) songs
+        else songs.filter {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+            it.author.contains(searchQuery, ignoreCase = true)
+        }
+    }
+
     var recommendedPlaylists by remember { mutableStateOf<List<com.vinmusic.innertube.AlbumItem>>(emptyList()) }
     var isLoadingRecommendations by remember { mutableStateOf(false) }
     
     var selectedRecommendedPlaylist by remember { mutableStateOf<com.vinmusic.innertube.AlbumItem?>(null) }
     var recommendedPlaylistSongs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoadingPlaylistSongs by remember { mutableStateOf(false) }
+
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var newNameText by remember { mutableStateOf("") }
 
     LaunchedEffect(playlistId) {
         playlist = withContext(Dispatchers.IO) { db.playlistDao().getPlaylist(playlistId) }
@@ -138,6 +154,53 @@ fun PlaylistDetailScreen(
         }
     }
 
+    // Rename playlist dialog
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            containerColor = VinColors.Surface2,
+            shape = RoundedCornerShape(24.dp),
+            title = { Text("Rename Playlist", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = newNameText,
+                    onValueChange = { newNameText = it },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = VinColors.Accent,
+                        unfocusedBorderColor = VinColors.GlassBorder,
+                        focusedContainerColor = VinColors.White10,
+                        unfocusedContainerColor = VinColors.White10
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = newNameText.trim()
+                        if (name.isNotEmpty()) {
+                            scope.launch(Dispatchers.IO) {
+                                db.playlistDao().insertPlaylist(PlaylistEntity(id = playlistId, name = name, createdAt = playlist?.createdAt ?: System.currentTimeMillis()))
+                                playlist = db.playlistDao().getPlaylist(playlistId)
+                            }
+                            showRenameDialog = false
+                        }
+                    }
+                ) {
+                    Text("Rename", color = VinColors.Accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel", color = VinColors.Secondary)
+                }
+            }
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -178,37 +241,157 @@ fun PlaylistDetailScreen(
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(0.4f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
+            // Header bar with vertical three-dot menu
+            if (isSearchActive) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search songs or artists...", color = VinColors.Secondary, fontSize = 14.sp) },
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Search",
+                                tint = VinColors.Secondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                if (searchQuery.isNotEmpty()) {
+                                    searchQuery = ""
+                                } else {
+                                    isSearchActive = false
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close Search",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = VinColors.Accent,
+                            unfocusedBorderColor = VinColors.GlassBorder,
+                            focusedContainerColor = VinColors.White10,
+                            unfocusedContainerColor = VinColors.White10
+                        ),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(0.4f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Playlist Detail",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    
+                    var showMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(0.4f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Menu",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier.background(VinColors.Surface2)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Search in playlist", color = Color.White) },
+                                leadingIcon = { Icon(Icons.Default.Search, null, tint = Color.White) },
+                                onClick = {
+                                    showMenu = false
+                                    isSearchActive = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Sort by", color = Color.White) },
+                                leadingIcon = { Icon(Icons.Default.Sort, null, tint = Color.White) },
+                                onClick = { showMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Rename playlist", color = Color.White) },
+                                leadingIcon = { Icon(Icons.Default.Edit, null, tint = Color.White) },
+                                onClick = {
+                                    showMenu = false
+                                    newNameText = playlist?.name ?: ""
+                                    showRenameDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Edit cover", color = Color.White) },
+                                leadingIcon = { Icon(Icons.Default.Image, null, tint = Color.White) },
+                                onClick = { showMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Share playlist", color = Color.White) },
+                                leadingIcon = { Icon(Icons.Default.Share, null, tint = Color.White) },
+                                onClick = {
+                                    showMenu = false
+                                    val shareText = "Check out my playlist '${playlist?.name}' on VinMusic:\n" + songs.joinToString("\n") { "${it.title} - ${it.author}" }
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                    }
+                                    ctx.startActivity(android.content.Intent.createChooser(intent, "Share Playlist"))
+                                }
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "Playlist Detail",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
             }
 
             if (songs.isEmpty()) {
@@ -234,289 +417,219 @@ fun PlaylistDetailScreen(
                                 .fillMaxWidth()
                                 .padding(horizontal = 24.dp, vertical = 16.dp)
                         ) {
-                            // Centered Artwork
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(200.dp)
-                                        .background(
-                                            Brush.linearGradient(
-                                                listOf(
-                                                    VinColors.Accent,
-                                                    Color(0xFF7C3AED)
-                                                )
-                                            ),
-                                            RoundedCornerShape(24.dp)
-                                        )
-                                        .padding(2.dp)
-                                ) {
-                                    if (coverArtUrl != null) {
-                                        AsyncImage(
-                                            model = coverArtUrl,
-                                            contentDescription = null,
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .clip(RoundedCornerShape(22.dp)),
-                                            contentScale = ContentScale.Crop
-                                        )
-                                    } else {
-                                        // Default Playlist Music Icon
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(VinColors.Surface, RoundedCornerShape(22.dp)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                Icons.Default.LibraryMusic,
-                                                null,
-                                                tint = VinColors.AccentLight,
-                                                modifier = Modifier.size(64.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                             // Centered Collage Playlist Artwork
+                             Box(
+                                 modifier = Modifier.fillMaxWidth(),
+                                 contentAlignment = Alignment.Center
+                             ) {
+                                 PlaylistCover(
+                                     songs = songs,
+                                     modifier = Modifier.size(260.dp),
+                                     cornerRadius = 16.dp
+                                 )
+                             }
+ 
+                             Spacer(Modifier.height(16.dp))
+ 
+                             // Centered Playlist Name
+                             Box(
+                                 modifier = Modifier.fillMaxWidth(),
+                                 contentAlignment = Alignment.Center
+                             ) {
+                                 Text(
+                                     text = playlist?.name ?: "",
+                                     fontSize = 24.sp,
+                                     fontWeight = FontWeight.ExtraBold,
+                                     color = Color.White,
+                                     textAlign = TextAlign.Center,
+                                     maxLines = 2,
+                                     overflow = TextOverflow.Ellipsis
+                                 )
+                             }
+ 
+                             Spacer(Modifier.height(8.dp))
+ 
+                             // Centered Track Count in muted gray text
+                             Box(
+                                 modifier = Modifier.fillMaxWidth(),
+                                 contentAlignment = Alignment.Center
+                             ) {
+                                 Text(
+                                     text = "Playlist • ${songs.size} tracks",
+                                     fontSize = 13.sp,
+                                     color = VinColors.Secondary,
+                                     textAlign = TextAlign.Center
+                                 )
+                             }
 
-                            Spacer(Modifier.height(24.dp))
+                             Spacer(Modifier.height(16.dp))
 
-                            // Metadata & Circular Play Button
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Bottom
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = playlist?.name ?: "Playlist",
-                                        fontSize = 26.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = Color.White,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-
-                                    Spacer(Modifier.height(6.dp))
-
-                                    Text(
-                                        text = "Custom Playlist",
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = VinColors.AccentLight
-                                    )
-
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = "Playlist • ${songs.size} tracks",
-                                        fontSize = 13.sp,
-                                        color = VinColors.Secondary
-                                    )
-
-                                    Spacer(Modifier.height(18.dp))
-
-                                    // Action Row
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        // Shuffle
-                                        IconButton(
-                                            onClick = {
-                                                if (songs.isNotEmpty()) {
-                                                    val videoItems = songs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }.shuffled()
-                                                    vm.setQueue(videoItems, 0)
-                                                }
-                                            },
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.White.copy(0.06f))
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Shuffle,
-                                                contentDescription = "Shuffle",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-
-                                        // Delete / Clear Playlist
-                                        IconButton(
-                                            onClick = {
-                                                scope.launch(Dispatchers.IO) {
-                                                    db.playlistDao().deletePlaylist(playlistId)
-                                                    withContext(Dispatchers.Main) {
-                                                        onBack()
-                                                    }
-                                                }
-                                            },
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.White.copy(0.06f))
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.DeleteSweep,
-                                                contentDescription = "Delete Playlist",
-                                                tint = VinColors.Pink,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Spacer(Modifier.width(16.dp))
-
-                                // Overlapping circular play button on the right
-                                Box(
-                                    modifier = Modifier
-                                        .size(56.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            Brush.radialGradient(
-                                                listOf(
-                                                    VinColors.AccentLight,
-                                                    VinColors.Accent
-                                                )
-                                            )
-                                        )
-                                        .clickable {
-                                            if (songs.isNotEmpty()) {
-                                                val videoItems = songs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                                                vm.setQueue(videoItems, 0)
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Play All",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
-                            }
+                             // Controls row: Shuffle + Delete on the left, Red Play on the right
+                             Row(
+                                 modifier = Modifier.fillMaxWidth(),
+                                 horizontalArrangement = Arrangement.SpaceBetween,
+                                 verticalAlignment = Alignment.CenterVertically
+                             ) {
+                                 Row(
+                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                     verticalAlignment = Alignment.CenterVertically
+                                 ) {
+                                     // Shuffle
+                                     IconButton(
+                                         onClick = {
+                                             if (filteredSongs.isNotEmpty()) {
+                                                 val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }.shuffled()
+                                                 vm.setQueue(videoItems, 0)
+                                             }
+                                         },
+                                         modifier = Modifier
+                                             .size(38.dp)
+                                             .clip(CircleShape)
+                                             .background(Color.White.copy(0.06f))
+                                     ) {
+                                         Icon(
+                                             imageVector = Icons.Default.Shuffle,
+                                             contentDescription = "Shuffle",
+                                             tint = Color.White,
+                                             modifier = Modifier.size(18.dp)
+                                         )
+                                     }
+ 
+                                     // Add/Import styled plus button that performs Delete/Clear playlist action
+                                     IconButton(
+                                         onClick = {
+                                             scope.launch(Dispatchers.IO) {
+                                                 db.playlistDao().deletePlaylist(playlistId)
+                                                 withContext(Dispatchers.Main) {
+                                                     onBack()
+                                                 }
+                                             }
+                                         },
+                                         modifier = Modifier
+                                             .size(38.dp)
+                                             .clip(CircleShape)
+                                             .background(Color.White.copy(0.06f))
+                                     ) {
+                                         Icon(
+                                             imageVector = Icons.Default.Add,
+                                             contentDescription = "Clear Playlist",
+                                             tint = Color.White,
+                                             modifier = Modifier.size(18.dp)
+                                         )
+                                     }
+                                 }
+ 
+                                 // Solid Red circular play button on the right
+                                 Box(
+                                     modifier = Modifier
+                                         .size(56.dp)
+                                         .clip(CircleShape)
+                                         .background(VinColors.Accent)
+                                         .clickable {
+                                             if (filteredSongs.isNotEmpty()) {
+                                                 val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                                                 vm.setQueue(videoItems, 0)
+                                             }
+                                         },
+                                     contentAlignment = Alignment.Center
+                                 ) {
+                                     Icon(
+                                         imageVector = Icons.Default.PlayArrow,
+                                         contentDescription = "Play All",
+                                         tint = Color.White,
+                                         modifier = Modifier.size(30.dp)
+                                     )
+                                 }
+                             }
                         }
-
+ 
                         HorizontalDivider(
                             color = VinColors.GlassBorder.copy(alpha = 0.3f),
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                         )
                     }
 
-                    // Songs list items
-                    itemsIndexed(songs, key = { _, s -> "pl_song_${s.videoId}" }) { index, s ->
-                        val isPlaying = vm.currentSong?.videoId == s.videoId
-                        
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp, vertical = 6.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(if (isPlaying) VinColors.Accent.copy(alpha = 0.12f) else VinColors.White10)
-                                .border(1.dp, if (isPlaying) VinColors.Accent.copy(alpha = 0.4f) else VinColors.GlassBorder, RoundedCornerShape(16.dp))
-                                .clickable {
-                                    val videoItems = songs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                                    vm.setQueue(videoItems, index)
-                                }
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(modifier = Modifier.size(48.dp).clip(RoundedCornerShape(10.dp))) {
-                                AsyncImage(
-                                    model = "https://i.ytimg.com/vi/${s.videoId}/hqdefault.jpg",
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
+                    if (filteredSongs.isEmpty() && songs.isNotEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 40.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No tracks match \"$searchQuery\"",
+                                    color = VinColors.Secondary,
+                                    fontSize = 14.sp
                                 )
-                                if (isPlaying) {
-                                    Box(Modifier.fillMaxSize().background(Color(0x60000000)),
-                                        contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Default.VolumeUp, null,
-                                            tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    } else {
+                        // Songs list items
+                        itemsIndexed(filteredSongs, key = { _, s -> "pl_song_${s.videoId}" }) { index, s ->
+                            val isPlaying = vm.currentSong?.videoId == s.videoId
+                            
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 24.dp, vertical = 6.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (isPlaying) VinColors.Accent.copy(alpha = 0.12f) else VinColors.White10)
+                                    .border(1.dp, if (isPlaying) VinColors.Accent.copy(alpha = 0.4f) else VinColors.GlassBorder, RoundedCornerShape(16.dp))
+                                    .clickable {
+                                        val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                                        vm.setQueue(videoItems, index)
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(modifier = Modifier.size(48.dp).clip(RoundedCornerShape(10.dp))) {
+                                    AsyncImage(
+                                        model = "https://i.ytimg.com/vi/${s.videoId}/hqdefault.jpg",
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    if (isPlaying) {
+                                        Box(Modifier.fillMaxSize().background(Color(0x60000000)),
+                                            contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.VolumeUp, null,
+                                                tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
+                                        }
                                     }
                                 }
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    s.title,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPlaying) VinColors.AccentLight else VinColors.Primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    "${s.author} • ${s.durationText}",
-                                    fontSize = 12.sp,
-                                    color = VinColors.Secondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        s.title,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isPlaying) VinColors.AccentLight else VinColors.Primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "${s.author} • ${s.durationText}",
+                                        fontSize = 12.sp,
+                                        color = VinColors.Secondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
 
-                            // Reordering buttons & Delete
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Vertical three-dot menu icon
                                 IconButton(
                                     onClick = {
-                                        if (index > 0) {
-                                            val mutableSongs = songs.toMutableList()
-                                            val temp = mutableSongs[index]
-                                            mutableSongs[index] = mutableSongs[index - 1].copy(position = index)
-                                            mutableSongs[index - 1] = temp.copy(position = index - 1)
-                                            scope.launch(Dispatchers.IO) {
-                                                db.playlistDao().insertSongs(listOf(mutableSongs[index], mutableSongs[index - 1]))
-                                            }
-                                        }
+                                        val videoItem = VideoItem(s.videoId, s.title, s.author, s.durationText)
+                                        onSongMore(videoItem)
                                     },
-                                    modifier = Modifier.size(28.dp)
+                                    modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.KeyboardArrowUp,
-                                        contentDescription = "Move Up",
-                                        tint = if (index > 0) VinColors.Primary else VinColors.Secondary.copy(alpha = 0.3f),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                IconButton(
-                                    onClick = {
-                                        if (index < songs.size - 1) {
-                                            val mutableSongs = songs.toMutableList()
-                                            val temp = mutableSongs[index]
-                                            mutableSongs[index] = mutableSongs[index + 1].copy(position = index)
-                                            mutableSongs[index + 1] = temp.copy(position = index + 1)
-                                            scope.launch(Dispatchers.IO) {
-                                                db.playlistDao().insertSongs(listOf(mutableSongs[index], mutableSongs[index + 1]))
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.KeyboardArrowDown,
-                                        contentDescription = "Move Down",
-                                        tint = if (index < songs.size - 1) VinColors.Primary else VinColors.Secondary.copy(alpha = 0.3f),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                IconButton(
-                                    onClick = {
-                                        scope.launch(Dispatchers.IO) {
-                                            db.playlistDao().removeSong(playlistId, s.videoId)
-                                        }
-                                    },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Remove",
-                                        tint = VinColors.Pink,
-                                        modifier = Modifier.size(18.dp)
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "More Options",
+                                        tint = VinColors.Secondary,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
@@ -837,5 +950,97 @@ fun RecommendedPlaylistCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+@Composable
+fun PlaylistCover(
+    songs: List<PlaylistSongEntity>,
+    modifier: Modifier = Modifier,
+    cornerRadius: androidx.compose.ui.unit.Dp = 16.dp
+) {
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(VinColors.Surface)
+    ) {
+        val covers = songs.take(4).map { "https://i.ytimg.com/vi/${it.videoId}/hqdefault.jpg" }
+        if (covers.size >= 4) {
+            // 2x2 Grid Collage
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(modifier = Modifier.weight(1f)) {
+                    AsyncImage(
+                        model = covers[0],
+                        contentDescription = null,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clipToBounds()
+                            .graphicsLayer(scaleX = 1.35f, scaleY = 1.35f),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.3f)))
+                    AsyncImage(
+                        model = covers[1],
+                        contentDescription = null,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clipToBounds()
+                            .graphicsLayer(scaleX = 1.35f, scaleY = 1.35f),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Spacer(modifier = Modifier.height(1.dp).fillMaxWidth().background(Color.White.copy(alpha = 0.3f)))
+                Row(modifier = Modifier.weight(1f)) {
+                    AsyncImage(
+                        model = covers[2],
+                        contentDescription = null,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clipToBounds()
+                            .graphicsLayer(scaleX = 1.35f, scaleY = 1.35f),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.3f)))
+                    AsyncImage(
+                        model = covers[3],
+                        contentDescription = null,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clipToBounds()
+                            .graphicsLayer(scaleX = 1.35f, scaleY = 1.35f),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+        } else if (covers.isNotEmpty()) {
+            // Fallback to first song artwork
+            AsyncImage(
+                model = covers[0],
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clipToBounds()
+                    .graphicsLayer(scaleX = 1.35f, scaleY = 1.35f),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            // Default Playlist Music Icon
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.LibraryMusic,
+                    null,
+                    tint = VinColors.AccentLight,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+        }
     }
 }

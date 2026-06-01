@@ -13,6 +13,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.compose.*
 import android.Manifest
@@ -34,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vinmusic.player.PlayerViewModel
+import com.vinmusic.player.AuthViewModel
 import com.vinmusic.ui.screens.*
 import com.vinmusic.ui.theme.VinColors
 import com.vinmusic.ui.theme.VinMusicTheme
@@ -61,6 +65,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.vinmusic.innertube.YTMusicApi.attachContext(this)
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -101,9 +106,11 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("vin_music_prefs", MODE_PRIVATE)
         com.vinmusic.ui.theme.MonetState.enabled.value = prefs.getBoolean("monet_enabled", false)
 
+        val authVm: AuthViewModel by viewModels()
+
         setContent {
             VinMusicTheme {
-                VinMusicApp(playerVm)
+                VinMusicApp(playerVm, authVm)
             }
         }
     }
@@ -111,7 +118,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(UnstableApi::class)
 @Composable
-fun VinMusicApp(vm: PlayerViewModel) {
+fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
     val navController     = rememberNavController()
     val currentBack       by navController.currentBackStackEntryAsState()
     val currentRoute      = currentBack?.destination?.route ?: "home"
@@ -127,12 +134,21 @@ fun VinMusicApp(vm: PlayerViewModel) {
     val context = LocalContext.current
 
     val prefs = remember(context) { context.getSharedPreferences("vin_music_prefs", android.content.Context.MODE_PRIVATE) }
-    var isLoggedIn by remember { mutableStateOf(prefs.getBoolean("is_logged_in", false)) }
+    val currentUser = authVm.currentUser
+    var isLoggedIn by remember { mutableStateOf(prefs.getBoolean("is_logged_in", false) || currentUser != null) }
 
-    DisposableEffect(prefs) {
+    LaunchedEffect(currentUser) {
+        if (currentUser != null) {
+            isLoggedIn = true
+        } else {
+            isLoggedIn = prefs.getBoolean("is_logged_in", false)
+        }
+    }
+
+    DisposableEffect(prefs, currentUser) {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == "is_logged_in") {
-                isLoggedIn = prefs.getBoolean("is_logged_in", false)
+                isLoggedIn = prefs.getBoolean("is_logged_in", false) || authVm.currentUser != null
             }
         }
         prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -181,43 +197,98 @@ fun VinMusicApp(vm: PlayerViewModel) {
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(VinColors.GradTop, VinColors.GradBottom)))
     ) {
+        // ── Global Dynamic Animated Lava Lamp Fluid Background ──
+        val infiniteTransition = rememberInfiniteTransition(label = "global_bg_anims")
+        val blob1X by infiniteTransition.animateFloat(
+            initialValue = -100f, targetValue = 400f,
+            animationSpec = infiniteRepeatable(tween(35000, easing = LinearEasing), RepeatMode.Reverse),
+            label = "blob1X"
+        )
+        val blob2Y by infiniteTransition.animateFloat(
+            initialValue = 800f, targetValue = -150f,
+            animationSpec = infiniteRepeatable(tween(42000, easing = LinearEasing), RepeatMode.Reverse),
+            label = "blob2Y"
+        )
+        val blob3X by infiniteTransition.animateFloat(
+            initialValue = 500f, targetValue = -200f,
+            animationSpec = infiniteRepeatable(tween(48000, easing = LinearEasing), RepeatMode.Reverse),
+            label = "blob3X"
+        )
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            // Blob 1: Dynamic Royal Purple aura
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFF6338EC).copy(alpha = 0.16f), Color.Transparent),
+                    center = Offset(blob1X.dp.toPx(), 220.dp.toPx()),
+                    radius = size.width * 0.75f
+                ),
+                radius = size.width * 0.75f,
+                center = Offset(blob1X.dp.toPx(), 220.dp.toPx())
+            )
+            // Blob 2: Vibrant Glowing Neon Pink aura
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFFEC4899).copy(alpha = 0.12f), Color.Transparent),
+                    center = Offset(100.dp.toPx(), blob2Y.dp.toPx()),
+                    radius = size.width * 0.65f
+                ),
+                radius = size.width * 0.65f,
+                center = Offset(100.dp.toPx(), blob2Y.dp.toPx())
+            )
+            // Blob 3: Sleek Dark Blue/Indigo aura
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Color(0xFF1E3A8A).copy(alpha = 0.14f), Color.Transparent),
+                    center = Offset(blob3X.dp.toPx(), 620.dp.toPx()),
+                    radius = size.width * 0.70f
+                ),
+                radius = size.width * 0.70f,
+                center = Offset(blob3X.dp.toPx(), 620.dp.toPx())
+            )
+        }
         Scaffold(
             containerColor = androidx.compose.ui.graphics.Color.Transparent,
             bottomBar = {
-                Column {
-                    // Mini player above nav bar
-                    if (vm.currentSong != null && !showFullPlayer) {
-                        MiniPlayer(vm = vm, onClick = { showFullPlayer = true })
-                    }
-                    // Bottom navigation
-                    BottomNavBar(
-                        currentRoute = currentRoute,
-                        onNavigate   = { route ->
-                            if (route == "home") {
-                                // Single-click: collapse all overlays and bring user straight back to the clean home screen
-                                showFullPlayer = false
-                                selectedArtistForProfile = null
-                                selectedAlbumForDetail = null
-                                navController.navigate("home") {
-                                    popUpTo("home") { inclusive = true }
-                                    launchSingleTop = true
-                                }
-                            } else {
-                                navController.navigate(route) {
-                                    popUpTo("home") { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState    = true
+                if (currentRoute != "discover") {
+                    Column {
+                        // Mini player above nav bar
+                        if (vm.currentSong != null && !showFullPlayer) {
+                            MiniPlayer(vm = vm, onClick = { showFullPlayer = true })
+                        }
+                        // Bottom navigation
+                        BottomNavBar(
+                            currentRoute = currentRoute,
+                            onNavigate   = { route ->
+                                if (route == "home") {
+                                    // Single-click: collapse all overlays and bring user straight back to the clean home screen
+                                    showFullPlayer = false
+                                    selectedArtistForProfile = null
+                                    selectedAlbumForDetail = null
+                                    navController.navigate("home") {
+                                        popUpTo("home") { inclusive = true }
+                                        launchSingleTop = true
+                                    }
+                                } else {
+                                    navController.navigate(route) {
+                                        popUpTo("home") { saveState = true }
+                                        launchSingleTop = true
+                                        restoreState    = true
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         ) { padding ->
             NavHost(
                 navController    = navController,
                 startDestination = "home",
-                modifier         = Modifier.padding(padding),
+                modifier         = Modifier.padding(
+                    top = padding.calculateTopPadding(),
+                    bottom = 0.dp
+                ),
                 enterTransition  = { fadeIn() + slideInHorizontally { it / 4 } },
                 exitTransition   = { fadeOut() }
             ) {
@@ -276,7 +347,8 @@ fun VinMusicApp(vm: PlayerViewModel) {
                             navController.navigate("playlist_detail/$playlistId") {
                                 launchSingleTop = true
                             }
-                        }
+                        },
+                        onArtistClick = { selectedArtistForProfile = it }
                     )
                 }
                 composable("downloads") {
@@ -292,6 +364,7 @@ fun VinMusicApp(vm: PlayerViewModel) {
                 composable("settings") {
                     SettingsScreen(
                         vm = vm,
+                        authVm = authVm,
                         onBack = { navController.popBackStack() },
                         onSongClick = { song, songs ->
                             vm.setQueue(songs, songs.indexOf(song))
@@ -321,7 +394,8 @@ fun VinMusicApp(vm: PlayerViewModel) {
                         PlaylistDetailScreen(
                             playlistId = playlistId,
                             vm = vm,
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onSongMore = { selectedSongForOptions = it }
                         )
                     }
                 }
@@ -469,6 +543,8 @@ fun VinMusicApp(vm: PlayerViewModel) {
 
                             val cache = com.vinmusic.player.PlayerSingleton.getCache(context)
                             cache?.removeResource(song.videoId)
+                            val downloadCache = com.vinmusic.player.PlayerSingleton.getDownloadCache(context)
+                            downloadCache?.removeResource(song.videoId)
 
                             db.downloadDao().delete(song.videoId)
                             db.interactionSignalDao().updateDownloaded(song.videoId, false)
@@ -500,6 +576,12 @@ fun VinMusicApp(vm: PlayerViewModel) {
         selectedPlaylistForOptions?.let { pl ->
             com.vinmusic.ui.components.PlaylistOptionsSheet(
                 playlistName = pl.name,
+                isPinned = pl.isPinned,
+                onTogglePin = {
+                    scope.launch(Dispatchers.IO) {
+                        db.playlistDao().togglePin(pl.id)
+                    }
+                },
                 onDownloadPlaylist = {
                     scope.launch(Dispatchers.IO) {
                         try {
@@ -592,6 +674,7 @@ fun VinMusicApp(vm: PlayerViewModel) {
             exit = fadeOut(animationSpec = tween(500))
         ) {
             AuthScreen(
+                authVm = authVm,
                 onLoginSuccess = {
                     prefs.edit().putBoolean("is_logged_in", true).apply()
                 }

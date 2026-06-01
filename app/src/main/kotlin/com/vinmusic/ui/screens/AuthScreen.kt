@@ -26,6 +26,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.onFocusChanged
 import com.vinmusic.ui.theme.VinColors
 import com.vinmusic.ui.components.UserAvatar
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.vinmusic.player.AuthViewModel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -92,11 +96,42 @@ fun AmbientWaveVisualizer(modifier: Modifier = Modifier) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
+    authVm: AuthViewModel,
     onLoginSuccess: () -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
+
+    val currentUser = authVm.currentUser
+    LaunchedEffect(currentUser) {
+        if (currentUser != null) {
+            val name = currentUser.displayName ?: currentUser.email?.substringBefore("@") ?: "Google User"
+            prefs.edit()
+                .putBoolean("is_logged_in", true)
+                .putString("user_name", name)
+                .putString("user_email", currentUser.email)
+                .apply()
+            onLoginSuccess()
+        }
+    }
+
+    val googleSignInClient = remember(context) { authVm.getGoogleSignInClient(context) }
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                if (account != null) {
+                    authVm.signInWithGoogle(account)
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Google Sign-In failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     var nameInput by remember { mutableStateOf("") }
     var avatarIndex by remember { mutableIntStateOf(0) }
@@ -320,6 +355,91 @@ fun AuthScreen(
                                 Text("Get Started", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
+                    }
+
+                    // ── Or Google Sign-In divider & button ──
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        HorizontalDivider(
+                            modifier = Modifier.weight(1f),
+                            color = VinColors.GlassBorder.copy(alpha = 0.5f)
+                        )
+                        Text(
+                            text = "OR",
+                            color = VinColors.Secondary.copy(alpha = 0.6f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.weight(1f),
+                            color = VinColors.GlassBorder.copy(alpha = 0.5f)
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            if (!authVm.isGoogleConfigured(context)) {
+                                Toast.makeText(context, "Google Sign-In is not configured in this build. Please configure Google Auth in your Firebase console first, add your SHA-1 fingerprint, and download the new google-services.json.", Toast.LENGTH_LONG).show()
+                            } else {
+                                launcher.launch(googleSignInClient.signInIntent)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, VinColors.GlassBorder),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.05f)
+                        )
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AccountCircle,
+                                contentDescription = "Google Sign In",
+                                tint = VinColors.AccentLight,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = "Sign in with Google",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    if (authVm.authState is AuthViewModel.AuthState.Authenticating) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = VinColors.Accent,
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = "Connecting with Google...",
+                                color = VinColors.Secondary,
+                                fontSize = 13.sp
+                            )
+                        }
+                    } else if (authVm.authState is AuthViewModel.AuthState.Error) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = (authVm.authState as AuthViewModel.AuthState.Error).message,
+                            color = Color(0xFFFF4D4D),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             }

@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
 import coil3.compose.AsyncImage
+import com.vinmusic.data.db.FollowedArtist
+import com.vinmusic.data.db.VinDatabase
 import com.vinmusic.innertube.*
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.ui.theme.VinColors
@@ -126,7 +128,8 @@ fun ArtistProfileScreen(
         }
     }
 
-    // Channel bio + banner
+    // Channel bio + banner + dynamic avatar
+    var avatar by remember { mutableStateOf(artist.thumbnail) }
     LaunchedEffect("channel_${artist.channelId}") {
         if (artist.channelId.isEmpty()) return@LaunchedEffect
         withContext(Dispatchers.IO) {
@@ -136,8 +139,22 @@ fun ArtistProfileScreen(
                     if (cd.bannerUrl.isNotEmpty()) banner = cd.bannerUrl
                     if (cd.bio.isNotEmpty()) bio = cd.bio
                     if (cd.subscriberCount.isNotEmpty()) subs = cd.subscriberCount
+                    if (cd.avatarUrl.isNotEmpty()) avatar = cd.avatarUrl
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    // Persistent follow state
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val db  = remember { VinDatabase.getInstance(ctx) }
+    val followScope = rememberCoroutineScope()
+    var isFollowed by remember { mutableStateOf(false) }
+    LaunchedEffect(artist.channelId) {
+        if (artist.channelId.isNotEmpty()) {
+            isFollowed = withContext(Dispatchers.IO) {
+                db.followedArtistDao().isFollowing(artist.channelId)
+            }
         }
     }
 
@@ -191,7 +208,6 @@ fun ArtistProfileScreen(
                         .padding(horizontal = 20.dp, vertical = 8.dp)
                 ) {
                     // Top header row: Back button, Title, Follow/Following button
-                    var isFollowed by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -213,7 +229,23 @@ fun ArtistProfileScreen(
                         )
                         
                         Button(
-                            onClick = { isFollowed = !isFollowed },
+                            onClick = {
+                                isFollowed = !isFollowed
+                                followScope.launch(Dispatchers.IO) {
+                                    if (isFollowed) {
+                                        db.followedArtistDao().insert(
+                                            FollowedArtist(
+                                                channelId = artist.channelId,
+                                                name = artist.name,
+                                                thumbnail = avatar.ifEmpty { artist.thumbnail },
+                                                subscriberCount = subs
+                                            )
+                                        )
+                                    } else {
+                                        db.followedArtistDao().delete(artist.channelId)
+                                    }
+                                }
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isFollowed) Color.White.copy(0.08f) else Color.White,
                                 contentColor = if (isFollowed) Color.White else Color.Black
@@ -239,7 +271,7 @@ fun ArtistProfileScreen(
                             .padding(2.dp)
                     ) {
                         AsyncImage(
-                            model = artist.thumbnail,
+                            model = avatar,
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(CircleShape),
                             contentScale = ContentScale.Crop
