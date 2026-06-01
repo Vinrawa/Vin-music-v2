@@ -30,3 +30,7 @@ Thumbs.db
 
 # Kotlin-specific
 .kotlin/
+
+# Firebase configuration secrets
+/app/google-services.json
+
