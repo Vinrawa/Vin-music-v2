@@ -1,7 +1,7 @@
 {
   "latestVersionCode": 6,
   "latestVersionName": "2.1.4",
-  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.4/app-debug.apk",
+  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.4/app-release.apk",
   "forceUpdate": false,
   "releaseNotes": "Clean removal of Spotify API connections (OAuth verifiers, connection cards, custom credential forms, and WebView login dialogs) for a simplified UI, full preservation of the zero-credential public Spotify playlist link importer, and significant Jetpack Compose LazyColumn scrolling performance optimizations."
 }
