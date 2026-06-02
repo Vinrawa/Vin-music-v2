@@ -178,7 +178,12 @@ object YTMusicApi {
                                     ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
                                     ?.joinToString("") ?: ""
                                 
-                                val thumbnail = findUrlInNode(twoRow["thumbnail"])?.normalizeUrl() ?: ""
+                                val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
+                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
+                                val originalThumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = if (originalThumbnail.isNotEmpty()) originalThumbnail else (findUrlInNode(twoRow)?.normalizeUrl() ?: "")
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,
@@ -199,7 +204,12 @@ object YTMusicApi {
                                 val title = columnText(responsive, 0) ?: ""
                                 val subtitle = columnText(responsive, 1) ?: ""
                                 
-                                val thumbnail = findUrlInNode(responsive["thumbnail"])?.normalizeUrl() ?: ""
+                                val thumbnailRenderer = responsive["thumbnail"] as? Map<*, *>
+                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
+                                val originalThumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = if (originalThumbnail.isNotEmpty()) originalThumbnail else (findUrlInNode(responsive)?.normalizeUrl() ?: "")
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,

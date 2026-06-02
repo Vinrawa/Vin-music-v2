@@ -1090,16 +1090,20 @@ object InnerTube {
         val body = mapOf(
             "browseId" to targetId,
             "context" to mapOf("client" to mapOf(
-                "clientName" to "WEB", "clientVersion" to "2.20231219.04.00",
+                "clientName" to "WEB_REMIX", "clientVersion" to "1.20231214.00.00",
                 "hl" to "en", "gl" to "IN"
             ))
         )
         val raw = try {
             val reqBuilder = Request.Builder()
-                .url("$BASE/browse?prettyPrint=false")
+                .url("https://music.youtube.com/youtubei/v1/browse?prettyPrint=false")
                 .post(gson.toJson(body).toRequestBody(JSON))
                 .header("Content-Type", "application/json")
-                .header("User-Agent",   "Mozilla/5.0")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20231214.00.00")
             
             // Inject cookie and authorization header for private library playlists
             YTMusicApi.getCookie()?.let { cookie ->
@@ -1114,13 +1118,17 @@ object InnerTube {
         return try {
             val root = gson.fromJson(raw, Map::class.java)
             
-            // Extract playlist title if available
+            // Extract playlist title if available (supports standard and music headers)
             val header = root["header"] as? Map<*, *>
             val playlistTitle = (header?.get("playlistHeaderRenderer") as? Map<*, *>)
                 ?.get("title")?.let { titleNode ->
                     (titleNode as? Map<*, *>)?.get("simpleText") as? String
                     ?: ((titleNode as? Map<*, *>)?.get("runs") as? List<*>)?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String }
-                } ?: "YouTube Playlist"
+                } 
+                ?: (header?.get("musicHeaderRenderer") as? Map<*, *>)?.get("title")?.let { titleNode ->
+                    ((titleNode as? Map<*, *>)?.get("runs") as? List<*>)?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String }
+                }
+                ?: "YouTube Playlist"
 
             val songs = mutableListOf<VideoItem>()
             
@@ -1129,6 +1137,8 @@ object InnerTube {
                 when (node) {
                     is Map<*, *> -> {
                         val videoRenderer = (node["playlistVideoRenderer"] ?: node["videoRenderer"]) as? Map<*, *>
+                        val responsiveRenderer = node["musicResponsiveListItemRenderer"] as? Map<*, *>
+                        
                         if (videoRenderer != null) {
                             val id = videoRenderer["videoId"] as? String
                             if (!id.isNullOrBlank()) {
@@ -1146,6 +1156,28 @@ object InnerTube {
                                     ?: ""
 
                                 if (!t.isNullOrBlank()) {
+                                    songs.add(VideoItem(id, t, a, dur))
+                                }
+                            }
+                        } else if (responsiveRenderer != null) {
+                            val id = (responsiveRenderer["playlistItemData"] as? Map<*, *>)?.get("videoId") as? String
+                                ?: findVideoId(responsiveRenderer)
+                            if (!id.isNullOrBlank()) {
+                                val flexCols = responsiveRenderer["flexColumns"] as? List<*>
+                                
+                                fun colText(index: Int): String? {
+                                    val col = flexCols?.getOrNull(index) as? Map<*, *> ?: return null
+                                    val flex = col["musicResponsiveListItemFlexColumnRenderer"] as? Map<*, *> ?: return null
+                                    val textNode = flex["text"] as? Map<*, *> ?: return null
+                                    return (textNode["simpleText"] as? String)
+                                        ?: (textNode["runs"] as? List<*>)?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }?.joinToString("")
+                                }
+                                
+                                val t = colText(0) ?: ""
+                                val a = colText(1)?.split("•")?.firstOrNull()?.trim() ?: ""
+                                val dur = colText(2) ?: ""
+                                
+                                if (t.isNotBlank()) {
                                     songs.add(VideoItem(id, t, a, dur))
                                 }
                             }
@@ -1275,6 +1307,26 @@ object InnerTube {
             .replace("&lt;", "<")
             .replace("&gt;", ">")
             .trim()
+    }
+
+    private fun findVideoId(node: Any?): String? {
+        when (node) {
+            is Map<*, *> -> {
+                val videoId = node["videoId"] as? String
+                if (!videoId.isNullOrBlank()) return videoId
+                for (value in node.values) {
+                    val found = findVideoId(value)
+                    if (found != null) return found
+                }
+            }
+            is List<*> -> {
+                for (value in node) {
+                    val found = findVideoId(value)
+                    if (found != null) return found
+                }
+            }
+        }
+        return null
     }
 
     private fun log(msg: String) { lastDebugMsg = msg; Log.d(TAG, msg) }
