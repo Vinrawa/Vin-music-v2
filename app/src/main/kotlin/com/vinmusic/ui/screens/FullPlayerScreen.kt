@@ -98,7 +98,7 @@ fun FullPlayerScreen(
     
     // DJ Scratching & Visualizer Customization States
     var isDjMode by remember { mutableStateOf(false) }
-    var visualizerStyle by remember { mutableStateOf("Halo") }
+    var visualizerStyle by remember { mutableStateOf("Waveform Ripple") }
     var toastMessage by remember { mutableStateOf("") }
     var toastTrigger by remember { mutableStateOf(false) }
     var scratchAngleOffset by remember { mutableFloatStateOf(0f) }
@@ -240,9 +240,10 @@ fun FullPlayerScreen(
 
 
         val scrollState = rememberScrollState()
-        val dragToCloseConnection = remember {
+        val dragToCloseConnection = remember(isDjMode) {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    if (isDjMode) return Offset.Zero
                     // When dragging DOWN (positive y) and scroll is at top, intercept for dismiss
                     if (available.y > 0f && scrollState.value == 0) {
                         dragY += available.y
@@ -306,7 +307,7 @@ fun FullPlayerScreen(
                         } else {
                             ScratchSoundSynthesizer.release()
                         }
-                        toastMessage = if (isDjMode) "DJ Scratch Mode: ON 💿" else "DJ Scratch Mode: OFF 🎵"
+                        toastMessage = if (isDjMode) "DJ Scratch Mode: ON" else "DJ Scratch Mode: OFF"
                         toastTrigger = !toastTrigger
                         scratchAngleOffset = 0f
                     }) {
@@ -426,23 +427,10 @@ fun FullPlayerScreen(
                         .blur(36.dp)
                 )
 
-                // ── Interactive Multi-Style Beat-Visualizer ──
+                // ── Waveform Ripple Beat-Visualizer ──
                 Box(
                     modifier = Modifier
                         .size(320.dp)
-                        .clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null
-                        ) {
-                            visualizerStyle = when (visualizerStyle) {
-                                "Halo" -> "Retro Bars"
-                                "Retro Bars" -> "Waveform Ripple"
-                                "Waveform Ripple" -> "Star Dust"
-                                else -> "Halo"
-                            }
-                            toastMessage = "Visualizer: $visualizerStyle ⚡"
-                            toastTrigger = !toastTrigger
-                        }
                 ) {
                     // Only draw visualizer when music is actually playing
                     if (isActuallyPlaying) {
@@ -718,6 +706,7 @@ fun FullPlayerScreen(
                         val updatePitchCallback = rememberUpdatedState { pitch: Float ->
                             vm.updatePlaybackPitch(pitch)
                         }
+                        val currentFaderProgress by rememberUpdatedState(faderProgress)
 
                         BoxWithConstraints(
                             modifier = Modifier
@@ -729,7 +718,7 @@ fun FullPlayerScreen(
                                         val heightPx = size.height
                                         if (heightPx > 0) {
                                             val delta = -dragAmount / heightPx
-                                            val newProgress = (faderProgress + delta).coerceIn(0f, 1f)
+                                            val newProgress = (currentFaderProgress + delta).coerceIn(0f, 1f)
                                             val newSpeed = 0.5f + (newProgress * 1.0f)
                                             updateSpeedCallback.value(newSpeed)
                                             updatePitchCallback.value(newSpeed)

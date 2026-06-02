@@ -116,6 +116,30 @@ object YTMusicApi {
         return url
     }
 
+    fun getCookie(): String? = appContext?.let { YTMusicSession.getCookie(it) }
+
+    fun findUrlInNode(node: Any?): String? {
+        when (node) {
+            is Map<*, *> -> {
+                val url = node["url"] as? String
+                if (!url.isNullOrBlank() && (url.startsWith("http") || url.startsWith("//"))) {
+                    return url
+                }
+                for (value in node.values) {
+                    val found = findUrlInNode(value)
+                    if (found != null) return found
+                }
+            }
+            is List<*> -> {
+                for (item in node.asReversed()) {
+                    val found = findUrlInNode(item)
+                    if (found != null) return found
+                }
+            }
+        }
+        return null
+    }
+
     /** Official personalized home shelves (FEmusic_home). */
     fun getHomePage(continuation: String? = null, params: String? = null): YTMusicHomePage {
         val raw = if (continuation != null) {
@@ -154,11 +178,7 @@ object YTMusicApi {
                                     ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
                                     ?.joinToString("") ?: ""
                                 
-                                val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
-                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
-                                val thumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
-                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = findUrlInNode(twoRow["thumbnail"])?.normalizeUrl() ?: ""
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,
@@ -179,11 +199,7 @@ object YTMusicApi {
                                 val title = columnText(responsive, 0) ?: ""
                                 val subtitle = columnText(responsive, 1) ?: ""
                                 
-                                val thumbnailRenderer = responsive["thumbnail"] as? Map<*, *>
-                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
-                                val thumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
-                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
-                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = findUrlInNode(responsive["thumbnail"])?.normalizeUrl() ?: ""
                                 
                                 playlists.add(com.vinmusic.innertube.AlbumItem(
                                     playlistId = browseId,

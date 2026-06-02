@@ -1095,13 +1095,20 @@ object InnerTube {
             ))
         )
         val raw = try {
-            http.newCall(Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url("$BASE/browse?prettyPrint=false")
                 .post(gson.toJson(body).toRequestBody(JSON))
                 .header("Content-Type", "application/json")
                 .header("User-Agent",   "Mozilla/5.0")
-                .build()
-            ).execute().use { it.body?.string() }
+            
+            // Inject cookie and authorization header for private library playlists
+            YTMusicApi.getCookie()?.let { cookie ->
+                reqBuilder.header("Cookie", cookie)
+                YTMusicSession.authorizationHeader(cookie)?.let { reqBuilder.header("Authorization", it) }
+                reqBuilder.header("X-Goog-AuthUser", "0")
+            }
+            
+            http.newCall(reqBuilder.build()).execute().use { it.body?.string() }
         } catch (e: Exception) { log("getPlaylistSongs error: ${e.message}"); null } ?: return Pair("Playlist", emptyList())
 
         return try {
