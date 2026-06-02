@@ -752,7 +752,7 @@ fun SettingsScreen(
             expanded = aboutExpanded,
             onToggle = { aboutExpanded = !aboutExpanded }
         ) {
-            SettingsInfo(title = "Version", value = "2.0.0")
+            SettingsInfo(title = "Version", value = com.vinmusic.BuildConfig.VERSION_NAME)
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
             SettingsInfo(title = "Streaming", value = "Multi-client InnerTube (6 fallbacks)")
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
