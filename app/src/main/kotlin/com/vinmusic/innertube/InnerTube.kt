@@ -824,6 +824,99 @@ object InnerTube {
         return singles.distinctBy { it.playlistId }.take(10)
     }
 
+    /**
+     * Searches YouTube Music for community playlists (public playlists created by the community)
+     * using the official WEB_REMIX client and parameters.
+     */
+    fun searchCommunityPlaylists(query: String): List<AlbumItem> {
+        val ytMusicBase = "https://music.youtube.com/youtubei/v1"
+        val body = mapOf(
+            "context" to mapOf("client" to mapOf(
+                "clientName" to "WEB_REMIX",
+                "clientVersion" to "1.20231214.00.00",
+                "hl" to "en", "gl" to "IN"
+            )),
+            "query" to query,
+            // "community_playlists" filter param
+            "params" to "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D"
+        )
+        val raw = try {
+            http.newCall(Request.Builder()
+                .url("$ytMusicBase/search?prettyPrint=false")
+                .post(gson.toJson(body).toRequestBody(JSON))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20231214.00.00")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            ).execute().use { it.body?.string() }
+        } catch (e: Exception) { log("searchCommunityPlaylists error: ${e.message}"); null } ?: return emptyList()
+
+        val playlists = mutableListOf<AlbumItem>()
+        try {
+            val root = gson.fromJson(raw, Map::class.java)
+
+            fun scan(node: Any?) {
+                when (node) {
+                    is Map<*, *> -> {
+                        // 1) musicTwoRowItemRenderer (grid items)
+                        val mtr = node["musicTwoRowItemRenderer"] as? Map<*, *>
+                        if (mtr != null) {
+                            val title = ((mtr["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                            val navId = (((mtr["navigationEndpoint"] as? Map<*, *>)
+                                ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
+                            val thumb = ((mtr["thumbnailRenderer"] as? Map<*, *>)
+                                ?.get("musicThumbnailRenderer") as? Map<*, *>)
+                                ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+                            val subtitle = ((mtr["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+
+                            if (navId.isNotEmpty() && title.isNotEmpty()) {
+                                playlists.add(AlbumItem(navId, title, "", thumb, subtitle))
+                            }
+                        }
+
+                        // 2) musicResponsiveListItemRenderer (list items)
+                        val mrli = node["musicResponsiveListItemRenderer"] as? Map<*, *>
+                        if (mrli != null) {
+                            val flexCols = mrli["flexColumns"] as? List<*>
+
+                            val col0 = flexCols?.getOrNull(0) as? Map<*, *>
+                            val col0Renderer = col0?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                            val title = ((col0Renderer?.get("text") as? Map<*, *>)?.get("runs") as? List<*>)
+                                ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+
+                            val col1 = flexCols?.getOrNull(1) as? Map<*, *>
+                            val col1Renderer = col1?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                            val subtitle = ((col1Renderer?.get("text") as? Map<*, *>)?.get("runs") as? List<*>)
+                                ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+
+                            val navId = (((mrli["navigationEndpoint"] as? Map<*, *>)
+                                ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
+                            val thumb = ((mrli["thumbnail"] as? Map<*, *>)?.get("musicThumbnailRenderer") as? Map<*, *>)
+                                ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+
+                            if (navId.isNotEmpty() && title.isNotEmpty()) {
+                                playlists.add(AlbumItem(navId, title, "", thumb, subtitle))
+                            }
+                        }
+                        node.values.forEach { scan(it) }
+                    }
+                    is List<*> -> node.forEach { scan(it) }
+                }
+            }
+            scan(root)
+        } catch (e: Exception) {
+            log("searchCommunityPlaylists parse error: ${e.message}")
+        }
+        return playlists.distinctBy { it.playlistId }
+    }
+
     // ── Search All Types (Songs + Artists + Albums in one call) ──────────────
     fun searchAll(query: String): AllSearchResults {
         val body = mapOf(

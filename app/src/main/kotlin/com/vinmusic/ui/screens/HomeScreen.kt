@@ -270,8 +270,7 @@ fun HomeScreen(
                     val deferreds = queries.take(3).map { query ->
                         async(Dispatchers.IO) {
                             try {
-                                val searchResult = com.vinmusic.innertube.InnerTube.searchAll(query)
-                                searchResult.albums
+                                com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(query)
                             } catch (e: Exception) {
                                 emptyList<com.vinmusic.innertube.AlbumItem>()
                             }
