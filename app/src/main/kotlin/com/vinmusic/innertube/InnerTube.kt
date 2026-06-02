@@ -865,7 +865,7 @@ object InnerTube {
                         val mtr = node["musicTwoRowItemRenderer"] as? Map<*, *>
                         if (mtr != null) {
                             val title = ((mtr["title"] as? Map<*, *>)?.get("runs") as? List<*>)
-                                ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                                ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
                             val navId = (((mtr["navigationEndpoint"] as? Map<*, *>)
                                 ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
                             val thumb = ((mtr["thumbnailRenderer"] as? Map<*, *>)
@@ -888,7 +888,7 @@ object InnerTube {
                             val col0 = flexCols?.getOrNull(0) as? Map<*, *>
                             val col0Renderer = col0?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
                             val title = ((col0Renderer?.get("text") as? Map<*, *>)?.get("runs") as? List<*>)
-                                ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                                ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
 
                             val col1 = flexCols?.getOrNull(1) as? Map<*, *>
                             val col1Renderer = col1?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
