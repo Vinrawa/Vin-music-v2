@@ -896,14 +896,18 @@ object InnerTube {
                     m["playlistRenderer"]?.let { p ->
                         val pr    = p as? Map<*, *> ?: return@let
                         val id    = pr["playlistId"] as? String ?: return@let
-                        val title = (pr["title"] as? Map<*, *>)?.get("simpleText") as? String ?: return@let
+                        val title = ((pr["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String }
+                            ?: ((pr["title"] as? Map<*, *>)?.get("simpleText") as? String)
+                            ?: return@let
                         val auth  = ((pr["shortBylineText"] as? Map<*, *>)?.get("runs") as? List<*>)
                             ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
-                        val count = ((pr["videoCountText"] as? Map<*, *>)?.get("runs") as? List<*>)
-                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
-                        val thumb = ((pr["thumbnails"] as? List<*>)?.firstOrNull()
-                            ?.let { (it as? Map<*, *>)?.get("thumbnails") as? List<*> })
-                            ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } ?: ""
+                        val countNode = pr["videoCountText"] ?: pr["thumbnailText"]
+                        val count = ((countNode as? Map<*, *>)?.get("runs") as? List<*>)
+                            ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }?.joinToString("")
+                            ?: ((countNode as? Map<*, *>)?.get("simpleText") as? String)
+                            ?: ""
+                        val thumb = findUrlInNode(pr) ?: ""
                         albums.add(AlbumItem(id, title, auth, thumb, count))
                     }
                 }
@@ -1322,6 +1326,28 @@ object InnerTube {
             is List<*> -> {
                 for (value in node) {
                     val found = findVideoId(value)
+                    if (found != null) return found
+                }
+            }
+        }
+        return null
+    }
+
+    private fun findUrlInNode(node: Any?): String? {
+        when (node) {
+            is Map<*, *> -> {
+                val url = node["url"] as? String
+                if (!url.isNullOrBlank() && (url.startsWith("http") || url.startsWith("//"))) {
+                    return url
+                }
+                for (value in node.values) {
+                    val found = findUrlInNode(value)
+                    if (found != null) return found
+                }
+            }
+            is List<*> -> {
+                for (item in node.asReversed()) {
+                    val found = findUrlInNode(item)
                     if (found != null) return found
                 }
             }
