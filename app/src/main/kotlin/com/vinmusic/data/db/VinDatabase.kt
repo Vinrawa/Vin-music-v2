@@ -84,7 +84,13 @@ data class InteractionSignal(
     var isLiked: Boolean = false,
     var isDownloaded: Boolean = false,
     var searchClickCount: Int = 0,
-    var skip20sCount: Int = 0
+    var skip20sCount: Int = 0,
+    // TasteDNA attributes
+    var energy: Int = -1,
+    var valence: Int = -1,
+    var danceability: Int = -1,
+    var acousticness: Int = -1,
+    var tempo: Int = -1
 )
 
 @Entity(tableName = "cached_lyrics")
@@ -244,6 +250,9 @@ interface InteractionSignalDao {
     @Query("SELECT * FROM interaction_signals")
     suspend fun getAll(): List<InteractionSignal>
 
+    @Query("SELECT * FROM interaction_signals ORDER BY playCount DESC LIMIT 20")
+    fun getTopPlayedSongsFlow(): kotlinx.coroutines.flow.Flow<List<InteractionSignal>>
+
     @Query("SELECT * FROM interaction_signals WHERE videoId = :id LIMIT 1")
     suspend fun get(id: String): InteractionSignal?
 
@@ -375,7 +384,7 @@ interface FollowedArtistDao {
                  PlaylistEntity::class, PlaylistSongEntity::class, QueueEntity::class,
                  InteractionSignal::class, CachedLyricsEntity::class, UserAccount::class,
                  RelatedSongMap::class, SongCacheMeta::class, FollowedArtist::class],
-    version   = 11,
+    version   = 12,
     exportSchema = false
 )
 abstract class VinDatabase : RoomDatabase() {
@@ -415,14 +424,25 @@ abstract class VinDatabase : RoomDatabase() {
                 database.execSQL("ALTER TABLE playlists ADD COLUMN isPinned INTEGER NOT NULL DEFAULT 0")
             }
         }
+        
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE interaction_signals ADD COLUMN energy INTEGER NOT NULL DEFAULT -1")
+                database.execSQL("ALTER TABLE interaction_signals ADD COLUMN valence INTEGER NOT NULL DEFAULT -1")
+                database.execSQL("ALTER TABLE interaction_signals ADD COLUMN danceability INTEGER NOT NULL DEFAULT -1")
+                database.execSQL("ALTER TABLE interaction_signals ADD COLUMN acousticness INTEGER NOT NULL DEFAULT -1")
+                database.execSQL("ALTER TABLE interaction_signals ADD COLUMN tempo INTEGER NOT NULL DEFAULT -1")
+            }
+        }
 
         fun getInstance(ctx: Context): VinDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(ctx, VinDatabase::class.java, "vin_music.db")
-                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_11_12)
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }
     }
 }
+
 

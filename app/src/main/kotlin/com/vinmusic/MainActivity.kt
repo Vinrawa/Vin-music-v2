@@ -116,7 +116,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(UnstableApi::class)
+@OptIn(UnstableApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
     val navController     = rememberNavController()
@@ -195,7 +195,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(VinColors.GradTop, VinColors.GradBottom)))
+            .background(VinColors.BgColor)
     ) {
         // ── Global Dynamic Animated Lava Lamp Fluid Background ──
         val infiniteTransition = rememberInfiniteTransition(label = "global_bg_anims")
@@ -215,31 +215,55 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
             label = "blob3X"
         )
 
+        val currentSong = vm.currentSong
+        var palette by remember { mutableStateOf(com.vinmusic.ui.utils.ColorExtractor.MusicPalette(
+            gradTop = Color(0xFF6338EC),
+            gradMid = Color(0xFFEC4899),
+            gradBottom = Color(0xFF0E0E11),
+            accent = Color(0xFF1E3A8A)
+        )) }
+
+        LaunchedEffect(currentSong?.thumbnailHd) {
+            currentSong?.thumbnailHd?.let { url ->
+                val extracted = com.vinmusic.ui.utils.ColorExtractor.extractColorsFromUrl(context, url)
+                palette = extracted
+            }
+        }
+
+        val animatedColor1 by animateColorAsState(targetValue = palette.gradTop, animationSpec = tween(2000))
+        val animatedColor2 by animateColorAsState(targetValue = palette.gradMid, animationSpec = tween(2000))
+        val animatedColor3 by animateColorAsState(targetValue = palette.accent, animationSpec = tween(2000))
+
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // Blob 1: Dynamic Royal Purple aura
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(animatedColor2.copy(alpha = 0.15f), Color.Transparent, Color.Transparent)
+                )
+            )
+            // Blob 1: Top Gradient Color
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF6338EC).copy(alpha = 0.16f), Color.Transparent),
+                    colors = listOf(animatedColor1.copy(alpha = 0.16f), Color.Transparent),
                     center = Offset(blob1X.dp.toPx(), 220.dp.toPx()),
                     radius = size.width * 0.75f
                 ),
                 radius = size.width * 0.75f,
                 center = Offset(blob1X.dp.toPx(), 220.dp.toPx())
             )
-            // Blob 2: Vibrant Glowing Neon Pink aura
+            // Blob 2: Mid Gradient Color
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFFEC4899).copy(alpha = 0.12f), Color.Transparent),
+                    colors = listOf(animatedColor2.copy(alpha = 0.12f), Color.Transparent),
                     center = Offset(100.dp.toPx(), blob2Y.dp.toPx()),
                     radius = size.width * 0.65f
                 ),
                 radius = size.width * 0.65f,
                 center = Offset(100.dp.toPx(), blob2Y.dp.toPx())
             )
-            // Blob 3: Sleek Dark Blue/Indigo aura
+            // Blob 3: Accent Color
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFF1E3A8A).copy(alpha = 0.14f), Color.Transparent),
+                    colors = listOf(animatedColor3.copy(alpha = 0.14f), Color.Transparent),
                     center = Offset(blob3X.dp.toPx(), 620.dp.toPx()),
                     radius = size.width * 0.70f
                 ),
@@ -247,14 +271,25 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                 center = Offset(blob3X.dp.toPx(), 620.dp.toPx())
             )
         }
-        Scaffold(
+        
+        SharedTransitionLayout {
+            Scaffold(
             containerColor = androidx.compose.ui.graphics.Color.Transparent,
             bottomBar = {
                 if (currentRoute != "discover") {
                     Column {
                         // Mini player above nav bar
                         if (vm.currentSong != null && !showFullPlayer) {
-                            MiniPlayer(vm = vm, onClick = { showFullPlayer = true })
+                            AnimatedVisibility(
+                                visible = true,
+                            ) {
+                                MiniPlayer(
+                                    vm = vm,
+                                    animatedVisibilityScope = this@AnimatedVisibility,
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    onClick = { showFullPlayer = true }
+                                )
+                            }
                         }
                         // Bottom navigation
                         BottomNavBar(
@@ -327,7 +362,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                         vm = vm,
                         onSongClick = { song, _ ->
                             vm.recordSearchClick(song)
-                            vm.setQueue(listOf(song), 0)
+                            vm.playSongWithRadio(song)
                             showFullPlayer = true
                         },
                         onSongMore = { selectedSongForOptions = it },
@@ -348,7 +383,12 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                                 launchSingleTop = true
                             }
                         },
-                        onArtistClick = { selectedArtistForProfile = it }
+                        onArtistClick = { selectedArtistForProfile = it },
+                        onDnaClick = {
+                            navController.navigate("stats") {
+                                launchSingleTop = true
+                            }
+                        }
                     )
                 }
                 composable("downloads") {
@@ -410,6 +450,8 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
         ) {
             FullPlayerScreen(
                 vm = vm,
+                animatedVisibilityScope = this@AnimatedVisibility,
+                sharedTransitionScope = this@SharedTransitionLayout,
                 onArtistNameClick = { artistName ->
                     // Close the player sheet
                     showFullPlayer = false
@@ -439,6 +481,8 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                 onClose = { showFullPlayer = false }
             )
         }
+
+        } // End of SharedTransitionLayout
 
         // Global slide-over ArtistProfileScreen overlay
         AnimatedVisibility(
@@ -556,6 +600,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                             putExtra(com.vinmusic.download.DownloadService.EXTRA_TITLE, song.title)
                             putExtra(com.vinmusic.download.DownloadService.EXTRA_AUTHOR, song.author)
                             putExtra(com.vinmusic.download.DownloadService.EXTRA_DURATION, song.durationText)
+                            putExtra(com.vinmusic.download.DownloadService.EXTRA_THUMBNAIL, song.thumbnail)
                         }
                         context.startService(intent)
                     }
@@ -593,6 +638,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                                     putExtra(com.vinmusic.download.DownloadService.EXTRA_TITLE, song.title)
                                     putExtra(com.vinmusic.download.DownloadService.EXTRA_AUTHOR, song.author)
                                     putExtra(com.vinmusic.download.DownloadService.EXTRA_DURATION, song.durationText)
+                                    putExtra(com.vinmusic.download.DownloadService.EXTRA_THUMBNAIL, "https://i.ytimg.com/vi/${song.videoId}/hqdefault.jpg")
                                 }
                                 context.startService(intent)
                             }

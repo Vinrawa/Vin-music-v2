@@ -4,13 +4,11 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.Equalizer
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import com.vinmusic.data.db.HistoryEntry
 import com.vinmusic.data.db.VinDatabase
 import com.vinmusic.player.PlayerViewModel
+import com.vinmusic.recommendation.TasteProfile
 import com.vinmusic.ui.theme.VinColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,120 +43,58 @@ fun MusicDnaScreen(
     val scope = rememberCoroutineScope()
 
     var isLoading by remember { mutableStateOf(true) }
-    var totalPlaysThisWeek by remember { mutableIntStateOf(0) }
-    var topArtist by remember { mutableStateOf("No Plays Yet") }
-    var topArtistCount by remember { mutableIntStateOf(0) }
-    var topSongs by remember { mutableStateOf<List<Pair<HistoryEntry, Int>>>(emptyList()) }
     
-    // Mood percentages
-    var chillPct by remember { mutableIntStateOf(0) }
-    var hypePct by remember { mutableIntStateOf(0) }
-    var focusPct by remember { mutableIntStateOf(0) }
-    var personalityBadge by remember { mutableStateOf("The Music Explorer") }
-    var personalityDesc by remember { mutableStateOf("You have a highly diverse taste in music. You explore different artists, moods, and genres constantly!") }
+    // TasteDNA profile state
+    var profile by remember { mutableStateOf<TasteProfile?>(null) }
+    
+    // Additional metrics
+    var totalPlays by remember { mutableIntStateOf(0) }
+    var smartRadioAccuracy by remember { mutableIntStateOf(0) }
+    var topSongs by remember { mutableStateOf<List<Pair<HistoryEntry, Int>>>(emptyList()) }
+    var favoriteGenres by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
             try {
+                // 1. Fetch the exact mathematical TasteDNA Profile!
+                val fetchedProfile = vm.tasteProfileManager.calculateTasteProfile()
+                
+                // 2. Fetch history and stats
                 val allHistory = db.historyDao().getAllHistory()
-                val sevenDaysAgo = System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000L
-                val weeklyHistory = allHistory.filter { it.playedAt >= sevenDaysAgo }
-
-                if (weeklyHistory.isNotEmpty()) {
-                    totalPlaysThisWeek = weeklyHistory.size
-
-                    // Top Artist
-                    val artistGroups = weeklyHistory.groupBy { it.author }
-                    val mainArtist = artistGroups.maxByOrNull { it.value.size }
-                    if (mainArtist != null) {
-                        topArtist = mainArtist.key
-                        topArtistCount = mainArtist.value.size
-                    }
-
-                    // Top Songs
-                    val songGroups = weeklyHistory.groupBy { it.videoId }
+                totalPlays = allHistory.size
+                
+                if (allHistory.isNotEmpty()) {
+                    // Top Songs (Songs that shaped your taste)
+                    val songGroups = allHistory.groupBy { it.videoId }
                     topSongs = songGroups.map { it.value.first() to it.value.size }
                         .sortedByDescending { it.second }
                         .take(5)
-
-                    // Mood Analysis – weight each play, not just distinct songs
-                    var chillCount = 0
-                    var hypeCount = 0
-                    var focusCount = 0
-
-                    weeklyHistory.forEach { song ->
-                        val titleLower = song.title.lowercase()
-                        val authorLower = song.author.lowercase()
-                        // boost count if artist is known for a mood category
-                        val isChill = listOf("lofi", "chill", "slowed", "sad", "love", "romantic", "emotional", "acoustic", "peaceful", "soothing").any { titleLower.contains(it) } ||
-                                       listOf("ambient", "mellow").any { authorLower.contains(it) } ||
-                                       // optional genre field if present in HistoryEntry
-                                       (song as? com.vinmusic.data.db.HistoryEntry)?.genre?.lowercase()?.let { genreLower ->
-                                           listOf("ambient", "chill", "acoustic").any { genreLower.contains(it) }
-                                       } ?: false
-                        val isHype = listOf("gym", "workout", "party", "dance", "remix", "rap", "hiphop", "trap", "energetic", "bass", "hype").any { titleLower.contains(it) } ||
-                                       listOf("edm", "electro").any { authorLower.contains(it) } ||
-                                       (song as? com.vinmusic.data.db.HistoryEntry)?.genre?.lowercase()?.let { genreLower ->
-                                           listOf("edm", "electro", "dance").any { genreLower.contains(it) }
-                                       } ?: false
-                        val isFocus = listOf("focus", "study", "instrumental", "piano", "calm", "meditation", "zen").any { titleLower.contains(it) } ||
-                                       listOf("classical", "ambient").any { authorLower.contains(it) } ||
-                                       (song as? com.vinmusic.data.db.HistoryEntry)?.genre?.lowercase()?.let { genreLower ->
-                                           listOf("classical", "ambient", "ambient").any { genreLower.contains(it) }
-                                       } ?: false
-
-                        // Increment based on detection – a song can contribute to multiple moods
-                        if (isChill) chillCount++
-                        if (isHype) hypeCount++
-                        if (isFocus) focusCount++
+                        
+                    // Top Genres (inferred from top songs for simplicity)
+                    val genreMap = HashMap<String, Int>()
+                    allHistory.forEach { song ->
+                        val genre = com.vinmusic.recommendation.RecommendationManager.inferMetadata(com.vinmusic.innertube.VideoItem(song.videoId, song.title, song.author)).genre
+                        genreMap[genre] = (genreMap[genre] ?: 0) + 1
                     }
+                    favoriteGenres = genreMap.entries.map { it.key to it.value }.sortedByDescending { it.second }.take(4)
+                }
 
-                    val totalMoods = (chillCount + hypeCount + focusCount).coerceAtLeast(1)
-                    chillPct = (chillCount * 100) / totalMoods
-                    hypePct = (hypeCount * 100) / totalMoods
-                    focusPct = (focusCount * 100) / totalMoods
-
-                    // If no mood detected, spread evenly
-                    if (chillCount == 0 && hypeCount == 0 && focusCount == 0) {
-                        chillPct = 33
-                        hypePct = 34
-                        focusPct = 33
-                    }
-
-                    // Personality logic
-                    val maxPct = maxOf(chillPct, hypePct, focusPct)
-                    when {
-                        maxPct == chillPct -> {
-                            personalityBadge = "The Melancholic Dreamer"
-                            personalityDesc = "Your weekly DNA leans heavily towards relaxing, romantic, and emotional vibes. You love zoning out to soothing lofi beats or deep acoustic melodies."
-                        }
-                        maxPct == hypePct -> {
-                            personalityBadge = "The High-Voltage Powerhouse"
-                            personalityDesc = "You listen to high-energy beats to power through your day, workouts, and parties. Your DNA is packed with hype, bass-heavy rap, and energetic remixes."
-                        }
-                        else -> {
-                            personalityBadge = "The Deep Focus Scholar"
-                            personalityDesc = "You prefer clean, instrumental, and calm sounds to keep your mind centered. Your DNA is built for concentration, study, and peaceful zen sessions."
-                        }
-                    }
+                // 3. Smart Radio Accuracy (Skip rate inverted)
+                val signals = db.interactionSignalDao().getAll()
+                val totalRecommended = signals.sumOf { it.playCount + it.skip20sCount }
+                val skips = signals.sumOf { it.skip20sCount }
+                if (totalRecommended > 0) {
+                    smartRadioAccuracy = 100 - ((skips * 100) / totalRecommended)
                 } else {
-                    // Seed mock stats if history is completely empty so that the screen doesn't look blank
-                    // Seed mock stats for first‑time users – keep realistic diversity
-                    totalPlaysThisWeek = 0
-                    topArtist = ""
-                    topArtistCount = 0
-                    chillPct = 33
-                    hypePct = 34
-                    focusPct = 33
-                    personalityBadge = "The Curious Explorer"
-                    personalityDesc = "Your listening habits span many moods. Keep discovering new beats!"
+                    smartRadioAccuracy = 100
                 }
                 
                 withContext(Dispatchers.Main) {
+                    profile = fetchedProfile
                     isLoading = false
                 }
             } catch (e: Exception) {
-                android.util.Log.e("MusicDnaScreen", "Failed to compile weekly stats: ${e.message}")
+                android.util.Log.e("MusicDnaScreen", "Failed to compile DNA stats: ${e.message}")
                 withContext(Dispatchers.Main) {
                     isLoading = false
                 }
@@ -180,13 +117,13 @@ fun MusicDnaScreen(
         containerColor = Color.Transparent,
         modifier = Modifier.fillMaxSize()
     ) { padding ->
-        if (isLoading) {
+        if (isLoading || profile == null) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = VinColors.Accent)
             }
         } else {
-            // Infinite lava lamp background specific to stats
-            val infiniteTransition = rememberInfiniteTransition(label = "stats_bg")
+            // Infinite gradient mesh background
+            val infiniteTransition = rememberInfiniteTransition(label = "dna_bg")
             val blob1X by infiniteTransition.animateFloat(
                 initialValue = -100f, targetValue = 300f,
                 animationSpec = infiniteRepeatable(tween(25000, easing = LinearEasing), RepeatMode.Reverse),
@@ -199,15 +136,14 @@ fun MusicDnaScreen(
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
-                // Background morphing bubbles
                 Canvas(modifier = Modifier.fillMaxSize().blur(100.dp)) {
                     drawCircle(
-                        color = Color(0xFF6338EC).copy(alpha = 0.25f),
+                        color = Color(0xFF4F46E5).copy(alpha = 0.25f),
                         radius = size.width * 0.7f,
                         center = androidx.compose.ui.geometry.Offset(blob1X.dp.toPx(), 200.dp.toPx())
                     )
                     drawCircle(
-                        color = Color(0xFFEC4899).copy(alpha = 0.2f),
+                        color = Color(0xFF10B981).copy(alpha = 0.2f),
                         radius = size.width * 0.6f,
                         center = androidx.compose.ui.geometry.Offset(150.dp.toPx(), blob2Y.dp.toPx())
                     )
@@ -219,180 +155,120 @@ fun MusicDnaScreen(
                         .padding(padding)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                    verticalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
-                    // Weekly Summary Hero Card
+                    
+                    // SECTION 1: TOP CARD - THE MUSIC DNA
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(24.dp)),
                         shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                        colors = CardDefaults.cardColors(containerColor = Color(0x331E293B))
                     ) {
                         Column(
                             modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Text(
-                                "WEEKLY STATS",
+                                "YOUR UNIQUE SIGNATURE",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = VinColors.AccentLight,
                                 letterSpacing = 2.sp
                             )
                             
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(
-                                        text = totalPlaysThisWeek.toString(),
-                                        fontSize = 44.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = VinColors.Primary
-                                    )
-                                    Text("Songs Listened", fontSize = 12.sp, color = VinColors.Secondary)
+                            val moodText = when {
+                                profile!!.valence > 65 -> "Happy & Upbeat"
+                                profile!!.valence < 35 -> "Dark & Emotional"
+                                else -> "Chill & Balanced"
+                            }
+                            val primaryColor = when {
+                                profile!!.valence > 65 -> Color(0xFFFBBF24)
+                                profile!!.valence < 35 -> Color(0xFF8B5CF6)
+                                else -> Color(0xFF38BDF8)
+                            }
+                            
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(primaryColor.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Fingerprint, null, tint = primaryColor, modifier = Modifier.size(28.dp))
                                 }
-                                
-                                Box(
-                                    modifier = Modifier
-                                        .size(1.dp, 50.dp)
-                                        .background(VinColors.White20)
-                                )
-
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(
-                                        text = topArtistCount.toString(),
-                                        fontSize = 44.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = VinColors.Primary
-                                    )
-                                    Text("Plays of Top Artist", fontSize = 12.sp, color = VinColors.Secondary)
+                                Column {
+                                    Text("Primary Mood", fontSize = 12.sp, color = VinColors.Secondary)
+                                    Text(moodText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
                                 }
                             }
-
-                            HorizontalDivider(color = VinColors.White10, modifier = Modifier.padding(vertical = 4.dp))
-
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = topArtist,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = VinColors.Primary,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text("Your Top Artist of the Week", fontSize = 12.sp, color = VinColors.Secondary)
-                            }
-                        }
-                    }
-
-                    // Personality Badge
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, Color(0x33EC4899), RoundedCornerShape(24.dp)),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0x11EC4899))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(20.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Analytics,
-                                null,
-                                tint = Color(0xFFEC4899),
-                                modifier = Modifier.size(36.dp)
-                            )
-                            Column {
-                                Text(
-                                    "Music Personality",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFEC4899),
-                                    letterSpacing = 1.sp
-                                )
-                                Text(
-                                    text = personalityBadge,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = Color.White,
-                                    modifier = Modifier.padding(vertical = 2.dp)
-                                )
-                                Text(
-                                    text = personalityDesc,
-                                    fontSize = 12.sp,
-                                    color = VinColors.Secondary,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
-                    }
-
-                    // Mood DNA Chart
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(24.dp)),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = VinColors.White10)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            DnaStatBar("Energy", profile!!.energy, Color(0xFFEC4899), Icons.Default.ElectricBolt)
+                            DnaStatBar("Danceability", profile!!.danceability, Color(0xFFF59E0B), Icons.Default.DirectionsRun)
+                            DnaStatBar("Acousticness", profile!!.acousticness, Color(0xFF10B981), Icons.Default.Spa)
+                            
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "YOUR MOOD DNA",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = VinColors.AccentLight,
-                                letterSpacing = 2.sp
-                            )
-
-                            // Chill Mood Bar
-                            MoodBar(
-                                name = "Chill & Romantic",
-                                percent = chillPct,
-                                barColor = Color(0xFF8B5CF6),
-                                icon = Icons.Default.MusicNote
-                            )
-
-                            // Hype Mood Bar
-                            MoodBar(
-                                name = "Hype & Energy",
-                                percent = hypePct,
-                                barColor = Color(0xFFEC4899),
-                                icon = Icons.Default.Equalizer
-                            )
-
-                            // Focus Mood Bar
-                            MoodBar(
-                                name = "Focus & Calm",
-                                percent = focusPct,
-                                barColor = Color(0xFF10B981),
-                                icon = Icons.Default.Timeline
+                                "Average Tempo: ${profile!!.tempo} BPM",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = VinColors.Secondary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
 
-                    // Top 5 Tracks List
+                    // SECTION 2: FAVORITE GENRES
+                    if (favoriteGenres.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Your Favorite Genres", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                            
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                favoriteGenres.take(2).forEach { genre ->
+                                    Card(
+                                        modifier = Modifier.weight(1f).aspectRatio(1.5f).border(1.dp, VinColors.White10, RoundedCornerShape(16.dp)),
+                                        colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                                    ) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text(genre.first, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary, textAlign = TextAlign.Center)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // SECTION 3: RECENTLY EVOLVING TASTE & SMART RADIO ACCURACY
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Card(
+                            modifier = Modifier.weight(1f).border(1.dp, VinColors.White10, RoundedCornerShape(20.dp)),
+                            colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.TrendingUp, null, tint = Color(0xFF38BDF8))
+                                Text("Taste Trend", fontSize = 12.sp, color = VinColors.Secondary)
+                                Text("Exploring more ${if (profile!!.energy > 60) "Energetic" else "Acoustic"} vibes recently.", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = VinColors.Primary, lineHeight = 18.sp)
+                            }
+                        }
+                        
+                        Card(
+                            modifier = Modifier.weight(1f).border(1.dp, VinColors.White10, RoundedCornerShape(20.dp)),
+                            colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF10B981))
+                                Text("Radio Accuracy", fontSize = 12.sp, color = VinColors.Secondary)
+                                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("$smartRadioAccuracy%", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
+                                }
+                                Text("Matches your taste", fontSize = 11.sp, color = VinColors.Secondary)
+                            }
+                        }
+                    }
+
+                    // SECTION 4: SONGS THAT SHAPED YOUR TASTE
                     if (topSongs.isNotEmpty()) {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text(
-                                "Top 5 Songs This Week",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = VinColors.Primary,
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("Songs That Shaped Your Taste", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
 
                             topSongs.forEachIndexed { index, pair ->
                                 val song = pair.first
@@ -406,16 +282,12 @@ fun MusicDnaScreen(
                                         .padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // Rank Number Badge
                                     Box(
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(
+                                        modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(
                                                 when (index) {
-                                                    0 -> Color(0xFFFFD700).copy(alpha = 0.25f) // Gold
-                                                    1 -> Color(0xFFC0C0C0).copy(alpha = 0.25f) // Silver
-                                                    2 -> Color(0xFFCD7F32).copy(alpha = 0.25f) // Bronze
+                                                    0 -> Color(0xFFFFD700).copy(alpha = 0.25f)
+                                                    1 -> Color(0xFFC0C0C0).copy(alpha = 0.25f)
+                                                    2 -> Color(0xFFCD7F32).copy(alpha = 0.25f)
                                                     else -> VinColors.White20
                                                 }
                                             ),
@@ -445,8 +317,6 @@ fun MusicDnaScreen(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        // No additional song loading needed here; displaying top song info.
-                                            
                                         Text(
                                             text = song.author,
                                             fontSize = 12.sp,
@@ -457,15 +327,7 @@ fun MusicDnaScreen(
                                     }
 
                                     Spacer(modifier = Modifier.width(12.dp))
-
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            text = "$playCount plays",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = VinColors.AccentLight
-                                        )
-                                    }
+                                    Text("$playCount plays", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = VinColors.AccentLight)
                                 }
                             }
                         }
@@ -479,7 +341,7 @@ fun MusicDnaScreen(
 }
 
 @Composable
-fun MoodBar(
+fun DnaStatBar(
     name: String,
     percent: Int,
     barColor: Color,
@@ -488,7 +350,7 @@ fun MoodBar(
     val animatedPercent = animateFloatAsState(
         targetValue = percent / 100f,
         animationSpec = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-        label = "moodBarProgress"
+        label = "dnaBarProgress"
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

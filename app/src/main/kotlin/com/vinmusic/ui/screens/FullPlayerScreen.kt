@@ -48,10 +48,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalContext
 
-@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
+@OptIn(UnstableApi::class, ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun FullPlayerScreen(
     vm: PlayerViewModel,
+    animatedVisibilityScope: AnimatedVisibilityScope,
+    sharedTransitionScope: SharedTransitionScope,
     onArtistNameClick: (String) -> Unit,
     onAddToPlaylist: (VideoItem) -> Unit,
     onClose: () -> Unit
@@ -61,6 +63,7 @@ fun FullPlayerScreen(
     val db = com.vinmusic.data.db.VinDatabase.getInstance(ctx)
 
     var activePanel      by remember { mutableStateOf<String?>(null) }
+    var currentModel     by remember(song.videoId) { mutableStateOf<Any>(song.thumbnailHd) }
     
     // Dynamic Color Harmonization Palette State
     var currentPalette by remember(song.videoId) {
@@ -75,8 +78,15 @@ fun FullPlayerScreen(
     }
 
     LaunchedEffect(song.thumbnailHd) {
-        val extracted = ColorExtractor.extractColorsFromUrl(ctx, song.thumbnailHd)
-        currentPalette = extracted
+        try {
+            val extracted = ColorExtractor.extractColorsFromUrl(ctx, song.thumbnailHd)
+            currentPalette = extracted
+        } catch (_: Exception) {
+            try {
+                val extracted = ColorExtractor.extractColorsFromUrl(ctx, song.thumbnail)
+                currentPalette = extracted
+            } catch (_: Exception) {}
+        }
     }
 
     // 1-second ultra-smooth transition crossfades for active gradients/shadows
@@ -109,9 +119,7 @@ fun FullPlayerScreen(
     // Cleanup DJ synthesizer when leaving player screen
     DisposableEffect(Unit) {
         onDispose {
-            if (isDjMode) {
-                ScratchSoundSynthesizer.release()
-            }
+            ScratchSoundSynthesizer.release()
         }
     }
 
@@ -137,17 +145,23 @@ fun FullPlayerScreen(
     var showSleepDialog  by remember { mutableStateOf(false) }
     var showAddPlaylist  by remember { mutableStateOf(false) }
 
-    // Breathtaking Infinite transition for circular vinyl rotation & ambient breathing glow
-    val infiniteTransition = rememberInfiniteTransition(label = "disc_effects")
-    val rotationAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 16000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation"
-    )
+    // Animated vinyl rotation — only animates when playing to save CPU, and pauses in place!
+    val rotation = remember { Animatable(0f) }
+    val isActuallyPlaying = vm.isPlaying && !vm.isLoading
+    LaunchedEffect(isActuallyPlaying) {
+        if (isActuallyPlaying) {
+            val rotationDuration = 16000
+            while (true) {
+                val target = rotation.value + 360f
+                rotation.animateTo(
+                    targetValue = target,
+                    animationSpec = tween(durationMillis = rotationDuration, easing = LinearEasing)
+                )
+            }
+        }
+    }
+    val currentRotation = rotation.value
+    val rotationAngle = currentRotation
 
     var isDownloaded by remember(song.videoId) { mutableStateOf(false) }
     LaunchedEffect(song.videoId) {
@@ -181,8 +195,6 @@ fun FullPlayerScreen(
     var dragY by remember { mutableFloatStateOf(0f) }
     var swipeX by remember { mutableFloatStateOf(0f) }
 
-    val currentRotation = if (vm.isPlaying && !vm.isLoading) rotationAngle else 0f
-
     val targetNeedleAngle = if (vm.isPlaying && !vm.isLoading) -28f else 0f
     val needleAngle by animateFloatAsState(
         targetValue = targetNeedleAngle,
@@ -194,7 +206,6 @@ fun FullPlayerScreen(
     )
 
     // Pulsating animations only run when music is actually playing (saves CPU when paused/loading)
-    val isActuallyPlaying = vm.isPlaying && !vm.isLoading
     val pulsatingAlpha by animateFloatAsState(
         targetValue = if (isActuallyPlaying) 0.45f else 0.25f,
         animationSpec = tween(durationMillis = 2500, easing = FastOutSlowInEasing),
@@ -635,12 +646,38 @@ fun FullPlayerScreen(
                         }
                 ) {
                     // Beautiful Circular Artwork
-                    AsyncImage(
-                        model = song.thumbnailHd,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
+                    with(sharedTransitionScope) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // Underneath: load the standard low-res thumbnail instantly
+                            AsyncImage(
+                                model = song.thumbnail,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                            
+                            // On top: load the HD thumbnail with shared element transition and error fallback
+                            AsyncImage(
+                                model = currentModel,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .sharedElement(
+                                        rememberSharedContentState(key = "album_art"),
+                                        animatedVisibilityScope = animatedVisibilityScope
+                                    )
+                                    .fillMaxSize()
+                                    .clip(CircleShape),
+                                contentScale = ContentScale.Crop,
+                                onError = {
+                                    if (currentModel == song.thumbnailHd) {
+                                        currentModel = song.thumbnail
+                                    }
+                                }
+                            )
+                        }
+                    }
 
                     // Concentric Groove Circles Drawing
                     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -811,13 +848,13 @@ fun FullPlayerScreen(
             Spacer(Modifier.height(16.dp))
 
             // Premium Quick Action Buttons Row (Lyrics, Queue, Remix, Download, Playlist)
-            Row(
+            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+            androidx.compose.foundation.layout.FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 24.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 GlassActionButton(
                     icon = Icons.Default.Lyrics,
@@ -1617,6 +1654,37 @@ fun LyricsPanel(vm: PlayerViewModel) {
 fun QueuePanel(vm: PlayerViewModel) {
     LazyColumn(modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp, horizontal = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Queue", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(VinColors.White10)
+                        .clickable { vm.smartSortQueueByBPM() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Shuffle,
+                            contentDescription = null,
+                            tint = VinColors.AccentLight,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text("Smart Sort by BPM", fontSize = 11.sp, color = VinColors.Primary)
+                    }
+                }
+            }
+        }
         itemsIndexed(vm.queue) { i, song ->
             Row(modifier = Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
@@ -1713,6 +1781,17 @@ fun RemixPanel(vm: PlayerViewModel) {
                     }
                 )
             }
+            item {
+                SmartEQPresetChip(
+                    name = "8D Audio Mode",
+                    icon = "",
+                    gradient = Brush.linearGradient(listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8))),
+                    active = vm.is8dEnabled,
+                    onClick = {
+                        vm.toggle8dAudio()
+                    }
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -1757,6 +1836,35 @@ fun RemixPanel(vm: PlayerViewModel) {
         Text("Speed & Pitch Controls (DSP)", fontSize = 12.sp, color = VinColors.Secondary)
         RemixSlider("Playback Speed", vm.playbackSpeed, 0.5f, 2.0f, "x") { vm.updatePlaybackSpeed(it) }
         RemixSlider("Playback Pitch", vm.playbackPitch, 0.5f, 2.0f, "x") { vm.updatePlaybackPitch(it) }
+
+        HorizontalDivider(color = VinColors.GlassBorder)
+        Text("DJ Sound Effects Board", fontSize = 12.sp, color = VinColors.Secondary)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            listOf(
+                Triple("Airhorn 🚨", "airhorn", Color(0xFFDC2626)),
+                Triple("Bass Drop 💣", "bass_drop", Color(0xFF2563EB)),
+                Triple("Vinyl Noise 📼", "vinyl_noise", Color(0xFF78350F))
+            ).forEach { (label, effectName, color) ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(color.copy(alpha = 0.15f))
+                        .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .clickable {
+                            ScratchSoundSynthesizer.initialize()
+                            ScratchSoundSynthesizer.playDjEffect(effectName)
+                        }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
+        }
 
         TextButton(onClick = { vm.resetEQ() }) { Text("Reset All", color = VinColors.Secondary) }
     }

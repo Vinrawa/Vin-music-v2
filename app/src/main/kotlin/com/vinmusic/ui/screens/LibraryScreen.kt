@@ -46,7 +46,8 @@ fun LibraryScreen(
     onSongMore: (VideoItem) -> Unit,
     onPlaylistMore: (PlaylistEntity) -> Unit,
     onPlaylistClick: (Long) -> Unit,
-    onArtistClick: (ArtistItem) -> Unit
+    onArtistClick: (ArtistItem) -> Unit,
+    onDnaClick: () -> Unit
 ) {
     val ctx   = androidx.compose.ui.platform.LocalContext.current
     val db    = VinDatabase.getInstance(ctx)
@@ -56,7 +57,6 @@ fun LibraryScreen(
     var history   by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
     var playlists by remember { mutableStateOf<List<PlaylistEntity>>(emptyList()) }
     var artists   by remember { mutableStateOf<List<FollowedArtist>>(emptyList()) }
-    var tab       by rememberSaveable { mutableStateOf("Liked") }
 
     // Playlist sub-tab toggling
     var playlistSubTab by rememberSaveable { mutableStateOf("Local") }
@@ -126,8 +126,26 @@ fun LibraryScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
-        Text("Library", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary,
-            modifier = Modifier.padding(start = 20.dp, top = 24.dp, bottom = 12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 24.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Library", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
+            
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(VinColors.Accent.copy(alpha = 0.15f))
+                    .clickable { onDnaClick() }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(Icons.Default.Analytics, contentDescription = "TasteDNA", tint = VinColors.Accent, modifier = Modifier.size(16.dp))
+                    Text("TasteDNA", color = VinColors.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
 
         // Tabs with equal weight & premium micro-animations
         Row(
@@ -139,7 +157,7 @@ fun LibraryScreen(
                 .padding(4.dp)
         ) {
             listOf("Liked", "Playlists", "Artists", "History").forEach { t ->
-                val active = tab == t
+                val active = vm.libraryTab == t
                 
                 val scale by animateFloatAsState(
                     targetValue = if (active) 1.05f else 1.0f,
@@ -165,7 +183,7 @@ fun LibraryScreen(
                         .scale(scale)
                         .clip(RoundedCornerShape(20.dp))
                         .background(activeBgColor)
-                        .clickable { tab = t }
+                        .clickable { vm.libraryTab = t }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -181,7 +199,7 @@ fun LibraryScreen(
             }
         }
 
-        when (tab) {
+        when (vm.libraryTab) {
             // ── Liked ─────────────────────────────────────────────────────────
             "Liked" -> {
                 if (liked.isEmpty()) {

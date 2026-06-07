@@ -31,7 +31,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     app: Application,
-    val recommendationRepository: com.vinmusic.recommendation.RecommendationRepository
+    val recommendationRepository: com.vinmusic.recommendation.RecommendationRepository,
+    val tasteProfileManager: com.vinmusic.recommendation.TasteProfileManager
 ) : AndroidViewModel(app) {
 
     // ── Playback state ─────────────────────────────────────────────────────────
@@ -54,13 +55,20 @@ class PlayerViewModel @Inject constructor(
         get() = PlayerSingleton.smartShuffle
         set(value) { PlayerSingleton.setSmartShuffle(value) }
 
+    val is8dEnabled get() = PlayerSingleton.is8dEnabled
+
+    fun toggle8dAudio() {
+        PlayerSingleton.setEightDEnabled(!PlayerSingleton.is8dEnabled)
+    }
+
     // ── Progress (isolated — only progress composables recompose) ─────────────
     var progress      by mutableFloatStateOf(0f)
     var currentTimeMs by mutableLongStateOf(0L)
     var durationMs    by mutableLongStateOf(0L)
 
-    // ── Liked songs ────────────────────────────────────────────────────────────
+    // ── Liked songs & Library State ────────────────────────────────────────────
     var likedSongs by mutableStateOf<Set<String>>(emptySet())
+    var libraryTab by mutableStateOf("Liked")
 
     // ── Lyrics ─────────────────────────────────────────────────────────────────
     var lyricsResult      by mutableStateOf<LyricsResult>(LyricsResult.NotFound)
@@ -106,6 +114,7 @@ class PlayerViewModel @Inject constructor(
     var sleepTimerMode    by mutableStateOf(SleepTimerMode.MINUTES)
 
     // ── EQ — 6 bands ──────────────────────────────────────────────────────────
+    var eqEnabled    by mutableStateOf(false)
     var eqSubBass    by mutableFloatStateOf(0f)  // 60Hz
     var eqBass       by mutableFloatStateOf(0f)  // 250Hz
     var eqLowMid     by mutableFloatStateOf(0f)  // 1kHz
@@ -158,6 +167,7 @@ class PlayerViewModel @Inject constructor(
 
     // ── DB ────────────────────────────────────────────────────────────────────
     private val db = VinDatabase.getInstance(app)
+    val topTracksFlow = db.interactionSignalDao().getTopPlayedSongsFlow()
 
     // ── Recommendation tracking variables ─────────────────────────────────────
     private var playStartTime: Long = 0L
@@ -214,6 +224,14 @@ class PlayerViewModel @Inject constructor(
         audioNormalizationEnabled = prefs.getBoolean("audio_normalization", false)
         crossfadeEnabled = prefs.getBoolean("crossfade", false)
         crossfadeSecs = prefs.getInt("crossfade_secs", 3)
+        eqEnabled = prefs.getBoolean("eq_enabled", false)
+        eqSubBass = prefs.getFloat("eq_60hz", 0f)
+        eqBass = prefs.getFloat("eq_230hz", 0f)
+        eqLowMid = prefs.getFloat("eq_910hz", 0f)
+        eqMid = prefs.getFloat("eq_4khz", 0f)
+        val eq14 = prefs.getFloat("eq_14khz", 0f)
+        eqTreble = eq14
+        eqAir = eq14
         try {
             exoPlayer.skipSilenceEnabled = prefs.getBoolean("skip_silence", false)
         } catch (e: Exception) {
@@ -256,8 +274,61 @@ class PlayerViewModel @Inject constructor(
         PlayerSingleton.setQueue(songs, startIndex)
     }
 
+    fun playSongWithRadio(song: VideoItem) {
+        lyricsResult      = LyricsResult.NotFound
+        progress          = 0f
+        currentTimeMs     = 0L
+        durationMs        = 0L
+        currentLyricIndex = -1
+        lyricOffsetMs     = 0L
+        
+        PlayerSingleton.setQueue(listOf(song), 0)
+        PlayerSingleton.isAutoplayLoading = true
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val recommended = recommendationRepository.getSongRadio(song.videoId, song.title, song.author)
+                if (!recommended.isNullOrEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        val currentQueue = PlayerSingleton.queue.toMutableList()
+                        val existingIds = currentQueue.map { it.videoId }.toSet()
+                        val uniqueRecs = recommended.filter { it.videoId !in existingIds }
+                        if (uniqueRecs.isNotEmpty()) {
+                            currentQueue.addAll(uniqueRecs)
+                            PlayerSingleton.queue = currentQueue
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load radio suggestions: ${e.message}")
+            } finally {
+                withContext(Dispatchers.Main) {
+                    PlayerSingleton.isAutoplayLoading = false
+                }
+            }
+        }
+    }
+
     fun setSmartAutoplay(enabled: Boolean) {
         PlayerSingleton.setSmartAutoplay(enabled)
+    }
+
+    fun smartSortQueueByBPM() {
+        val currentQueue = PlayerSingleton.queue
+        if (currentQueue.size <= 1) return
+        viewModelScope.launch(Dispatchers.Default) {
+            val currentSong = PlayerSingleton.currentSong
+            val sortedQueue = currentQueue.sortedBy { item ->
+                com.vinmusic.recommendation.RecommendationManager.inferMetadata(item).tempo
+            }
+            val newIndex = sortedQueue.indexOfFirst { it.videoId == currentSong?.videoId }
+            withContext(Dispatchers.Main) {
+                PlayerSingleton.queue = sortedQueue
+                if (newIndex != -1) {
+                    PlayerSingleton.queueIndex = newIndex
+                }
+            }
+        }
     }
 
 
@@ -315,10 +386,16 @@ class PlayerViewModel @Inject constructor(
     private fun startProgressJob() {
         progressJob = viewModelScope.launch {
             while (true) {
-                delay(150) // Fast updates for smooth synced lyrics tracking
+                delay(300) // Throttled updates to reduce recomposition overhead (300ms)
                 if (exoPlayer.isPlaying && durationMs > 0) {
-                    currentTimeMs = exoPlayer.currentPosition
-                    progress = (currentTimeMs.toFloat() / durationMs).coerceIn(0f, 1f)
+                    val pos = exoPlayer.currentPosition
+                    val prog = (pos.toFloat() / durationMs).coerceIn(0f, 1f)
+                    
+                    // Only write state if the change is significant (to avoid unnecessary recompositions)
+                    if (Math.abs(pos - currentTimeMs) >= 250 || Math.abs(prog - progress) >= 0.001f || pos == 0L) {
+                        currentTimeMs = pos
+                        progress = prog
+                    }
 
                     if (crossfadeEnabled && durationMs > 0) {
                         val remainingMs = durationMs - currentTimeMs
@@ -392,6 +469,7 @@ class PlayerViewModel @Inject constructor(
                     }
                     withContext(Dispatchers.Main) {
                         lyricsResult = res
+                        isLyricsLoading = false
                     }
                     return@launch
                 }
@@ -546,11 +624,25 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun applyEQInternal() {
+        prefs.edit().apply {
+            putBoolean("eq_enabled", eqEnabled)
+            putFloat("eq_60hz", eqSubBass)
+            putFloat("eq_230hz", eqBass)
+            putFloat("eq_910hz", eqLowMid)
+            putFloat("eq_4khz", eqMid)
+            putFloat("eq_14khz", eqTreble)
+            apply()
+        }
+
         equalizer?.runCatching {
+            enabled = eqEnabled
             val n = numberOfBands.toInt()
             val bands = listOf(eqSubBass, eqBass, eqLowMid, eqMid, eqTreble, eqAir)
             bands.forEachIndexed { i, gain ->
-                if (i < n) setBandLevel(i.toShort(), (gain * 100).toInt().toShort())
+                if (i < n) {
+                    val targetLevel = if (eqEnabled) (gain * 100).toInt().toShort() else 0.toShort()
+                    setBandLevel(i.toShort(), targetLevel)
+                }
             }
         }
         bassBoostFx?.runCatching { setStrength(bassBoostStr.toInt().toShort()) }

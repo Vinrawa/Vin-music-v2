@@ -35,9 +35,14 @@ import com.vinmusic.ui.utils.ColorExtractor
 
 // ── Mini Player ───────────────────────────────────────────────────────────────
 
-@OptIn(UnstableApi::class)
+@OptIn(UnstableApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
-fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
+fun MiniPlayer(
+    vm: PlayerViewModel,
+    animatedVisibilityScope: AnimatedVisibilityScope,
+    sharedTransitionScope: SharedTransitionScope,
+    onClick: () -> Unit
+) {
     val song = vm.currentSong ?: return
 
     val offsetX = remember { Animatable(0f) }
@@ -53,20 +58,22 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
         } catch (_: Exception) {}
     }
 
-    // Dynamic wave phase transitions driven continuously
-    val infiniteTransition = rememberInfiniteTransition(label = "mini_player_waves")
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "wavePhase"
-    )
-
-    // Animated multipliers to achieve smooth sleeping/breathing transition when paused
+    // Animated wave phase — only animates when playing to save CPU
     val isPlaying = vm.isPlaying && !vm.isLoading
+    val wavePhase = remember { Animatable(0f) }
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            // Continuously animate wave phase while playing
+            while (true) {
+                wavePhase.animateTo(
+                    targetValue = wavePhase.value + (2 * Math.PI).toFloat(),
+                    animationSpec = tween(durationMillis = 3500, easing = LinearEasing)
+                )
+            }
+        }
+        // When paused, animation simply stops — no CPU usage
+    }
+
     val amplitudeMultiplier by animateFloatAsState(
         targetValue = if (isPlaying) 1.0f else 0.15f,
         animationSpec = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
@@ -124,7 +131,7 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
                 }
                 .clickable { onClick() }
         ) {
-            // Multi-layered Fluid Wave Canvas Visualizer aligned to bottom
+            // Multi-layered Fluid Wave Canvas Visualizer aligned to bottom (optimized: 6px steps)
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -133,14 +140,17 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
             ) {
                 val width = size.width
                 val height = size.height
+                val step = 6 // Draw every 6px instead of every pixel for 6x performance boost
 
                 // Wave 1: Deep Accent Base wave
                 val path1 = Path().apply {
                     moveTo(0f, height)
-                    for (x in 0..width.toInt()) {
-                        val angle = 2 * Math.PI * 1.0f * (x / width) + (wavePhase * speedMultiplier)
+                    var x = 0
+                    while (x <= width.toInt()) {
+                        val angle = 2 * Math.PI * 1.0f * (x / width) + (wavePhase.value * speedMultiplier)
                         val y = height - 6.dp.toPx() - (6.dp.toPx() * amplitudeMultiplier * Math.sin(angle)).toFloat()
                         lineTo(x.toFloat(), y)
+                        x += step
                     }
                     lineTo(width, height)
                     close()
@@ -150,10 +160,12 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
                 // Wave 2: Middle Accent wave (flowing opposite)
                 val path2 = Path().apply {
                     moveTo(0f, height)
-                    for (x in 0..width.toInt()) {
-                        val angle = 2 * Math.PI * 1.6f * (x / width) - (wavePhase * 1.2f * speedMultiplier) + 2.0f
+                    var x = 0
+                    while (x <= width.toInt()) {
+                        val angle = 2 * Math.PI * 1.6f * (x / width) - (wavePhase.value * 1.2f * speedMultiplier) + 2.0f
                         val y = height - 5.dp.toPx() - (4.dp.toPx() * amplitudeMultiplier * Math.sin(angle)).toFloat()
                         lineTo(x.toFloat(), y)
+                        x += step
                     }
                     lineTo(width, height)
                     close()
@@ -163,10 +175,12 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
                 // Wave 3: Top Glowing Sparkle wave
                 val path3 = Path().apply {
                     moveTo(0f, height)
-                    for (x in 0..width.toInt()) {
-                        val angle = 2 * Math.PI * 2.2f * (x / width) + (wavePhase * 0.8f * speedMultiplier) + 4.0f
+                    var x = 0
+                    while (x <= width.toInt()) {
+                        val angle = 2 * Math.PI * 2.2f * (x / width) + (wavePhase.value * 0.8f * speedMultiplier) + 4.0f
                         val y = height - 4.dp.toPx() - (3.dp.toPx() * amplitudeMultiplier * Math.sin(angle)).toFloat()
                         lineTo(x.toFloat(), y)
+                        x += step
                     }
                     lineTo(width, height)
                     close()
@@ -188,13 +202,22 @@ fun MiniPlayer(vm: PlayerViewModel, onClick: () -> Unit) {
             ) {
                 // Album art with ambient glow
                 Box(
-                    modifier = Modifier.size(46.dp)
+                    modifier = Modifier.size(46.dp).clip(RoundedCornerShape(10.dp))
                 ) {
-                    AsyncImage(
-                        model = song.thumbnail, contentDescription = null,
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)), 
-                        contentScale = ContentScale.Crop
-                    )
+                    with(sharedTransitionScope) {
+                        AsyncImage(
+                            model = song.thumbnail, contentDescription = null,
+                            modifier = Modifier
+                                .sharedElement(
+                                    rememberSharedContentState(key = "album_art"),
+                                    animatedVisibilityScope = animatedVisibilityScope
+                                )
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .scale(1.35f), 
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                     if (vm.isLoading) {
                         Box(Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)).background(Color(0x80000000)),
                             contentAlignment = Alignment.Center) {
@@ -390,7 +413,7 @@ fun SongListItem(
             Box(modifier = Modifier.size(60.dp).clip(RoundedCornerShape(10.dp))) {
                 AsyncImage(
                     model = song.thumbnail, contentDescription = null,
-                    modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                    modifier = Modifier.fillMaxSize().scale(1.35f), contentScale = ContentScale.Crop
                 )
                 if (isPlaying) {
                     Box(Modifier.fillMaxSize().background(Color(0x60000000)),
@@ -480,7 +503,7 @@ fun TrackCard(song: VideoItem, onClick: () -> Unit) {
         Box(modifier = Modifier.size(140.dp).clip(RoundedCornerShape(14.dp))) {
             AsyncImage(
                 model = song.thumbnail, contentDescription = null,
-                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
+                modifier = Modifier.fillMaxSize().scale(1.35f), contentScale = ContentScale.Crop
             )
             Box(modifier = Modifier.fillMaxSize().background(
                 Brush.verticalGradient(listOf(Color.Transparent, Color(0x60000000)))

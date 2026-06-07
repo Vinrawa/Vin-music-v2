@@ -54,20 +54,32 @@ fun AlbumDetailScreen(
         isLoading = true
         withContext(Dispatchers.IO) {
             try {
-                val resolved = if (album.playlistId.startsWith("album_") || album.playlistId.startsWith("single_")) {
-                    val trackId = album.playlistId.substringAfterLast("_")
+                val pid = album.playlistId
+                android.util.Log.d("AlbumDetail", "Loading playlistId=$pid")
+                val resolved = if (pid.startsWith("album_") || pid.startsWith("single_")) {
+                    val trackId = pid.substringAfterLast("_")
                     listOf(VideoItem(trackId, album.title, album.author))
-                } else if (album.playlistId.startsWith("MPRE")) {
-                    InnerTube.getAlbumSongs(album.playlistId)
+                } else if (pid.startsWith("MPRE")) {
+                    InnerTube.getAlbumSongs(pid)
                 } else {
-                    InnerTube.getPlaylistSongs(album.playlistId).second
+                    // Handle community playlist IDs: VLPLxxx, PLxxx, RDCLAKxxx, VLRDxxx, etc.
+                    val result = InnerTube.getPlaylistSongs(pid).second
+                    if (result.isEmpty() && pid.startsWith("VL")) {
+                        // If VL-prefixed browse failed, try stripping VL and using raw playlist ID
+                        android.util.Log.d("AlbumDetail", "VL browse empty, retrying with stripped ID")
+                        InnerTube.getPlaylistSongs(pid.removePrefix("VL")).second
+                    } else {
+                        result
+                    }
                 }
                 
+                android.util.Log.d("AlbumDetail", "Resolved ${resolved.size} songs for $pid")
                 withContext(Dispatchers.Main) {
                     songs = resolved
                     isLoading = false
                 }
             } catch (e: Exception) {
+                android.util.Log.e("AlbumDetail", "Failed to load: ${e.message}")
                 withContext(Dispatchers.Main) {
                     isLoading = false
                 }
@@ -137,7 +149,11 @@ fun AlbumDetailScreen(
                 }
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (album.playlistId.startsWith("single_")) "Single Detail" else "Album Detail",
+                    text = when {
+                        album.playlistId.startsWith("single_") -> "Single Detail"
+                        album.playlistId.startsWith("MPRE") || album.playlistId.startsWith("album_") -> "Album Detail"
+                        else -> "Playlist"
+                    },
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White

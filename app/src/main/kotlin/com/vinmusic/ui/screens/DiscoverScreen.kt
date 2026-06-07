@@ -36,6 +36,12 @@ import com.vinmusic.lyrics.LyricsHelper
 import com.vinmusic.lyrics.LyricsResult
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.ui.theme.VinColors
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -103,6 +109,10 @@ fun DiscoverScreen(
     
     // Floating toast popup state
     var showToastMessage by remember { mutableStateOf<String?>(null) }
+
+    var genreMixes by remember { mutableStateOf<List<com.vinmusic.recommendation.SpotifyMix>>(emptyList()) }
+    var loadingMixes by remember { mutableStateOf(false) }
+    var selectedMix by remember { mutableStateOf<com.vinmusic.recommendation.SpotifyMix?>(null) }
 
     val ctx = LocalContext.current
     val db  = remember(ctx) { com.vinmusic.data.db.VinDatabase.getInstance(ctx) }
@@ -269,7 +279,21 @@ fun DiscoverScreen(
         }
     }
 
-    LaunchedEffect(Unit) { loadDiscoverSongs() }
+    LaunchedEffect(Unit) { 
+        loadDiscoverSongs() 
+        scope.launch(Dispatchers.IO) {
+            loadingMixes = true
+            try {
+                val mixes = vm.recommendationRepository.getGenreMixes()
+                withContext(Dispatchers.Main) {
+                    genreMixes = mixes
+                    loadingMixes = false
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { loadingMixes = false }
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(VinColors.BgColor)) {
         if (isLoading) {
@@ -375,6 +399,41 @@ fun DiscoverScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
+                // Genre Mixes Row
+                if (loadingMixes && genreMixes.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(24.dp))
+                    }
+                } else if (genreMixes.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                    ) {
+                        Text(
+                            text = "Genre Mixes",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(genreMixes) { mix ->
+                                GenreMixCard(mix = mix) {
+                                    selectedMix = mix
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                     contentAlignment = Alignment.Center
@@ -508,9 +567,159 @@ fun DiscoverScreen(
                 }
             }
         }
+
+        if (selectedMix != null) {
+            val mix = selectedMix!!
+            val startColor = remember(mix.gradientStartHex) {
+                runCatching { Color(android.graphics.Color.parseColor(mix.gradientStartHex.replace("0x", "#"))) }.getOrElse { Color(0xFF3B0764) }
+            }
+            val endColor = remember(mix.gradientEndHex) {
+                runCatching { Color(android.graphics.Color.parseColor(mix.gradientEndHex.replace("0x", "#"))) }.getOrElse { Color(0xFF1E1B4B) }
+            }
+
+            ModalBottomSheet(
+                onDismissRequest = { selectedMix = null },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = VinColors.Surface2,
+                dragHandle = { BottomSheetDefaults.DragHandle(color = VinColors.GlassBorder) }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Header section
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(80.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Brush.verticalGradient(colors = listOf(startColor, endColor)))
+                        ) {
+                            GenreMix2x2Grid(songs = mix.songs, modifier = Modifier.fillMaxSize())
+                        }
+                        
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = mix.title,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = mix.description,
+                                fontSize = 12.sp,
+                                color = VinColors.Secondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Button(
+                        onClick = {
+                            if (mix.songs.isNotEmpty()) {
+                                val tracks = mix.songs.map { it.videoItem }
+                                onSongClick(tracks[0], tracks)
+                                selectedMix = null
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Play Mix", fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    HorizontalDivider(color = VinColors.GlassBorder.copy(alpha = 0.3f))
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                    ) {
+                        if (mix.songs.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(150.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("No tracks inside this mix.", color = VinColors.Secondary, fontSize = 13.sp)
+                            }
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                itemsIndexed(mix.songs) { index, recSong ->
+                                    val song = recSong.videoItem
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(VinColors.White10)
+                                            .clickable {
+                                                val tracks = mix.songs.map { it.videoItem }
+                                                onSongClick(song, tracks)
+                                                selectedMix = null
+                                            }
+                                            .padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(modifier = Modifier.size(36.dp).clip(RoundedCornerShape(6.dp))) {
+                                            AsyncImage(
+                                                model = song.thumbnail,
+                                                contentDescription = null,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        }
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = song.title,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = song.author,
+                                                fontSize = 11.sp,
+                                                color = VinColors.Secondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
+        }
     }
-
-
 }
 
 @Composable
@@ -817,6 +1026,147 @@ fun DiscoverCard(
                     .padding(horizontal = 18.dp, vertical = 8.dp)
             ) { Text("SKIP", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White) }
         }
+    }
+}
+
+@Composable
+fun GenreMix2x2Grid(songs: List<com.vinmusic.recommendation.RecommendedSong>, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.05f))
+    ) {
+        val coverSongs = songs.take(4)
+        if (coverSongs.size >= 4) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(modifier = Modifier.weight(1f)) {
+                    AsyncImage(
+                        model = coverSongs[0].videoItem.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier.weight(1f).fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    AsyncImage(
+                        model = coverSongs[1].videoItem.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier.weight(1f).fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Row(modifier = Modifier.weight(1f)) {
+                    AsyncImage(
+                        model = coverSongs[2].videoItem.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier.weight(1f).fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    AsyncImage(
+                        model = coverSongs[3].videoItem.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier.weight(1f).fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+        } else {
+            val singleCover = coverSongs.firstOrNull()?.videoItem?.thumbnail
+            if (singleCover != null) {
+                AsyncImage(
+                    model = singleCover,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.MusicNote, null, tint = Color.White.copy(alpha = 0.5f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GenreMixCard(
+    mix: com.vinmusic.recommendation.SpotifyMix,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "genre_mix_card_scale"
+    )
+
+    val startColor = remember(mix.gradientStartHex) {
+        runCatching { Color(android.graphics.Color.parseColor(mix.gradientStartHex.replace("0x", "#"))) }.getOrElse { Color(0xFF3B0764) }
+    }
+    val endColor = remember(mix.gradientEndHex) {
+        runCatching { Color(android.graphics.Color.parseColor(mix.gradientEndHex.replace("0x", "#"))) }.getOrElse { Color(0xFF1E1B4B) }
+    }
+
+    Column(
+        modifier = Modifier
+            .width(130.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
+            .padding(bottom = 4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(130.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.verticalGradient(colors = listOf(startColor, endColor)))
+                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
+        ) {
+            GenreMix2x2Grid(songs = mix.songs, modifier = Modifier.fillMaxSize())
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f))
+                        )
+                    )
+            )
+            // A premium glassmorphic tag indicating "MIX"
+            Box(
+                modifier = Modifier
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 5.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "MIX",
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+        }
+
+        Spacer(Modifier.height(6.dp))
+
+        Text(
+            text = mix.title,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
+        Text(
+            text = mix.description,
+            fontSize = 10.sp,
+            color = Color.White.copy(alpha = 0.55f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 2.dp)
+        )
     }
 }
 

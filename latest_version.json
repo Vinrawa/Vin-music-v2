@@ -1,7 +1,7 @@
 {
-  "latestVersionCode": 7,
-  "latestVersionName": "2.1.5",
-  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.5/app-release.apk",
+  "latestVersionCode": 10,
+  "latestVersionName": "2.1.8",
+  "apkUrl": "https://github.com/Vinrawa/vin-music-v2/releases/download/v2.1.8/app-release.apk",
   "forceUpdate": false,
-  "releaseNotes": "Bug fixes, performance improvements, and in-app update checking configuration adjustments."
+  "releaseNotes": "Mood & genre playlist fixes, playlist loading improvements, overlapping action buttons fixes, and library tab persistence."
 }

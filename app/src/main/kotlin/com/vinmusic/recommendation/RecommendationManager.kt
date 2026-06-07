@@ -70,7 +70,7 @@ object RecommendationManager {
         val targetMood: String
     )
 
-    private val GENRE_CONFIGS = mapOf(
+    val GENRE_CONFIGS = mapOf(
         "Lofi" to GenreMixConfig(
             description = "Your personal sanctuary of calm. Lofi, acoustic indie, and soft chill melodies.",
             queries = listOf("hindi soft indie aesthetic", "acoustic lofi relax", "aesthetic bedtime chill"),
@@ -175,7 +175,8 @@ object RecommendationManager {
         val targetTempo: Int,
         val preferredGenres: Map<String, Double>,
         val preferredMoods: Map<String, Double>,
-        val preferredLanguages: Map<String, Double>
+        val preferredLanguages: Map<String, Double>,
+        val preferredArtists: Map<String, Double> = emptyMap()
     )
 
     data class TasteProfile(
@@ -239,6 +240,43 @@ object RecommendationManager {
         clean = clean.replace(Regex("[^a-z0-9\\s]"), "")
         clean = clean.replace(Regex("\\s+"), " ").trim()
         return clean
+    }
+
+    val SIMILAR_ARTISTS_MAP = mapOf(
+        "j. cole" to listOf("kendrick lamar", "drake", "jid", "cordae", "joey bada\$\$", "kanye west"),
+        "j cole" to listOf("kendrick lamar", "drake", "jid", "cordae", "joey bada\$\$", "kanye west"),
+        "kendrick lamar" to listOf("j. cole", "drake", "travis scott", "21 savage", "baby keem", "a\$ap rocky"),
+        "21 savage" to listOf("metro boomin", "future", "travis scott", "drake", "lil baby", "gunna"),
+        "travis scott" to listOf("metro boomin", "don toliver", "kid cudi", "a\$ap rocky", "kanye west"),
+        "drake" to listOf("j. cole", "kendrick lamar", "the weeknd", "future", "lil baby", "travis scott"),
+        "arijit singh" to listOf("atif aslam", "jubin nautiyal", "shreya ghoshal", "pritam", "darshan raval"),
+        "sidhu moose wala" to listOf("karan aujla", "diljit dosanjh", "shubh", "prem dhillon", "amrit maan"),
+        "karan aujla" to listOf("sidhu moose wala", "diljit dosanjh", "shubh", "ap dhillon", "garry sandhu"),
+        "diljit dosanjh" to listOf("karan aujla", "sidhu moose wala", "ap dhillon", "ammy virk", "shubh"),
+        "shubh" to listOf("ap dhillon", "gurinder gill", "sidhu moose wala", "karan aujla", "diljit dosanjh"),
+        "prateek kuhad" to listOf("anuv jain", "local train", "when chai met toast", "yellow diary"),
+        "anuv jain" to listOf("prateek kuhad", "aditya rikhari", "mitraz", "local train", "osho jain"),
+        "mitraz" to listOf("anuv jain", "aditya rikhari", "darshan raval", "zaeden", "prateek kuhad"),
+        "the weeknd" to listOf("post malone", "khalid", "frank ocean", "sza", "brent faiyaz"),
+        "taylor swift" to listOf("olivia rodrigo", "billie eilish", "sabrina carpenter", "ed sheeran"),
+        "eminem" to listOf("dr. dre", "50 cent", "snoop dogg", "j. cole", "kendrick lamar"),
+        "badshah" to listOf("raftaar", "yo yo honey singh", "king", "mc stan", "divine"),
+        "divine" to listOf("naezy", "raftaar", "mc stan", "seedhe maut", "kr\$na"),
+        "kr\$na" to listOf("raftaar", "seedhe maut", "divine", "emiway bantai", "young stunners")
+    )
+
+    fun isSimilarArtist(artist1: String, artist2: String): Boolean {
+        val norm1 = normalizeArtistName(artist1)
+        val norm2 = normalizeArtistName(artist2)
+        if (norm1 == norm2) return true
+        
+        val list1 = SIMILAR_ARTISTS_MAP[norm1]
+        if (list1 != null && list1.any { normalizeArtistName(it) == norm2 }) return true
+        
+        val list2 = SIMILAR_ARTISTS_MAP[norm2]
+        if (list2 != null && list2.any { normalizeArtistName(it) == norm1 }) return true
+        
+        return false
     }
 
     fun getLevenshteinDistance(s1: String, s2: String): Int {
@@ -648,7 +686,8 @@ object RecommendationManager {
             targetTempo = targetTempo,
             preferredGenres = genreScores,
             preferredMoods = moodScores,
-            preferredLanguages = langScores
+            preferredLanguages = langScores,
+            preferredArtists = artistScores
         )
 
         TasteProfile(
@@ -681,6 +720,26 @@ object RecommendationManager {
         val langWeight = dna.preferredLanguages[meta.language] ?: 0.1
         val langScore = (langWeight / maxLangVal).coerceIn(0.1, 1.0)
 
+        // Artist score: check exact artist affinity or similar artist affinity
+        val normMetaArtist = normalizeArtistName(meta.artist)
+        var artistScore = 0.0
+        val maxArtistVal = dna.preferredArtists.values.maxOrNull() ?: 1.0
+        
+        val artistWeight = dna.preferredArtists.entries.firstOrNull { 
+            normalizeArtistName(it.key) == normMetaArtist 
+        }?.value ?: 0.0
+        
+        if (artistWeight > 0.0) {
+            artistScore = (artistWeight / maxArtistVal).coerceIn(0.0, 1.0)
+        } else {
+            val similarArtistMatch = dna.preferredArtists.entries.firstOrNull { (prefArtist, _) ->
+                isSimilarArtist(prefArtist, meta.artist)
+            }
+            if (similarArtistMatch != null) {
+                artistScore = (similarArtistMatch.value / maxArtistVal * 0.6).coerceIn(0.0, 1.0)
+            }
+        }
+
         // Energy similarity delta
         val energyDelta = Math.abs(meta.energy - dna.targetEnergy)
         val energyScore = (1.0 - energyDelta).coerceIn(0.0, 1.0)
@@ -689,7 +748,7 @@ object RecommendationManager {
         val tempoDelta = Math.abs(meta.tempo - dna.targetTempo).toDouble()
         val tempoScore = Math.cos((tempoDelta / 120.0 * Math.PI).coerceIn(0.0, Math.PI)) / 2.0 + 0.5
 
-        return (genreScore * 0.25) + (moodScore * 0.25) + (langScore * 0.20) + (energyScore * 0.15) + (tempoScore * 0.15)
+        return (genreScore * 0.20) + (artistScore * 0.15) + (moodScore * 0.20) + (langScore * 0.15) + (energyScore * 0.15) + (tempoScore * 0.15)
     }
 
     private suspend fun fetchCandidatesFromQueries(queries: List<String>): List<VideoItem> = coroutineScope {

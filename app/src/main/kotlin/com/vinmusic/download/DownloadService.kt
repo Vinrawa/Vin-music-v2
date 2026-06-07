@@ -169,9 +169,14 @@ class DownloadService : Service() {
 
             // Create a copying entity storing the stream url in filePath
             var thumbnailPath: String? = null
-            if (entity.thumbnailUrl != null) {
+            val tUrl = entity.thumbnailUrl
+            if (tUrl != null) {
                 try {
-                    thumbnailPath = downloadThumbnail(videoId, entity.thumbnailUrl!!)
+                    val hdUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+                    thumbnailPath = downloadThumbnail(videoId, hdUrl)
+                    if (thumbnailPath == null) {
+                        thumbnailPath = downloadThumbnail(videoId, tUrl)
+                    }
                     Log.d(TAG, "Thumbnail downloaded for $videoId: $thumbnailPath")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to download thumbnail for $videoId: ${e.message}")
@@ -193,12 +198,10 @@ class DownloadService : Service() {
                     return@launch
                 }
 
-                val resolvedUa = InnerTube.getUserAgentForUrl(url)
+                val resolvedUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 val requestProps = buildMap<String, String> {
-                    if (resolvedUa.startsWith("Mozilla")) {
-                        put("Origin", "https://www.youtube.com")
-                        put("Referer", "https://www.youtube.com/")
-                    }
+                    put("Origin", "https://www.youtube.com")
+                    put("Referer", "https://www.youtube.com/")
                     put("Accept-Encoding", "identity")
                 }
 
@@ -318,6 +321,35 @@ class DownloadService : Service() {
                     Log.e(TAG, "Failed to update download completion for $videoId: ${e.message}")
                     throw e
                 }
+
+                // Fetch and cache lyrics for offline usage
+                try {
+                    val cachedLyrics = db.cachedLyricsDao().get(videoId)
+                    if (cachedLyrics == null) {
+                        val prefs = this@DownloadService.getSharedPreferences("vin_music_prefs", android.content.Context.MODE_PRIVATE)
+                        val provider = prefs.getString("lyrics_provider", "Auto") ?: "Auto"
+                        val lyricsRes = com.vinmusic.lyrics.LyricsHelper.fetch(downloadingEntity.title, downloadingEntity.author, videoId, provider)
+                        val type = when (lyricsRes) {
+                            is com.vinmusic.lyrics.LyricsResult.Synced -> "synced"
+                            is com.vinmusic.lyrics.LyricsResult.Plain -> "plain"
+                            else -> "not_found"
+                        }
+                        val content = when (lyricsRes) {
+                            is com.vinmusic.lyrics.LyricsResult.Synced -> com.google.gson.Gson().toJson(lyricsRes.lines)
+                            is com.vinmusic.lyrics.LyricsResult.Plain -> lyricsRes.text
+                            else -> ""
+                        }
+                        if (type != "not_found" && content.isNotEmpty()) {
+                            db.cachedLyricsDao().insert(
+                                com.vinmusic.data.db.CachedLyricsEntity(videoId, type, content)
+                            )
+                            Log.d(TAG, "Lyrics cached offline for $videoId")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to cache offline lyrics: ${e.message}")
+                }
+
                 Log.d(TAG, "Download finished successfully: $videoId. Total cached bytes stored: $finalCachedBytes. Expected content length: $contentLength")
 
             } catch (e: CancellationException) {

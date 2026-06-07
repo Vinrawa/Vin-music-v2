@@ -118,4 +118,82 @@ object ScratchSoundSynthesizer {
             } catch (_: Exception) {}
         }
     }
+
+    /**
+     * Play a synthesized DJ sound effect.
+     * @param effectName The name of the effect: "airhorn", "bass_drop", or "vinyl_noise".
+     */
+    fun playDjEffect(effectName: String) {
+        if (!isInitialized || audioTrack == null) return
+        val track = audioTrack ?: return
+
+        synthScope.launch {
+            try {
+                when (effectName) {
+                    "bass_drop" -> {
+                        val durationMs = 1500
+                        val numSamples = (SAMPLE_RATE * (durationMs / 1000f)).toInt()
+                        val samples = ShortArray(numSamples)
+                        var phase = 0.0
+                        
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val currentFreq = 120.0 - (progress * 100.0)
+                            val envelope = 1.0 - progress
+                            
+                            val sine = Math.sin(phase) * 16000.0
+                            phase += 2.0 * Math.PI * currentFreq / SAMPLE_RATE
+                            if (phase > 2.0 * Math.PI) phase -= 2.0 * Math.PI
+                            
+                            samples[i] = (sine * envelope).toInt().coerceIn(-32768, 32767).toShort()
+                        }
+                        track.write(samples, 0, samples.size)
+                    }
+                    "airhorn" -> {
+                        val durationMs = 1200
+                        val numSamples = (SAMPLE_RATE * (durationMs / 1000f)).toInt()
+                        val samples = ShortArray(numSamples)
+                        var phase = 0.0
+                        
+                        for (i in 0 until numSamples) {
+                            val progress = i.toDouble() / numSamples
+                            val frequencyMod = 50.0 * Math.sin(2.0 * Math.PI * 15.0 * (i.toDouble() / SAMPLE_RATE))
+                            val currentFreq = 700.0 + frequencyMod
+                            
+                            val envelope = if (progress < 0.1) progress / 0.1 else 1.0 - (progress - 0.1)/0.9
+                            
+                            val rawSine = Math.sin(phase)
+                            val square = if (rawSine > 0.0) 1.0 else -1.0
+                            val mixed = (rawSine * 0.4 + square * 0.6) * 14000.0
+                            
+                            phase += 2.0 * Math.PI * currentFreq / SAMPLE_RATE
+                            if (phase > 2.0 * Math.PI) phase -= 2.0 * Math.PI
+                            
+                            samples[i] = (mixed * envelope).toInt().coerceIn(-32768, 32767).toShort()
+                        }
+                        track.write(samples, 0, samples.size)
+                    }
+                    "vinyl_noise" -> {
+                        val durationMs = 800
+                        val numSamples = (SAMPLE_RATE * (durationMs / 1000f)).toInt()
+                        val samples = ShortArray(numSamples)
+                        
+                        for (i in 0 until numSamples) {
+                            val progress = i.toFloat() / numSamples
+                            val envelope = 1.0 - progress
+                            
+                            var noise = ThreadLocalRandom.current().nextGaussian() * 3000.0
+                            
+                            if (i % 3000 == 0 || i == 100 || i == 12000) {
+                                noise += (if (ThreadLocalRandom.current().nextBoolean()) 20000.0 else -20000.0)
+                            }
+                            
+                            samples[i] = (noise * envelope).toInt().coerceIn(-32768, 32767).toShort()
+                        }
+                        track.write(samples, 0, samples.size)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
 }

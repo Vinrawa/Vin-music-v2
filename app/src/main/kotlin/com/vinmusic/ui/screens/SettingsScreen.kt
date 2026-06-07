@@ -81,17 +81,10 @@ fun SettingsScreen(
     var showOtpStage by remember { mutableStateOf(false) }
     var loginLoading by remember { mutableStateOf(false) }
 
-    // Advanced setting dialog states
     var showEqDialog by remember { mutableStateOf(false) }
-    var eqEnabled by remember { mutableStateOf(prefs.getBoolean("eq_enabled", false)) }
-    var eq60Hz by remember { mutableFloatStateOf(prefs.getFloat("eq_60hz", 0f)) }
-    var eq230Hz by remember { mutableFloatStateOf(prefs.getFloat("eq_230hz", 0f)) }
-    var eq910Hz by remember { mutableFloatStateOf(prefs.getFloat("eq_910hz", 0f)) }
-    var eq4kHz by remember { mutableFloatStateOf(prefs.getFloat("eq_4khz", 0f)) }
-    var eq14kHz by remember { mutableFloatStateOf(prefs.getFloat("eq_14khz", 0f)) }
-
     var showSleepTimerDialog by remember { mutableStateOf(false) }
-    var sleepTimerMin by remember { mutableIntStateOf(prefs.getInt("sleep_timer_min", 0)) } // 0 means Off
+
+
 
     var skipSilence by remember { mutableStateOf(prefs.getBoolean("skip_silence", false)) }
     var streamingQuality by remember { mutableStateOf(prefs.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)") }
@@ -669,7 +662,7 @@ fun SettingsScreen(
                     Text("Configure frequency bands", fontSize = 12.sp, color = VinColors.Secondary)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (eqEnabled) "On" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
+                    Text(if (vm.eqEnabled) "On" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
                     Icon(Icons.Default.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
                 }
             }
@@ -688,7 +681,7 @@ fun SettingsScreen(
                     Text("Stop music after a set duration", fontSize = 12.sp, color = VinColors.Secondary)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (sleepTimerMin > 0) "${sleepTimerMin} mins" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
+                    Text(if (vm.sleepTimerMinutes > 0) "${vm.sleepTimerMinutes} mins" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
                     Icon(Icons.Default.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
                 }
             }
@@ -906,10 +899,10 @@ fun SettingsScreen(
                 ) {
                     Text("Equaliser", color = VinColors.Primary)
                     Switch(
-                        checked = eqEnabled,
+                        checked = vm.eqEnabled,
                         onCheckedChange = {
-                            eqEnabled = it
-                            prefs.edit().putBoolean("eq_enabled", it).apply()
+                            vm.eqEnabled = it
+                            vm.applyEQ()
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
@@ -927,17 +920,21 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     listOf(
-                        "60 Hz" to eq60Hz to { v: Float -> eq60Hz = v; prefs.edit().putFloat("eq_60hz", v).apply() },
-                        "230 Hz" to eq230Hz to { v: Float -> eq230Hz = v; prefs.edit().putFloat("eq_230hz", v).apply() },
-                        "910 Hz" to eq910Hz to { v: Float -> eq910Hz = v; prefs.edit().putFloat("eq_910hz", v).apply() },
-                        "4 kHz" to eq4kHz to { v: Float -> eq4kHz = v; prefs.edit().putFloat("eq_4khz", v).apply() },
-                        "14 kHz" to eq14kHz to { v: Float -> eq14kHz = v; prefs.edit().putFloat("eq_14khz", v).apply() }
+                        "60 Hz" to vm.eqSubBass to { v: Float -> vm.eqSubBass = v; vm.applyEQ() },
+                        "230 Hz" to vm.eqBass to { v: Float -> vm.eqBass = v; vm.applyEQ() },
+                        "910 Hz" to vm.eqLowMid to { v: Float -> vm.eqLowMid = v; vm.applyEQ() },
+                        "4 kHz" to vm.eqMid to { v: Float -> vm.eqMid = v; vm.applyEQ() },
+                        "14 kHz" to vm.eqTreble to { v: Float -> 
+                            vm.eqTreble = v
+                            vm.eqAir = v
+                            vm.applyEQ()
+                        }
                     ).forEach { item ->
                         val pair = item.first
                         val onValChange = item.second
                         val label = pair.first
                         val valFloat = pair.second
-                        Column(modifier = Modifier.alpha(if (eqEnabled) 1.0f else 0.5f)) {
+                        Column(modifier = Modifier.alpha(if (vm.eqEnabled) 1.0f else 0.5f)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
@@ -949,7 +946,7 @@ fun SettingsScreen(
                                 value = valFloat,
                                 onValueChange = onValChange,
                                 valueRange = -12f..12f,
-                                enabled = eqEnabled,
+                                enabled = vm.eqEnabled,
                                 colors = SliderDefaults.colors(
                                     thumbColor = VinColors.Accent,
                                     activeTrackColor = VinColors.Accent,
@@ -1295,14 +1292,25 @@ fun SettingsScreen(
                         "45 minutes" to 45,
                         "60 minutes" to 60
                     ).forEach { (label, minutes) ->
+                        val isSelected = when (minutes) {
+                            0 -> vm.sleepTimerMinutes == 0
+                            15 -> vm.sleepTimerMinutes in 1..15
+                            30 -> vm.sleepTimerMinutes in 16..30
+                            45 -> vm.sleepTimerMinutes in 31..45
+                            60 -> vm.sleepTimerMinutes in 46..60
+                            else -> false
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (sleepTimerMin == minutes) VinColors.White10 else Color.Transparent)
+                                .background(if (isSelected) VinColors.White10 else Color.Transparent)
                                 .clickable {
-                                    sleepTimerMin = minutes
-                                    prefs.edit().putInt("sleep_timer_min", minutes).apply()
+                                    if (minutes == 0) {
+                                        vm.cancelSleepTimer()
+                                    } else {
+                                        vm.setSleepTimer(minutes)
+                                    }
                                     showSleepTimerDialog = false
                                 }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -1310,7 +1318,7 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(label, color = VinColors.Primary, fontSize = 14.sp)
-                            if (sleepTimerMin == minutes) {
+                            if (isSelected) {
                                 Icon(Icons.Default.Check, null, tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
                             }
                         }

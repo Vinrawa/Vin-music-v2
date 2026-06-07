@@ -378,56 +378,75 @@ object InnerTube {
     }
 
     // ── Search ────────────────────────────────────────────────────────────────
-    /** Search for music only. Appends " music" to bias YT results toward audio tracks. */
+    /** Search for music only. Hits YouTube Music API for 100% pure audio results. */
     fun search(query: String): List<VideoItem> {
-        // Bias query toward music unless it already has music keywords
-        val musicKeywords = listOf("song", "music", "audio", "remix", "lofi", "lyrics", "album", "mashup")
-        val biasedQuery = if (musicKeywords.any { query.lowercase().contains(it) }) query
-                          else "$query song"
-
+        val ytMusicBase = "https://music.youtube.com/youtubei/v1"
         val body = mapOf(
             "context" to mapOf("client" to mapOf(
-                "clientName" to "WEB", "clientVersion" to "2.20231219.04.00",
+                "clientName" to "WEB_REMIX",
+                "clientVersion" to "1.20231214.00.00",
                 "hl" to "en", "gl" to "IN"
             )),
-            "query" to biasedQuery,
-            "params" to "EgIQAQ=="  // YouTube music filter param
+            "query" to query,
+            "params" to "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D" // YouTube Music 'Songs' filter
         )
         val raw = try {
             http.newCall(Request.Builder()
-                .url("$BASE/search?prettyPrint=false")
+                .url("$ytMusicBase/search?prettyPrint=false")
                 .post(gson.toJson(body).toRequestBody(JSON))
                 .header("Content-Type", "application/json")
-                .header("User-Agent",   "Mozilla/5.0")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20231214.00.00")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
                 .build()
             ).execute().use { it.body?.string() }
         } catch (e: Exception) { log("Search error: ${e.message}"); null } ?: return emptyList()
 
-        return try {
+        val songs = mutableListOf<VideoItem>()
+        try {
             val root = gson.fromJson(raw, Map::class.java)
-            val secs = (root["contents"] as? Map<*, *>)
-                ?.get("twoColumnSearchResultsRenderer").let { it as? Map<*, *> }
-                ?.get("primaryContents").let { it as? Map<*, *> }
-                ?.get("sectionListRenderer").let { it as? Map<*, *> }
-                ?.get("contents") as? List<*> ?: return emptyList()
-            buildList {
-                for (sec in secs) {
-                    val items = ((sec as? Map<*, *>)?.get("itemSectionRenderer") as? Map<*, *>)
-                        ?.get("contents") as? List<*> ?: continue
-                    for (item in items) {
-                        val v   = (item as? Map<*, *>)?.get("videoRenderer") as? Map<*, *> ?: continue
-                        val id  = v["videoId"] as? String ?: continue
-                        val t   = ((v["title"] as? Map<*, *>)?.get("runs") as? List<*>)
-                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: continue
-                        val a   = ((v["ownerText"] as? Map<*, *>)?.get("runs") as? List<*>)
-                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
-                        val dur = (v["lengthText"] as? Map<*, *>)?.get("simpleText") as? String ?: ""
-                        // [OK] Only add if it passes the music content filter
-                        if (isMusicContent(t, a, dur)) add(VideoItem(id, t, a, dur))
+            fun scan(node: Any?) {
+                when (node) {
+                    is Map<*, *> -> {
+                        val mr = node["musicResponsiveListItemRenderer"] as? Map<*, *>
+                        if (mr != null) {
+                            try {
+                                val flexCols = mr["flexColumns"] as? List<*> ?: emptyList<Any>()
+                                var title = ""
+                                var author = ""
+                                val vid = (mr["playlistItemData"] as? Map<*, *>)?.get("videoId") as? String ?: ""
+                                
+                                val col0 = flexCols.getOrNull(0) as? Map<*, *>
+                                title = ((col0?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>)
+                                    ?.get("text") as? Map<*, *>)?.get("runs")?.let { runs ->
+                                        (runs as List<*>).joinToString("") { (it as? Map<*, *>)?.get("text")?.toString() ?: "" }
+                                    } ?: ""
+                                
+                                val col1 = flexCols.getOrNull(1) as? Map<*, *>
+                                val rawSubtitle = ((col1?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>)
+                                    ?.get("text") as? Map<*, *>)?.get("runs")?.let { runs ->
+                                        (runs as List<*>).joinToString("") { (it as? Map<*, *>)?.get("text")?.toString() ?: "" }
+                                    } ?: ""
+                                
+                                val parts = rawSubtitle.split(" • ", " - ")
+                                author = parts.firstOrNull() ?: rawSubtitle
+                                val dur = parts.lastOrNull()?.let { if (it.contains(":")) it else "" } ?: ""
+                                
+                                if (vid.isNotEmpty() && title.isNotEmpty()) {
+                                    songs.add(VideoItem(vid, title, author, dur))
+                                }
+                            } catch (e: Exception) {}
+                        }
+                        node.values.forEach { scan(it) }
                     }
+                    is List<*> -> node.forEach { scan(it) }
                 }
             }
-        } catch (e: Exception) { log("Search parse: ${e.message}"); emptyList() }
+            scan(root)
+        } catch (e: Exception) { log("Search parse: ${e.message}") }
+        return songs.distinctBy { it.videoId }.take(30)
     }
 
     // ── YouTube Music Browse and Search API ───────────────────────────────────
@@ -917,6 +936,155 @@ object InnerTube {
         return playlists.distinctBy { it.playlistId }
     }
 
+    /**
+     * Official YouTube Music Browse API for Mood Categories (Relax, Workout, Commute, Focus, etc.).
+     * Hits /browse with WEB_REMIX client to load curated sections, playlists, tracks, and artists.
+     */
+    fun getMoodCategoryPage(browseId: String, params: String = ""): List<Pair<String, List<Any>>> {
+        val ytMusicBase = "https://music.youtube.com/youtubei/v1"
+        val body = mutableMapOf(
+            "context" to mapOf("client" to mapOf(
+                "clientName" to "WEB_REMIX",
+                "clientVersion" to "1.20231214.00.00",
+                "hl" to "en", "gl" to "IN"
+            )),
+            "browseId" to browseId
+        )
+        if (params.isNotEmpty()) {
+            body["params"] = params
+        }
+
+        val raw = try {
+            http.newCall(Request.Builder()
+                .url("$ytMusicBase/browse?prettyPrint=false")
+                .post(gson.toJson(body).toRequestBody(JSON))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("X-YouTube-Client-Name", "67")
+                .header("X-YouTube-Client-Version", "1.20231214.00.00")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            ).execute().use { it.body?.string() }
+        } catch (e: Exception) { log("getMoodCategoryPage error: ${e.message}"); null } ?: return emptyList()
+
+        val sections = mutableListOf<Pair<String, List<Any>>>()
+        try {
+            val root = gson.fromJson(raw, Map::class.java)
+
+            fun scan(node: Any?) {
+                when (node) {
+                    is Map<*, *> -> {
+                        val carousel = node["musicCarouselShelfRenderer"] as? Map<*, *>
+                        if (carousel != null) {
+                            val header = carousel["header"] as? Map<*, *>
+                            val basicHeader = header?.get("musicCarouselShelfBasicHeaderRenderer") as? Map<*, *>
+                            var shelfTitle = ((basicHeader?.get("title") as? Map<*, *>)?.get("runs") as? List<*>)
+                                ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+                            if (shelfTitle.isEmpty()) {
+                                shelfTitle = (basicHeader?.get("accessibilityData") as? Map<*, *>)
+                                    ?.let { (it["accessibilityData"] as? Map<*, *>)?.get("label") as? String } ?: ""
+                            }
+
+                            val items = mutableListOf<Any>()
+                            val contents = carousel["contents"] as? List<*>
+                            if (contents != null) {
+                                for (cNode in contents) {
+                                    val itemMap = cNode as? Map<*, *> ?: continue
+                                    
+                                    // 1) Playlist / Album / Artist
+                                    val mtr = itemMap["musicTwoRowItemRenderer"] as? Map<*, *>
+                                    if (mtr != null) {
+                                        val title = ((mtr["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                            ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+                                        
+                                        var navId = (((mtr["navigationEndpoint"] as? Map<*, *>)
+                                            ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
+                                        
+                                        if (navId.isEmpty()) {
+                                            navId = (((mtr["navigationEndpoint"] as? Map<*, *>)
+                                                ?.get("watchPlaylistEndpoint") as? Map<*, *>)?.get("playlistId") as? String)
+                                                ?: (((mtr["navigationEndpoint"] as? Map<*, *>)
+                                                ?.get("watchEndpoint") as? Map<*, *>)?.get("playlistId") as? String)
+                                                ?: ""
+                                        }
+                                        
+                                        val thumb = ((mtr["thumbnailRenderer"] as? Map<*, *>)
+                                            ?.get("musicThumbnailRenderer") as? Map<*, *>)
+                                            ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+                                        val subtitle = ((mtr["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                            ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+
+                                        if (navId.isNotEmpty() && title.isNotEmpty()) {
+                                            if (navId.startsWith("UC")) {
+                                                items.add(ArtistItem(navId, title, thumb, subtitle))
+                                            } else {
+                                                items.add(AlbumItem(navId, title, subtitle, thumb, ""))
+                                            }
+                                        }
+                                    }
+
+                                    // 2) Song / Playlist / Artist (ListItem Renderer)
+                                    val mrli = itemMap["musicResponsiveListItemRenderer"] as? Map<*, *>
+                                    if (mrli != null) {
+                                        val flexCols = mrli["flexColumns"] as? List<*>
+                                        val col0 = flexCols?.getOrNull(0) as? Map<*, *>
+                                        val col0Renderer = col0?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                                        val title = ((col0Renderer?.get("text") as? Map<*, *>)?.get("runs") as? List<*>)
+                                            ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+
+                                        val col1 = flexCols?.getOrNull(1) as? Map<*, *>
+                                        val col1Renderer = col1?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                                        val author = ((col1Renderer?.get("text") as? Map<*, *>)?.get("runs") as? List<*>)
+                                            ?.map { (it as? Map<*, *>)?.get("text") as? String ?: "" }?.joinToString("") ?: ""
+
+                                        val videoId = ((mrli["playlistItemData"] as? Map<*, *>)?.get("videoId") as? String)
+                                            ?: (((mrli["navigationEndpoint"] as? Map<*, *>)?.get("watchEndpoint") as? Map<*, *>)?.get("videoId") as? String) ?: ""
+                                        
+                                        var browseId = (((mrli["navigationEndpoint"] as? Map<*, *>)
+                                            ?.get("browseEndpoint") as? Map<*, *>)?.get("browseId") as? String) ?: ""
+                                            
+                                        if (browseId.isEmpty() && videoId.isEmpty()) {
+                                            browseId = (((mrli["navigationEndpoint"] as? Map<*, *>)
+                                                ?.get("watchPlaylistEndpoint") as? Map<*, *>)?.get("playlistId") as? String)
+                                                ?: (((mrli["navigationEndpoint"] as? Map<*, *>)
+                                                ?.get("watchEndpoint") as? Map<*, *>)?.get("playlistId") as? String)
+                                                ?: ""
+                                        }
+
+                                        val thumb = ((mrli["thumbnail"] as? Map<*, *>)?.get("musicThumbnailRenderer") as? Map<*, *>)
+                                            ?.let { thr -> ((thr["thumbnail"] as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                                ?.lastOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String } } ?: ""
+
+                                        if (videoId.isNotEmpty() && title.isNotEmpty()) {
+                                            items.add(VideoItem(videoId, title, author, ""))
+                                        } else if (browseId.isNotEmpty() && title.isNotEmpty()) {
+                                            if (browseId.startsWith("UC")) {
+                                                items.add(ArtistItem(browseId, title, thumb, author))
+                                            } else {
+                                                items.add(AlbumItem(browseId, title, author, thumb, ""))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (shelfTitle.isNotEmpty() && items.isNotEmpty()) {
+                                sections.add(shelfTitle to items)
+                            }
+                        }
+                        node.values.forEach { scan(it) }
+                    }
+                    is List<*> -> node.forEach { scan(it) }
+                }
+            }
+            scan(root)
+        } catch (e: Exception) {
+            log("getMoodCategoryPage parse error: ${e.message}")
+        }
+        return sections
+    }
+
     // ── Search All Types (Songs + Artists + Albums in one call) ──────────────
     fun searchAll(query: String): AllSearchResults {
         val body = mapOf(
@@ -944,7 +1112,9 @@ object InnerTube {
                 ?.get("sectionListRenderer").let { it as? Map<*, *> }
                 ?.get("contents") as? List<*> ?: return AllSearchResults()
 
-            val songs   = mutableListOf<VideoItem>()
+            // Fetch true music songs via our dedicated YTM search,
+            // while parsing artists and albums from standard YouTube search.
+            val songs   = search(query).toMutableList()
             val artists = mutableListOf<ArtistItem>()
             val albums  = mutableListOf<AlbumItem>()
 
@@ -953,20 +1123,6 @@ object InnerTube {
                     ?.get("contents") as? List<*> ?: continue
                 for (item in items) {
                     val m = item as? Map<*, *> ?: continue
-
-                    // Video/Song
-                    m["videoRenderer"]?.let { v ->
-                        val vr  = v as? Map<*, *> ?: return@let
-                        val id  = vr["videoId"] as? String ?: return@let
-                        val t   = ((vr["title"] as? Map<*, *>)?.get("runs") as? List<*>)
-                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: return@let
-                        val a   = ((vr["ownerText"] as? Map<*, *>)?.get("runs") as? List<*>)
-                            ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
-                        val dur = (vr["lengthText"] as? Map<*, *>)?.get("simpleText") as? String ?: ""
-                        if (isMusicContent(t, a, dur)) {
-                            songs.add(VideoItem(id, t, a, dur))
-                        }
-                    }
 
                     // Artist/Channel
                     m["channelRenderer"]?.let { c ->
@@ -1050,10 +1206,42 @@ object InnerTube {
             val subs = (hdr?.get("subscriberCountText") as? Map<*, *>)?.get("simpleText") as? String ?: ""
             val title = ((root["metadata"] as? Map<*, *>)
                 ?.get("channelMetadataRenderer") as? Map<*, *>)?.get("title") as? String ?: ""
-            val bio  = ((root["metadata"] as? Map<*, *>)
+            var bio  = ((root["metadata"] as? Map<*, *>)
                 ?.get("channelMetadataRenderer") as? Map<*, *>)?.get("description") as? String ?: ""
+            
+            // Attempt to fetch real artist bio from Wikipedia to replace generic YouTube channel descriptions (which users reported as "fake info")
+            if (title.isNotEmpty()) {
+                val wikiBio = fetchArtistBio(title)
+                if (wikiBio.isNotEmpty()) {
+                    bio = wikiBio
+                } else if (bio.contains("Subscribe", ignoreCase = true) || bio.contains("Official Channel", ignoreCase = true)) {
+                    // Try without "Topic" or "Vevo"
+                    val cleanTitle = title.replace("- Topic", "").replace("VEVO", "", ignoreCase = true).trim()
+                    val cleanWikiBio = fetchArtistBio(cleanTitle)
+                    if (cleanWikiBio.isNotEmpty()) {
+                        bio = cleanWikiBio
+                    }
+                }
+            }
+
             ChannelData(banner, bio, subs, title, avatar)
         } catch (e: Exception) { ChannelData() }
+    }
+
+    private fun fetchArtistBio(artistName: String): String {
+        try {
+            val url = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=${java.net.URLEncoder.encode(artistName, "UTF-8")}&format=json"
+            val raw = http.newCall(Request.Builder().url(url).build()).execute().use { it.body?.string() } ?: return ""
+            val root = gson.fromJson(raw, Map::class.java)
+            val query = root["query"] as? Map<*, *>
+            val pages = query?.get("pages") as? Map<*, *>
+            val page = pages?.values?.firstOrNull() as? Map<*, *>
+            val extract = page?.get("extract") as? String
+            if (!extract.isNullOrBlank() && !extract.contains("may refer to", ignoreCase = true)) {
+                return extract.trim()
+            }
+        } catch (e: Exception) { }
+        return ""
     }
 
     /** Load image bytes — used for notification artwork */
@@ -1183,7 +1371,18 @@ object InnerTube {
 
     /** Scrapes all VideoItems from a YouTube playlist (PL...) or album (OLAK...) browse endpoint */
     fun getPlaylistSongs(playlistId: String): Pair<String, List<VideoItem>> {
-        val targetId = if (playlistId.startsWith("PL") && !playlistId.startsWith("VL")) "VL$playlistId" else playlistId
+        // Normalize playlist ID for YTM browse endpoint:
+        // - VLPLxxx, VLRDxxx → already correct browse IDs
+        // - PLxxx → needs VL prefix
+        // - RDCLAKxxx → radio mixes, need VL prefix for browse
+        // - Other → pass through as-is
+        val targetId = when {
+            playlistId.startsWith("VL") -> playlistId
+            playlistId.startsWith("PL") -> "VL$playlistId"
+            playlistId.startsWith("RDCLAK") || playlistId.startsWith("RD") -> "VL$playlistId"
+            playlistId.startsWith("OL") -> playlistId  // OLAK album IDs
+            else -> playlistId
+        }
         val body = mapOf(
             "browseId" to targetId,
             "context" to mapOf("client" to mapOf(

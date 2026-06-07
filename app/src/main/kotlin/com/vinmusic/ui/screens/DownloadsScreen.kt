@@ -26,6 +26,9 @@ import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.ui.theme.VinColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
+import android.util.Log
 import java.io.File
 import android.content.Intent
 import com.vinmusic.download.DownloadService
@@ -141,6 +144,40 @@ fun DownloadsScreen(
                     Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Smart Cleanup", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val downloadCache = com.vinmusic.player.PlayerSingleton.getDownloadCache(ctx)
+                                val allDownloads = db.downloadDao().getAllFlow().first()
+                                for (dl in allDownloads) {
+                                    val intent = android.content.Intent(ctx, com.vinmusic.download.DownloadService::class.java).apply {
+                                        action = com.vinmusic.download.DownloadService.ACTION_CANCEL
+                                        putExtra(com.vinmusic.download.DownloadService.EXTRA_VIDEO_ID, dl.videoId)
+                                    }
+                                    ctx.startService(intent)
+                                    downloadCache?.removeResource(dl.videoId)
+                                    db.downloadDao().delete(dl.videoId)
+                                    db.interactionSignalDao().updateDownloaded(dl.videoId, false)
+                                }
+                                withContext(Dispatchers.Main) {
+                                    android.widget.Toast.makeText(ctx, "All downloads deleted!", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (e: Exception) {
+                                Log.e("Downloads", "Error deleting all", e)
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = VinColors.AccentLight),
+                    border = BorderStroke(1.dp, VinColors.GlassBorder),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.DeleteForever, null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Delete All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
 

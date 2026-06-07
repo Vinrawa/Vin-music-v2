@@ -23,6 +23,8 @@ import com.vinmusic.innertube.VideoItem
 import com.vinmusic.recommendation.RecommendationRepository
 import kotlinx.coroutines.*
 import java.io.File
+import coil3.SingletonImageLoader
+import coil3.request.ImageRequest
 
 /**
  * Singleton that holds the ONE ExoPlayer instance shared between
@@ -77,6 +79,12 @@ object PlayerSingleton {
     var storedSpeed by mutableFloatStateOf(1.0f)
     var storedPitch by mutableFloatStateOf(1.0f)
 
+    val eightDAudioProcessor = EightDAudioProcessor()
+    var is8dEnabled by mutableStateOf(false)
+        private set
+
+    private var virtualizer: android.media.audiofx.Virtualizer? = null
+    private var presetReverb: android.media.audiofx.PresetReverb? = null
 
     var nextStreamUrlDeferred: Pair<String, Deferred<String?>>? = null
 
@@ -87,8 +95,10 @@ object PlayerSingleton {
 
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    private var releaseWakeLockJob: Job? = null
 
     private fun acquireWakeLocks(ctx: Context) {
+        releaseWakeLockJob?.cancel()
         scope.launch(Dispatchers.IO) {
             try {
                 if (wakeLock == null) {
@@ -125,7 +135,9 @@ object PlayerSingleton {
     }
 
     private fun releaseWakeLocks() {
-        scope.launch(Dispatchers.IO) {
+        releaseWakeLockJob?.cancel()
+        releaseWakeLockJob = scope.launch(Dispatchers.IO) {
+            delay(5000) // 5 second delay to survive gapless transitions in background
             try {
                 if (wakeLock?.isHeld == true) {
                     wakeLock?.release()
@@ -149,6 +161,7 @@ object PlayerSingleton {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var fetchJob: Job? = null
+    private var errorRetryCount = 0
     private var prefetchCacheJob: Job? = null
     private var playStartTime: Long = 0L
     private var previousSongId: String? = null
@@ -174,8 +187,10 @@ object PlayerSingleton {
             _player ?: run {
                 val ctx = context.applicationContext
                 this.context = ctx
-                db = VinDatabase.getInstance(ctx)
-                recommendationRepository = RecommendationRepository(ctx, db!!)
+                val databaseInstance = VinDatabase.getInstance(ctx)
+                db = databaseInstance
+                val recDb = com.vinmusic.recommendation.RecommendationDatabase.getInstance(ctx)
+                recommendationRepository = RecommendationRepository(ctx, databaseInstance, recDb)
                 prefs = ctx.getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
                 smartAutoplayEnabled = prefs?.getBoolean("smart_autoplay", true) ?: true
                 _smartShuffle = prefs?.getBoolean("smart_shuffle", false) ?: false
@@ -223,14 +238,34 @@ object PlayerSingleton {
                     Player.STATE_IDLE      -> releaseWakeLocks()
                 }
             }
-            override fun onPlayerError(error: PlaybackException) {
+                        override fun onPlayerError(error: PlaybackException) {
                 val msg = error.message ?: "unknown"
                 val cause = error.cause?.message ?: "no cause"
                 Log.e(TAG, "PlayerError: $msg | cause: $cause", error)
+                
+                if (errorRetryCount < 2 && currentSong != null) {
+                    val pos = playerInstance.currentPosition.coerceAtLeast(0)
+                    Log.d(TAG, "Retrying playback due to Source error... (retryCount=$errorRetryCount, pos=$pos)")
+                    errorRetryCount++
+                    scope.launch {
+                        nextStreamUrlDeferred = null
+                        playSong(currentSong!!)
+                        // We must seek after preparation, but ExoPlayer allows seeking before prepare if media item is set
+                        playerInstance.seekTo(pos)
+                    }
+                    return
+                }
+                
                 isLoading    = false
                 errorMessage = "[Error] $msg"
                 playerInstance.stop()
                 releaseWakeLocks()
+            }
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                Log.d(TAG, "onAudioSessionIdChanged = $audioSessionId")
+                if (is8dEnabled) {
+                    setupAudioEffects(audioSessionId)
+                }
             }
         })
     }
@@ -255,7 +290,7 @@ object PlayerSingleton {
                     val seedSong = currentSong ?: queue[queueIndex]
                     Log.d(TAG, "Prefetching autoplay recommendations for seed=${seedSong.videoId}")
                     val recommended = withContext(Dispatchers.IO) {
-                        recommendationRepository?.getSongRadio(seedSong.videoId)
+                        recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author)
                     }
                     if (!recommended.isNullOrEmpty()) {
                         withContext(Dispatchers.Main) {
@@ -289,9 +324,10 @@ object PlayerSingleton {
                 
                 // Verify actual cached bytes exist before skipping network prefetching!
                 val isDownloaded = withContext(Dispatchers.IO) {
+                    val ctx = context ?: return@withContext false
                     val isComplete = db?.downloadDao()?.get(nextSong.videoId)?.status == "completed"
                     if (isComplete) {
-                        val dlCache = getDownloadCache(context!!)
+                        val dlCache = getDownloadCache(ctx)
                         val dlCacheBytes = dlCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
                         dlCacheBytes > 100_000L
                     } else {
@@ -420,7 +456,19 @@ object PlayerSingleton {
             dynamicHttpFactory
         }
 
-        return ExoPlayer.Builder(ctx)
+        val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(ctx) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): androidx.media3.exoplayer.audio.AudioSink? {
+                return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setAudioProcessors(arrayOf(eightDAudioProcessor))
+                    .build()
+            }
+        }
+
+        return ExoPlayer.Builder(ctx, renderersFactory)
             .setLooper(android.os.Looper.getMainLooper())
             .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(dataSourceFactory))
             .setAudioAttributes(
@@ -431,7 +479,9 @@ object PlayerSingleton {
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK) // Keep CPU awake for streaming in background
-            .build()
+            .build().apply {
+                skipSilenceEnabled = true // Enable gapless/skip silence
+            }
     }
 
     // ── Queue & Playback Functions (Service/Background Safe) ─────────────────
@@ -451,6 +501,8 @@ object PlayerSingleton {
         errorMessage  = null
         val prefetchedUrlDeferred = nextStreamUrlDeferred
         nextStreamUrlDeferred = null
+
+
 
         // Reset tracking for new song
         hasLoggedCompleteForCurrent = false
@@ -527,34 +579,41 @@ object PlayerSingleton {
                 var artBytes: ByteArray? = null
                 var onlineAndCached = isCachedComplete && isDeviceOnline
 
-                // If cached but offline, we play entirely using local cache placeholder
-                if (isCachedComplete && !onlineAndCached) {
+                // If song is fully downloaded, play it instantly from local cache (offline style) even if online
+                if (isDownloadCacheValid) {
+                    Log.d(TAG, "Playing fully downloaded song instantly: videoId=${song.videoId}")
+                    url = "https://music.youtube.com/cache/${song.videoId}"
+                    onlineAndCached = false
+                } else if (isCachedComplete && !onlineAndCached) {
                     Log.d(TAG, "Playing fully cached offline song (device is offline): videoId=${song.videoId}")
                     url = "https://music.youtube.com/cache/${song.videoId}"
 
                     val artBytesDeferred = async(Dispatchers.IO) {
+                        val ctx = context ?: return@async null
+                        var localBytes: ByteArray? = null
                         try {
+                            val database = com.vinmusic.data.db.VinDatabase.getInstance(ctx)
+                            val dl = database.downloadDao().get(song.videoId)
+                            if (dl?.thumbnailPath != null) {
+                                val file = java.io.File(dl.thumbnailPath)
+                                if (file.exists()) localBytes = file.readBytes()
+                            }
+                            // Fallback: check standard cache directory
+                            if (localBytes == null) {
+                                val cachePath = java.io.File(ctx.cacheDir, "thumbnails/${song.videoId}.jpg")
+                                if (cachePath.exists()) localBytes = cachePath.readBytes()
+                            }
+                        } catch (e: Exception) {}
+                        
+                        localBytes ?: try {
                             InnerTube.loadThumbnailBytes(song.thumbnailHd)
                         } catch (e: Exception) {
                             null
                         }
                     }
-                    launch(Dispatchers.IO) {
-                        val loadedBytes = runCatching { artBytesDeferred.await() }.getOrNull()
-                        if (loadedBytes != null) {
-                            withContext(Dispatchers.Main) {
-                                val currentItem = player.currentMediaItem
-                                if (currentItem != null && currentItem.mediaId == song.videoId) {
-                                    val updatedMetadata = currentItem.mediaMetadata.buildUpon()
-                                        .setArtworkData(loadedBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                        .build()
-                                    val updatedItem = currentItem.buildUpon()
-                                        .setMediaMetadata(updatedMetadata)
-                                        .build()
-                                    player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
-                                }
-                            }
-                        }
+                    
+                    if (artBytes == null) {
+                        artBytes = runCatching { artBytesDeferred.await() }.getOrNull()
                     }
                 } else {
                     errorMessage = null
@@ -571,13 +630,31 @@ object PlayerSingleton {
                             }
                         }
                     }
-                    val artBytesDeferred = async(Dispatchers.IO) {
+                    
+                    // 1. Immediately try to load local cached artwork for instant notification cover
+                    val ctx = context
+                    if (ctx != null) {
                         try {
-                            InnerTube.loadThumbnailBytes(song.thumbnailHd)
-                        } catch (e: Exception) {
-                            null
-                        }
+                            val database = com.vinmusic.data.db.VinDatabase.getInstance(ctx)
+                            val dl = database.downloadDao().get(song.videoId)
+                            if (dl?.thumbnailPath != null) {
+                                val file = java.io.File(dl.thumbnailPath)
+                                if (file.exists()) artBytes = file.readBytes()
+                            }
+                            // Fallback: check standard cache directory
+                            if (artBytes == null) {
+                                val cachePath = java.io.File(ctx.cacheDir, "thumbnails/${song.videoId}.jpg")
+                                if (cachePath.exists()) artBytes = cachePath.readBytes()
+                            }
+                        } catch (e: Exception) {}
                     }
+
+                    // 2. If not offline, launch async fetch
+                    val artBytesDeferred = if (artBytes == null) {
+                        async(Dispatchers.IO) {
+                            try { InnerTube.loadThumbnailBytes(song.thumbnailHd) } catch (e: Exception) { null }
+                        }
+                    } else null
 
                     var fetchedUrl = urlDeferred.await()
                     
@@ -595,39 +672,19 @@ object PlayerSingleton {
                         return@launch
                     }
                     url = fetchedUrl
-                    artBytes = if (artBytesDeferred.isCompleted) {
-                        runCatching { artBytesDeferred.getCompleted() }.getOrNull()
-                    } else {
-                        null
+                    
+                    if (artBytes == null && artBytesDeferred != null) {
+                        artBytes = runCatching { artBytesDeferred.await() }.getOrNull()
                     }
 
                     // Asynchronously load artwork bytes in the background and update the player item without stopping playback
-                    if (artBytes == null) {
-                        launch(Dispatchers.IO) {
-                            val loadedBytes = runCatching { artBytesDeferred.await() }.getOrNull()
-                            if (loadedBytes != null) {
-                                withContext(Dispatchers.Main) {
-                                    val currentItem = player.currentMediaItem
-                                    if (currentItem != null && currentItem.mediaId == song.videoId) {
-                                        val updatedMetadata = currentItem.mediaMetadata.buildUpon()
-                                            .setArtworkData(loadedBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                            .build()
-                                        val updatedItem = currentItem.buildUpon()
-                                            .setMediaMetadata(updatedMetadata)
-                                            .build()
-                                        player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
-                                        Log.d(TAG, "Asynchronously updated notification artwork bytes")
-                                    }
-                                }
-                            }
-                        }
-                    }
+
                 }
 
                 withContext(Dispatchers.Main) {
+                    val ctx = context ?: return@withContext
                     // Ensure service is running
                     try {
-                        val ctx = context!!
                         val intent = android.content.Intent(ctx, VinMusicService::class.java)
                         ctx.startService(intent)
                     } catch (e: Exception) {
@@ -637,9 +694,12 @@ object PlayerSingleton {
                     val metaBuilder = MediaMetadata.Builder()
                         .setTitle(song.title)
                         .setArtist(song.author)
-                        .setArtworkUri(android.net.Uri.parse(song.thumbnailHd))
-                    if (artBytes != null)
+
+                    if (artBytes != null) {
                         metaBuilder.setArtworkData(artBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                    } else {
+                        metaBuilder.setArtworkUri(android.net.Uri.parse(song.thumbnailHd))
+                    }
 
                     val mediaItem = MediaItem.Builder()
                         .setMediaId(song.videoId)
@@ -653,7 +713,7 @@ object PlayerSingleton {
                     player.clearMediaItems()
                     
                     if (isCachedComplete) {
-                        val cache = if (isDownloadCacheValid) getDownloadCache(context!!) else getCache(context!!)
+                        val cache = if (isDownloadCacheValid) getDownloadCache(ctx) else getCache(ctx)
                         if (cache != null) {
                             if (onlineAndCached) {
                                 Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=${song.videoId}")
@@ -752,10 +812,17 @@ object PlayerSingleton {
             isAutoplayLoading = true
             scope.launch {
                 try {
-                    val recommended = recommendationRepository?.getSongRadio(seedSong.videoId)
+                    val recommended = recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author)
                     if (!recommended.isNullOrEmpty()) {
                         val newQueue = queue.toMutableList()
-                        newQueue.addAll(recommended)
+                        val existingIds = newQueue.map { it.videoId }.toSet()
+                        val uniqueRecs = recommended.filter { it.videoId !in existingIds }
+                        
+                        if (uniqueRecs.isNotEmpty()) {
+                            newQueue.addAll(uniqueRecs)
+                        } else {
+                            newQueue.addAll(recommended)
+                        }
                         queue = newQueue
                         
                         queueIndex++
@@ -763,21 +830,29 @@ object PlayerSingleton {
                             playSong(queue[queueIndex])
                         }
                     } else {
+                        if (!repeat && queueIndex == queue.size - 1) {
+                            withContext(Dispatchers.Main) { _player?.pause() }
+                            return@launch
+                        }
                         val next = if (shuffle) {
                             if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
                         } else 0
                         if (next < 0 || next >= queue.size) return@launch
                         queueIndex = next
-                        playSong(queue[next])
+                        withContext(Dispatchers.Main) { playSong(queue[next]) }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to fetch autoplay recommendations: ${e.message}")
+                    if (!repeat && queueIndex == queue.size - 1) {
+                        withContext(Dispatchers.Main) { _player?.pause() }
+                        return@launch
+                    }
                     val next = if (shuffle) {
                         if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
                     } else 0
                     if (next < 0 || next >= queue.size) return@launch
                     queueIndex = next
-                    playSong(queue[next])
+                    withContext(Dispatchers.Main) { playSong(queue[next]) }
                 } finally {
                     isAutoplayLoading = false
                 }
@@ -798,6 +873,10 @@ object PlayerSingleton {
         }
 
         val next = if (shuffle) queue.indices.random() else (queueIndex + 1) % queue.size
+        if (next == queueIndex && queue.size == 1 && !repeat) {
+            _player?.pause()
+            return
+        }
         queueIndex = next
         playSong(queue[next])
     }
@@ -890,76 +969,105 @@ object PlayerSingleton {
                 // Wait a bit to let the active song start playing smoothly
                 delay(3000)
                 
-                val nextIndex = if (shuffle) {
-                    if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
-                } else {
-                    (queueIndex + 1) % queue.size
+                for (offset in 1..2) {
+                    val nextIndex = if (shuffle) {
+                        (queueIndex + offset) % queue.size
+                    } else {
+                        (queueIndex + offset) % queue.size
+                    }
+                    if (nextIndex !in queue.indices) continue
+                    val nextSong = queue[nextIndex]
+                    
+                    // Prefetch thumbnail images using Coil in parallel
+                    launch(Dispatchers.IO) {
+                        try {
+                            val loader = SingletonImageLoader.get(ctx)
+                            val req1 = ImageRequest.Builder(ctx)
+                                .data(nextSong.thumbnail)
+                                .build()
+                            loader.enqueue(req1)
+                            
+                            val req2 = ImageRequest.Builder(ctx)
+                                .data(nextSong.thumbnailHd)
+                                .build()
+                            loader.enqueue(req2)
+                            Log.d(TAG, "Prefetched thumbnails for next song: ${nextSong.title}")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to prefetch thumbnail: ${e.message}")
+                        }
+                    }
+                    
+                    // Verify actual cached bytes exist in the download cache before skipping prefetch
+                    val localDownload = db?.downloadDao()?.get(nextSong.videoId)
+                    val isComplete = localDownload?.status == "completed"
+                    val dlCache = if (isComplete) ctx.let { getDownloadCache(it) } else null
+                    val dlCacheBytes = dlCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
+                    if (isComplete && dlCacheBytes > 100_000L) {
+                        Log.d(TAG, "prefetchNextSongs: Song ${nextSong.title} (offset $offset) is downloaded offline. Skipping.")
+                        continue
+                    }
+                    
+                    // Check if player cache already has enough bytes
+                    val pCache = getCache(ctx)
+                    val pCacheBytes = pCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
+                    if (pCacheBytes > 1_500_000L) {
+                        Log.d(TAG, "prefetchNextSongs: Song ${nextSong.title} (offset $offset) already cached. Skipping.")
+                        continue
+                    }
+                    
+                    // Get stream URL (either by waiting for nextStreamUrlDeferred or fetching it)
+                    var streamUrl: String? = null
+                    val deferredPair = nextStreamUrlDeferred
+                    if (offset == 1 && deferredPair != null && deferredPair.first == nextSong.videoId) {
+                        Log.d(TAG, "prefetchNextSongs: Found active stream URL prefetch deferred. Waiting...")
+                        streamUrl = deferredPair.second.await()
+                    } else {
+                        Log.d(TAG, "prefetchNextSongs: Fetching stream URL for prefetch offset=$offset...")
+                        val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
+                        streamUrl = InnerTube.getStreamUrl(nextSong.videoId, quality)
+                    }
+                    
+                    if (streamUrl.isNullOrBlank()) {
+                        Log.d(TAG, "prefetchNextSongs: Song stream URL is empty for offset=$offset. Skipping.")
+                        continue
+                    }
+                    
+                    val cache = getCache(ctx) ?: continue
+                    Log.d(TAG, "prefetchNextSongs: Starting prefetch of 2.5MB for song ${nextSong.title} (offset $offset, videoId=${nextSong.videoId})")
+                    
+                    val httpFactory = DefaultHttpDataSource.Factory()
+                        .setUserAgent("com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip")
+                        .setConnectTimeoutMs(30_000)
+                        .setReadTimeoutMs(30_000)
+                        .setAllowCrossProtocolRedirects(true)
+                        .setDefaultRequestProperties(mapOf(
+                            "Origin"  to "https://www.youtube.com",
+                            "Referer" to "https://www.youtube.com/"
+                        ))
+                    
+                    val cacheDataSource = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                        .setCache(cache)
+                        .setUpstreamDataSourceFactory(httpFactory)
+                        .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                        .createDataSource()
+                    
+                    val dataSpec = androidx.media3.datasource.DataSpec.Builder()
+                        .setUri(android.net.Uri.parse(streamUrl))
+                        .setPosition(0)
+                        .setLength(2_500_000L) // 2.5MB (Approx. 2 mins of audio)
+                        .setKey(nextSong.videoId)
+                        .build()
+                    
+                    val cacheWriter = androidx.media3.datasource.cache.CacheWriter(
+                        cacheDataSource,
+                        dataSpec,
+                        null,
+                        null
+                    )
+                    
+                    cacheWriter.cache()
+                    Log.d(TAG, "prefetchNextSongs: Successfully completed prefetch of 2.5MB for ${nextSong.title} (offset $offset)")
                 }
-                if (nextIndex !in queue.indices) return@launch
-                val nextSong = queue[nextIndex]
-                
-                // Verify actual cached bytes exist in the download cache before skipping prefetch
-                val localDownload = db?.downloadDao()?.get(nextSong.videoId)
-                val isComplete = localDownload?.status == "completed"
-                val dlCache = if (isComplete) ctx.let { getDownloadCache(it) } else null
-                val dlCacheBytes = dlCache?.getCachedBytes(nextSong.videoId, 0, -1) ?: 0L
-                if (isComplete && dlCacheBytes > 100_000L) {
-                    Log.d(TAG, "prefetchNextSongs: Next song is already downloaded offline and cache is valid. Skipping prefetch.")
-                    return@launch
-                }
-                
-                // Get stream URL (either by waiting for nextStreamUrlDeferred or fetching it)
-                var streamUrl: String? = null
-                val deferredPair = nextStreamUrlDeferred
-                if (deferredPair != null && deferredPair.first == nextSong.videoId) {
-                    Log.d(TAG, "prefetchNextSongs: Found active stream URL prefetch deferred. Waiting...")
-                    streamUrl = deferredPair.second.await()
-                } else {
-                    Log.d(TAG, "prefetchNextSongs: Fetching stream URL for prefetch...")
-                    val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
-                    streamUrl = InnerTube.getStreamUrl(nextSong.videoId, quality)
-                }
-                
-                if (streamUrl.isNullOrBlank()) {
-                    Log.d(TAG, "prefetchNextSongs: Next song stream URL is empty or null. Aborting.")
-                    return@launch
-                }
-                
-                val cache = getCache(ctx) ?: return@launch
-                Log.d(TAG, "prefetchNextSongs: Starting prefetch of 2.5MB for song ${nextSong.title} (videoId=${nextSong.videoId})")
-                
-                val httpFactory = DefaultHttpDataSource.Factory()
-                    .setUserAgent("com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip")
-                    .setConnectTimeoutMs(30_000)
-                    .setReadTimeoutMs(30_000)
-                    .setAllowCrossProtocolRedirects(true)
-                    .setDefaultRequestProperties(mapOf(
-                        "Origin"  to "https://www.youtube.com",
-                        "Referer" to "https://www.youtube.com/"
-                    ))
-                
-                val cacheDataSource = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                    .setCache(cache)
-                    .setUpstreamDataSourceFactory(httpFactory)
-                    .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                    .createDataSource()
-                
-                val dataSpec = androidx.media3.datasource.DataSpec.Builder()
-                    .setUri(android.net.Uri.parse(streamUrl))
-                    .setPosition(0)
-                    .setLength(2_500_000L) // 2.5MB (Approx. 2 mins of audio)
-                    .setKey(nextSong.videoId)
-                    .build()
-                
-                val cacheWriter = androidx.media3.datasource.cache.CacheWriter(
-                    cacheDataSource,
-                    dataSpec,
-                    null, // temporaryBuffer
-                    null  // progressListener
-                )
-                
-                cacheWriter.cache()
-                Log.d(TAG, "prefetchNextSongs: Successfully completed prefetch of 2.5MB for ${nextSong.title}")
             } catch (e: CancellationException) {
                 Log.d(TAG, "prefetchNextSongs cancelled.")
             } catch (e: Exception) {
@@ -1057,5 +1165,59 @@ object PlayerSingleton {
                 database.interactionSignalDao().insert(signal)
             }
         }
+    }
+
+    fun setEightDEnabled(enabled: Boolean) {
+        is8dEnabled = enabled
+        eightDAudioProcessor.enabled = enabled
+        if (enabled) {
+            val sessionId = _player?.audioSessionId ?: 0
+            if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId != 0) {
+                setupAudioEffects(sessionId)
+            }
+        } else {
+            releaseAudioEffects()
+        }
+    }
+
+    private fun setupAudioEffects(sessionId: Int) {
+        releaseAudioEffects()
+        try {
+            virtualizer = android.media.audiofx.Virtualizer(0, sessionId).apply {
+                if (strengthSupported) {
+                    setStrength(1000.toShort())
+                }
+                enabled = true
+            }
+            Log.d(TAG, "Virtualizer enabled on session $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize Virtualizer: ${e.message}")
+        }
+        try {
+            presetReverb = android.media.audiofx.PresetReverb(0, sessionId).apply {
+                preset = android.media.audiofx.PresetReverb.PRESET_LARGEHALL
+                enabled = true
+            }
+            _player?.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(presetReverb?.id ?: 0, 1.0f))
+            Log.d(TAG, "PresetReverb (Large Hall) enabled on session $sessionId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize PresetReverb: ${e.message}")
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        try {
+            virtualizer?.enabled = false
+            virtualizer?.release()
+        } catch (_: Exception) {}
+        virtualizer = null
+        try {
+            presetReverb?.enabled = false
+            presetReverb?.release()
+        } catch (_: Exception) {}
+        presetReverb = null
+        try {
+            _player?.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(0, 0.0f))
+        } catch (_: Exception) {}
     }
 }

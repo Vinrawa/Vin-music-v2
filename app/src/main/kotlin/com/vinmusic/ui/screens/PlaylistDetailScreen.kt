@@ -904,6 +904,24 @@ fun RecommendedPlaylistCard(
                 contentScale = ContentScale.Crop
             )
             
+            // Source logo badge overlay (top-left)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+            
             // Video Count Tag Overlay on the bottom right
             if (playlist.songCount.isNotBlank()) {
                 Row(
@@ -943,8 +961,18 @@ fun RecommendedPlaylistCard(
             overflow = TextOverflow.Ellipsis
         )
         
+        val displaySubtitle = remember(playlist.author) {
+            val raw = playlist.author
+            if (raw.isBlank()) {
+                "Playlist • YouTube Music"
+            } else if (raw.contains("Playlist", ignoreCase = true)) {
+                raw
+            } else {
+                "Playlist • $raw"
+            }
+        }
         Text(
-            text = if (playlist.author.isNotBlank()) "${playlist.author} • Playlist" else "YouTube Playlist",
+            text = displaySubtitle,
             fontSize = 12.sp,
             color = VinColors.Secondary,
             maxLines = 1,

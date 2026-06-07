@@ -25,6 +25,9 @@ object AppModule {
     fun provideHistoryDao(db: VinDatabase) = db.historyDao()
 
     @Provides
+    fun provideInteractionSignalDao(db: VinDatabase) = db.interactionSignalDao()
+
+    @Provides
     fun provideDownloadDao(db: VinDatabase) = db.downloadDao()
 
     @Provides
@@ -35,11 +38,20 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideRecommendationDatabase(@ApplicationContext ctx: Context): com.vinmusic.recommendation.RecommendationDatabase =
+        com.vinmusic.recommendation.RecommendationDatabase.getInstance(ctx)
+
+    @Provides
+    fun provideSpotifyTrackDao(db: com.vinmusic.recommendation.RecommendationDatabase) = db.trackDao()
+
+    @Provides
+    @Singleton
     fun provideRecommendationRepository(
         @ApplicationContext ctx: Context,
-        db: VinDatabase
+        db: VinDatabase,
+        recDb: com.vinmusic.recommendation.RecommendationDatabase
     ): com.vinmusic.recommendation.RecommendationRepository {
         com.vinmusic.innertube.YTMusicApi.attachContext(ctx)
-        return com.vinmusic.recommendation.RecommendationRepository(ctx, db)
+        return com.vinmusic.recommendation.RecommendationRepository(ctx, db, recDb)
     }
 }

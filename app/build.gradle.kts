@@ -16,8 +16,8 @@ android {
         applicationId   = "com.vinmusic"
         minSdk          = 26
         targetSdk       = 35
-        versionCode     = 7
-        versionName     = "2.1.5"
+        versionCode     = 10
+        versionName     = "2.1.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -142,6 +142,7 @@ dependencies {
     implementation(libs.firebase.auth)
     implementation(libs.firebase.config)
     implementation(libs.play.services.auth)
+
 
     // Test
     testImplementation(libs.junit)
