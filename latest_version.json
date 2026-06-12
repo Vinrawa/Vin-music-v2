@@ -1,7 +1,7 @@
 {
   "latestVersionCode": 12,
   "latestVersionName": "2.15",
-  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/download/v2.15/app-release.apk",
+  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/download/v2.1.5/app-release.apk",
   "forceUpdate": false,
   "releaseNotes": "Removed glassmorphism/blurs in favor of solid surfaces, optimized three-dot overflow button tap targets to 48x48dp, and integrated Sentry SDK for error logging and navigation performance monitoring."
 }
