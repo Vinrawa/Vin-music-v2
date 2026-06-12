@@ -222,7 +222,19 @@ fun FullPlayerScreen(
             .fillMaxSize()
             .background(VinColors.BgColor)
     ) {
-        // ── 1. Static dark theme gradient background ──
+        // ── 1. Album Art as blurred background ──
+        AsyncImage(
+            model = song.thumbnail,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.88f)
+                .scale(1.35f)
+                .graphicsLayer(alpha = 0.45f)
+        )
+
+        // ── 2. Static dark theme gradient background ──
         Box(
             modifier = Modifier
                 .fillMaxSize()
