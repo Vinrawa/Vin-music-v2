@@ -10,7 +10,9 @@ import android.os.Environment
 import android.util.Log
 import android.widget.Toast
 import com.google.gson.Gson
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -55,56 +57,76 @@ object UpdateManager {
     }
 
     fun downloadAndInstall(context: Context, updateInfo: UpdateInfo) {
-        try {
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val uri = Uri.parse(updateInfo.apkUrl)
-            val request = DownloadManager.Request(uri).apply {
-                setTitle("Vin Music Update")
-                setDescription("Downloading version ${updateInfo.latestVersionName}...")
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    "VinMusic_v${updateInfo.latestVersionName}.apk"
-                )
-                setMimeType("application/vnd.android.package-archive")
-            }
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try {
+                // GitHub release links redirect to AWS/Azure. DownloadManager often fails with these redirects.
+                // We resolve the final direct download URL using OkHttp's HEAD request.
+                val headRequest = Request.Builder().url(updateInfo.apkUrl).head().build()
+                val response = client.newCall(headRequest).execute()
+                val finalUrl = response.request.url.toString()
+                response.close()
 
-            downloadId = downloadManager.enqueue(request)
-            Toast.makeText(context, "Downloading update...", Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) {
+                    val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                    val uri = Uri.parse(finalUrl)
+                    
+                    var fileName = "VinMusic_v${updateInfo.latestVersionName}.apk"
+                    val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
+                    if (file.exists()) {
+                        fileName = "VinMusic_v${updateInfo.latestVersionName}_${System.currentTimeMillis()}.apk"
+                    }
 
-            // Register receiver to listen for completion
-            val onComplete = object : BroadcastReceiver() {
-                override fun onReceive(ctxt: Context, intent: Intent) {
-                    val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
-                    if (id == downloadId) {
-                        try {
-                            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                                val downloadedUri = downloadManager.getUriForDownloadedFile(downloadId)
-                                setDataAndType(downloadedUri, "application/vnd.android.package-archive")
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    val request = DownloadManager.Request(uri).apply {
+                        setTitle("Vin Music Update")
+                        setDescription("Downloading version ${updateInfo.latestVersionName}...")
+                        setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                        setDestinationInExternalPublicDir(
+                            Environment.DIRECTORY_DOWNLOADS,
+                            fileName
+                        )
+                        setMimeType("application/vnd.android.package-archive")
+                    }
+
+                    downloadId = downloadManager.enqueue(request)
+                    Toast.makeText(context, "Downloading update...", Toast.LENGTH_SHORT).show()
+
+                    // Register receiver to listen for completion
+                    val onComplete = object : BroadcastReceiver() {
+                        override fun onReceive(ctxt: Context, intent: Intent) {
+                            val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                            if (id == downloadId) {
+                                try {
+                                    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                                        val downloadedUri = downloadManager.getUriForDownloadedFile(downloadId)
+                                        setDataAndType(downloadedUri, "application/vnd.android.package-archive")
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    }
+                                    ctxt.startActivity(installIntent)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Install failed: ${e.message}")
+                                    Toast.makeText(ctxt, "Failed to start install. Check your Downloads folder.", Toast.LENGTH_LONG).show()
+                                }
+                                try {
+                                    ctxt.unregisterReceiver(this)
+                                } catch (e: Exception) {
+                                    // Ignore
+                                }
                             }
-                            ctxt.startActivity(installIntent)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Install failed: ${e.message}")
-                            Toast.makeText(ctxt, "Failed to start install. Check your Downloads folder.", Toast.LENGTH_LONG).show()
-                        }
-                        try {
-                            ctxt.unregisterReceiver(this)
-                        } catch (e: Exception) {
-                            // Ignore
                         }
                     }
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        context.registerReceiver(onComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED)
+                    } else {
+                        context.registerReceiver(onComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Log.e(TAG, "Failed to start download: ${e.message}")
+                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
-
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(onComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_EXPORTED)
-            } else {
-                context.registerReceiver(onComplete, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start download: ${e.message}")
-            Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 }
