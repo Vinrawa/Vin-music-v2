@@ -43,7 +43,7 @@ class DownloadService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
 
     private val activeJobs = ConcurrentHashMap<String, Job>()
-    private val maxParallelDownloads = 2
+    private val maxParallelDownloads = 8
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -118,6 +118,15 @@ class DownloadService : Service() {
         activeJobs.remove(videoId)
         serviceScope.launch(Dispatchers.IO) {
             val db = VinDatabase.getInstance(applicationContext)
+            try {
+                val dlEntity = db.downloadDao().get(videoId)
+                dlEntity?.thumbnailPath?.let { path ->
+                    val file = java.io.File(path)
+                    if (file.exists()) file.delete()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete thumbnail on cancel: ${e.message}")
+            }
             db.downloadDao().delete(videoId)
             checkQueue()
         }
@@ -172,10 +181,12 @@ class DownloadService : Service() {
             val tUrl = entity.thumbnailUrl
             if (tUrl != null) {
                 try {
-                    val hdUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-                    thumbnailPath = downloadThumbnail(videoId, hdUrl)
+                    // Prioritize the provided thumbnail URL (which is usually the square YouTube Music album art)
+                    thumbnailPath = downloadThumbnail(videoId, tUrl)
+                    // Fallback to the standard 16:9 YouTube video thumbnail if the first one fails
                     if (thumbnailPath == null) {
-                        thumbnailPath = downloadThumbnail(videoId, tUrl)
+                        val fallbackUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+                        thumbnailPath = downloadThumbnail(videoId, fallbackUrl)
                     }
                     Log.d(TAG, "Thumbnail downloaded for $videoId: $thumbnailPath")
                 } catch (e: Exception) {
@@ -410,7 +421,7 @@ class DownloadService : Service() {
 
     private suspend fun downloadThumbnail(videoId: String, thumbnailUrl: String): String? = withContext(Dispatchers.IO) {
         try {
-            val thumbnailDir = File(applicationContext.cacheDir, "thumbnails")
+            val thumbnailDir = File(applicationContext.filesDir, "thumbnails")
             if (!thumbnailDir.exists()) {
                 thumbnailDir.mkdirs()
             }

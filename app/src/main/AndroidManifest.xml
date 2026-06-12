@@ -41,6 +41,10 @@
         android:largeHeap="true"
         android:usesCleartextTraffic="true">
 
+        <!-- Sentry configuration -->
+        <meta-data android:name="io.sentry.dsn" android:value="https://placeholderPublicKey@o000000.ingest.sentry.io/0000000" />
+        <meta-data android:name="io.sentry.traces.sample-rate" android:value="1.0" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

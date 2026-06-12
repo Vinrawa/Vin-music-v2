@@ -502,7 +502,7 @@ fun ArtistProfileScreen(
             }
         } else {
             val shown = if (showAllSongs) topSongs else topSongs.take(10)
-            itemsIndexed(shown, key = { _, s -> "ts_${s.videoId}" }) { i, song ->
+            itemsIndexed(shown, key = { index, s -> "ts_${s.videoId}_$index" }) { i, song ->
                 ArtSongRow(
                     index = i + 1,
                     song = song,

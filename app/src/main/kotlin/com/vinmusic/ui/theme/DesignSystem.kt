@@ -50,11 +50,11 @@ object Vin {
         val SurfaceElevated = Color(0xFF141420)
         val SurfaceCard     = Color(0xFF16162A)
 
-        // Glassmorphism
-        val Glass           = Color(0xFFFFFFFF).copy(alpha = 0.05f)
-        val GlassHover      = Color(0xFFFFFFFF).copy(alpha = 0.08f)
-        val GlassBorder     = Color(0xFFFFFFFF).copy(alpha = 0.08f)
-        val GlassBorderHigh = Color(0xFFFFFFFF).copy(alpha = 0.14f)
+        // Solid elevated surfaces and high-contrast outline borders
+        val Glass           = Color(0xFF141424)
+        val GlassHover      = Color(0xFF1C1C30)
+        val GlassBorder     = Color(0xFF24243A)
+        val GlassBorderHigh = Color(0xFF2E2E4E)
 
         // Accent — hot red → soft pink gradient
         val Accent          = Color(0xFFFF2D55)
@@ -76,7 +76,7 @@ object Vin {
         val Info            = Color(0xFF3B82F6)
 
         // Utility
-        val Divider         = Color(0xFFFFFFFF).copy(alpha = 0.06f)
+        val Divider         = Color(0xFF1C1C2E)
         val Overlay         = Color(0xFF000000).copy(alpha = 0.5f)
         val Scrim           = Color(0xFF000000).copy(alpha = 0.75f)
 
@@ -100,14 +100,14 @@ object Vin {
         )
         val glass = Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.08f),
-                Color.White.copy(alpha = 0.02f)
+                Color(0xFF161628),
+                Color(0xFF10101C)
             )
         )
         val glassBorder = Brush.verticalGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.12f),
-                Color.White.copy(alpha = 0.04f)
+                Color(0xFF2E2E4E),
+                Color(0xFF24243A)
             )
         )
         val background = Brush.verticalGradient(
@@ -299,12 +299,7 @@ fun Modifier.glassCard(
     .background(Vin.Colors.Glass)
     .border(
         width = 0.8.dp,
-        brush = Brush.verticalGradient(
-            colors = listOf(
-                Color.White.copy(alpha = borderAlpha * 1.5f),
-                Color.White.copy(alpha = borderAlpha * 0.5f)
-            )
-        ),
+        color = Vin.Colors.GlassBorder,
         shape = RoundedCornerShape(cornerRadius)
     )
 

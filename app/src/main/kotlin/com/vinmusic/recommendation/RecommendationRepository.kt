@@ -471,7 +471,7 @@ class RecommendationRepository @Inject constructor(
         selected
     }
 
-    suspend fun getSongRadio(videoId: String, fallbackTitle: String = "", fallbackAuthor: String = ""): List<VideoItem> = withContext(Dispatchers.IO) {
+    suspend fun getSongRadio(videoId: String, fallbackTitle: String = "", fallbackAuthor: String = "", currentQueue: List<VideoItem> = emptyList()): List<VideoItem> = withContext(Dispatchers.IO) {
         val cacheKey = "song_radio_$videoId"
         val cached = loadVideoItems(cacheKey)
         if (cached != null && cached.isNotEmpty()) {
@@ -715,7 +715,13 @@ class RecommendationRepository @Inject constructor(
             }
             
             val officialBonus = if (meta.isOfficial) 0.1 else 0.0
-            scored.add(item to (totalSimilarity + officialBonus))
+            
+            // Artist Diversity Bonus
+            val currentQueueArtists = currentQueue.map { it.author.lowercase(Locale.ROOT) }.toSet()
+            val isNewArtistToSession = !currentQueueArtists.contains(item.author.lowercase(Locale.ROOT))
+            val diversityBonus = if (isNewArtistToSession) 0.15 else 0.0
+            
+            scored.add(item to (totalSimilarity + officialBonus + diversityBonus))
         }
 
         val sorted = scored.sortedByDescending { it.second }.map { it.first }
@@ -723,22 +729,51 @@ class RecommendationRepository @Inject constructor(
         val sequenced = ArrayList<VideoItem>()
         val candidatesPool = ArrayList(sorted)
         var lastArtist = seedAuthor.lowercase(Locale.ROOT)
+        
+        // Track artist occurrences for strict limiting
+        val artistPlayCounts = mutableMapOf<String, Int>()
+        currentQueue.forEach { item ->
+            val author = item.author.lowercase(Locale.ROOT)
+            artistPlayCounts[author] = (artistPlayCounts[author] ?: 0) + 1
+        }
+        val sequencePlayCounts = mutableMapOf<String, Int>()
 
         while (candidatesPool.isNotEmpty() && sequenced.size < 20) {
             val nextItem = candidatesPool.firstOrNull { candidate ->
-                val diffArtist = candidate.author.lowercase(Locale.ROOT) != lastArtist
+                val candArtist = candidate.author.lowercase(Locale.ROOT)
+                val diffArtist = candArtist != lastArtist
                 val notTooSimilar = sequenced.none { existing -> 
                     RecommendationManager.isTooSimilar(existing.title, candidate.title)
                 }
-                diffArtist && notTooSimilar
+                
+                // Constraints: Max 3 per artist in this sequence of 20, Max 5 in entire queue
+                val sequenceCount = sequencePlayCounts[candArtist] ?: 0
+                val totalCount = (artistPlayCounts[candArtist] ?: 0) + sequenceCount
+                val withinLimits = sequenceCount < 3 && totalCount < 5
+                
+                diffArtist && notTooSimilar && withinLimits
             } ?: candidatesPool.firstOrNull { candidate ->
-                sequenced.none { existing -> 
+                val candArtist = candidate.author.lowercase(Locale.ROOT)
+                val notTooSimilar = sequenced.none { existing -> 
                     RecommendationManager.isTooSimilar(existing.title, candidate.title)
                 }
+                
+                val sequenceCount = sequencePlayCounts[candArtist] ?: 0
+                val totalCount = (artistPlayCounts[candArtist] ?: 0) + sequenceCount
+                val withinLimits = sequenceCount < 3 && totalCount < 5
+                
+                notTooSimilar && withinLimits
+            } ?: candidatesPool.firstOrNull { candidate ->
+                val candArtist = candidate.author.lowercase(Locale.ROOT)
+                val sequenceCount = sequencePlayCounts[candArtist] ?: 0
+                val totalCount = (artistPlayCounts[candArtist] ?: 0) + sequenceCount
+                sequenceCount < 3 && totalCount < 5
             } ?: candidatesPool.first()
 
             sequenced.add(nextItem)
-            lastArtist = nextItem.author.lowercase(Locale.ROOT)
+            val candArtist = nextItem.author.lowercase(Locale.ROOT)
+            lastArtist = candArtist
+            sequencePlayCounts[candArtist] = (sequencePlayCounts[candArtist] ?: 0) + 1
             candidatesPool.remove(nextItem)
             
             candidatesPool.removeAll { candidate -> 

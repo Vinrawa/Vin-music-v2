@@ -5,6 +5,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentHashMap
 
 data class LyricsLine(val timeMs: Long, val text: String)
 
@@ -16,10 +18,26 @@ sealed class LyricsResult {
 
 object LyricsHelper {
     private val gson = Gson()
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+    
+    private val http = OkHttpClient.Builder().apply {
+        if (com.vinmusic.BuildConfig.DEBUG) {
+            try {
+                val trustAllCerts = arrayOf<javax.net.ssl.TrustManager>(
+                    object : javax.net.ssl.X509TrustManager {
+                        override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                        override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+                        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+                    }
+                )
+                val sslContext = javax.net.ssl.SSLContext.getInstance("SSL")
+                sslContext.init(null, trustAllCerts, java.security.SecureRandom())
+                sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as javax.net.ssl.X509TrustManager)
+                hostnameVerifier { _, _ -> true }
+            } catch (e: Exception) {}
+        }
+        connectTimeout(4, TimeUnit.SECONDS)
+        readTimeout(4, TimeUnit.SECONDS)
+    }.build()
 
     // List of common Indian record labels and YouTube distribution channel keywords
     private val INDIAN_RECORD_LABELS = listOf(
@@ -29,6 +47,22 @@ object LyricsHelper {
         "vyrl", "t-series apap", "t-series regional", "tseries", "zeemusic", 
         "sonymusic", "tips official"
     )
+
+    private val blacklistedProviders = ConcurrentHashMap<String, Long>()
+    private const val COOLDOWN_MS = 24 * 60 * 60 * 1000L
+
+    private fun isBlacklisted(provider: String): Boolean {
+        val lastFailed = blacklistedProviders[provider] ?: return false
+        if (System.currentTimeMillis() - lastFailed > COOLDOWN_MS) {
+            blacklistedProviders.remove(provider)
+            return false
+        }
+        return true
+    }
+
+    private fun markFailed(provider: String) {
+        blacklistedProviders[provider] = System.currentTimeMillis()
+    }
 
     fun fetch(title: String, artist: String, videoId: String = "", provider: String = "Auto"): LyricsResult {
         var t = cleanTitle(title)
@@ -62,32 +96,71 @@ object LyricsHelper {
             }
         }
 
-        // If artist is still empty, let's keep it empty so LrcLib searches by song title only
-        when (provider) {
-            "LrcLib" -> {
-                tryLrcLibGet(t, a)?.let { return it }
-                tryLrcLibSearch(t, a)?.let { return it }
+        if (provider != "Auto") {
+            try {
+                when (provider) {
+                    "LrcLib" -> {
+                        tryLrcLibGet(t, a)?.let { return it }
+                        tryLrcLibSearch(t, a)?.let { return it }
+                    }
+                    "SimpMusic" -> { trySimpMusic(t, a)?.let { return it } }
+                    "Paxsenix" -> { tryPaxsenix(t, a)?.let { return it } }
+                    "KuGou" -> { tryKugou(t, a)?.let { return it } }
+                }
+            } catch (e: Exception) {
+                // If specific provider requested and fails, just ignore and return NotFound
             }
-            "Paxsenix" -> {
-                tryPaxsenix(t, a)?.let { return it }
-            }
-            "KuGou" -> {
-                tryKugou(t, a)?.let { return it }
-            }
-            "SimpMusic" -> {
-                trySimpMusic(videoId)?.let { return it }
-            }
-            else -> {
-                // Auto: SimpMusic (precise videoId match) -> LrcLib -> KuGou -> Paxsenix
-                trySimpMusic(videoId)?.let { return it }
-                tryLrcLibGet(t, a)?.let { return it }
-                tryLrcLibSearch(t, a)?.let { return it }
-                tryKugou(t, a)?.let { return it }
-                tryPaxsenix(t, a)?.let { return it }
-            }
+            return LyricsResult.NotFound
         }
 
-        return LyricsResult.NotFound
+        // Auto: Race all providers in parallel and return the first successful result instantly
+        return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+            kotlinx.coroutines.withTimeoutOrNull(9000L) {
+                val channel = kotlinx.coroutines.channels.Channel<LyricsResult>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+                val remaining = java.util.concurrent.atomic.AtomicInteger(5) // 5 tasks: LrcLibGet, LrcLibSearch, KuGou, Paxsenix, SimpMusic
+
+                fun submit(name: String, delayMs: Long = 0L, block: () -> LyricsResult?) {
+                    if (isBlacklisted(name)) {
+                        if (remaining.decrementAndGet() == 0) channel.close()
+                        return
+                    }
+                    launch {
+                        try {
+                            if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+                            val res = block()
+                            if (res != null) {
+                                channel.trySend(res)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("LyricsHelper", "Provider $name failed: ${e.message}")
+                            if (e is javax.net.ssl.SSLException) {
+                                markFailed(name)
+                            }
+                        } finally {
+                            if (remaining.decrementAndGet() == 0) {
+                                channel.close()
+                            }
+                        }
+                    }
+                }
+
+                submit("LrcLib", 0L) { tryLrcLibGet(t, a) }
+                submit("LrcLibSearch", 0L) { tryLrcLibSearch(t, a) }
+                submit("SimpMusic", 1500L) { trySimpMusic(t, a) }
+                submit("KuGou", 2500L) { tryKugou(t, a) }
+                submit("Paxsenix", 3500L) { tryPaxsenix(t, a) }
+
+                try {
+                    for (res in channel) {
+                        coroutineContext.cancelChildren()
+                        return@withTimeoutOrNull res
+                    }
+                    LyricsResult.NotFound
+                } catch (e: Exception) {
+                    LyricsResult.NotFound
+                }
+            } ?: LyricsResult.NotFound
+        }
     }
 
     private fun cleanTitle(title: String): String {
@@ -102,19 +175,16 @@ object LyricsHelper {
     private fun cleanArtist(artist: String): String {
         var clean = artist.replace(" - Topic", "", ignoreCase = true).trim()
 
-        // If it's a known record label, mark as empty so we search purely by title or parse from title
         val lower = clean.lowercase()
         if (INDIAN_RECORD_LABELS.any { lower == it || lower.contains(it) }) {
             return ""
         }
 
-        // Handle multi-artists by taking the first primary singer (split by comma, &, and, feat, ft)
         val parts = clean.split(Regex(",|&|\\bfeat\\.?\\b|\\bft\\.?\\b|\\band\\b", RegexOption.IGNORE_CASE))
         if (parts.isNotEmpty()) {
             clean = parts[0].trim()
         }
 
-        // Re-verify the primary singer is not a label keyword
         val cleanLower = clean.lowercase()
         if (INDIAN_RECORD_LABELS.any { cleanLower == it || cleanLower.contains(it) }) {
             return ""
@@ -127,7 +197,8 @@ object LyricsHelper {
     private fun tryLrcLibGet(title: String, artist: String): LyricsResult? {
         if (artist.isEmpty()) return null
         val url = "https://lrclib.net/api/get?track_name=${enc(title)}&artist_name=${enc(artist)}"
-        return parseLrcLibItem(get(url) ?: return null, "LrcLib")
+        val resp = get(url) ?: return null
+        return parseLrcLibItem(resp, "LrcLib")
     }
 
     private fun tryLrcLibSearch(title: String, artist: String): LyricsResult? {
@@ -136,7 +207,6 @@ object LyricsHelper {
             urls.add("https://lrclib.net/api/search?track_name=${enc(title)}&artist_name=${enc(artist)}")
             urls.add("https://lrclib.net/api/search?q=${enc("$title $artist".trim())}")
         }
-        // General search by track title only as fallback
         urls.add("https://lrclib.net/api/search?q=${enc(title)}")
 
         for (url in urls) {
@@ -199,32 +269,40 @@ object LyricsHelper {
             .sortedBy { it.timeMs }
     }
 
-    fun get(url: String): String? = try {
-        http.newCall(Request.Builder().url(url).header("User-Agent","Mozilla/5.0").build())
-            .execute().use { it.body?.string() }
-    } catch (_: Exception) { null }
+    fun get(url: String): String? {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "VinMusic/2.0 (https://github.com/vinmusic)")
+            .build()
+        val response = http.newCall(request).execute()
+        if (!response.isSuccessful) return null
+        return response.use { it.body?.string() }
+    }
 
-    // ── SimpMusic Lyrics Scraper ───────────────────────────────────────────────
-    private fun trySimpMusic(videoId: String): LyricsResult? {
-        if (videoId.isBlank()) return null
-        val url = "https://lyrics.simpmusic.org/api/v1/$videoId"
-        val resp = get(url) ?: return null
-        return try {
-            val json = gson.fromJson(resp, Map::class.java) ?: return null
-            val data = json["data"] as? List<*> ?: return null
-            if (data.isEmpty()) return null
-            val first = data[0] as? Map<*, *> ?: return null
-            val lrc = first["syncedLyrics"] as? String
-            val plain = first["plainLyrics"] as? String
-            val source = (first["source"] as? String) ?: "SimpMusic"
+    // SimpMusic ───────────────────────────────────────────────────────────────
+    private fun trySimpMusic(title: String, artist: String): LyricsResult? {
+        val q = if (artist.isNotEmpty()) "$title $artist".trim() else title
+        val searchUrl = "https://lyrics.simpmusic.org/api/v1/search?q=${enc(q)}"
+        val resp = get(searchUrl) ?: return null
+        try {
+            val list = gson.fromJson(resp, List::class.java) ?: return null
+            if (list.isEmpty()) return null
+            val first = list[0] as? Map<*, *> ?: return null
+            val id = first["id"] as? String ?: return null
+            
+            val lyricsUrl = "https://lyrics.simpmusic.org/api/v1/lyrics/$id"
+            val lyricsResp = get(lyricsUrl) ?: return null
+            val lyricsData = gson.fromJson(lyricsResp, Map::class.java) ?: return null
+            
+            val lrc = lyricsData["synced"] as? String
+            val plain = lyricsData["plain"] as? String
+            
             when {
-                !lrc.isNullOrBlank() -> LyricsResult.Synced(parseLrc(lrc), source)
-                !plain.isNullOrBlank() -> LyricsResult.Plain(plain, source)
-                else -> null
+                !lrc.isNullOrBlank() -> return LyricsResult.Synced(parseLrc(lrc), "SimpMusic")
+                !plain.isNullOrBlank() -> return LyricsResult.Plain(plain, "SimpMusic")
             }
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) {}
+        return null
     }
 
     // ── KuGou Music Scraper ────────────────────────────────────────────────────
@@ -268,17 +346,14 @@ object LyricsHelper {
     fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
 
     fun transliterateToHinglish(text: String, lang: String = "pa"): String {
-        // Detect the script from the input text
         var detectedLang = lang
         if (lang == "pa") {
-            // Only override if the default language is used
             when {
-                text.any { it in '\u0A00'..'\u0A7F' } -> detectedLang = "pa"  // Gurmukhi (Punjabi)
-                text.any { it in '\u0900'..'\u097F' } -> detectedLang = "hi"  // Devanagari (Hindi)
-                else -> return text  // No Indic script detected
+                text.any { it in '\u0A00'..'\u0A7F' } -> detectedLang = "pa"
+                text.any { it in '\u0900'..'\u097F' } -> detectedLang = "hi"
+                else -> return text
             }
         } else {
-            // If explicit lang is provided, use it
             if (!text.any { it in '\u0A00'..'\u0A7F' || it in '\u0900'..'\u097F' }) return text
         }
         
@@ -306,7 +381,6 @@ object LyricsHelper {
             }
             if (sb.isEmpty()) return text
             
-            // Normalize unicode diacritics for readable Hinglish
             return sb.toString().replace("ā", "a").replace("ī", "i").replace("ū", "u")
                 .replace("ḍ", "d").replace("ṭ", "t").replace("ṇ", "n")
                 .replace("ś", "sh").replace("ṣ", "sh").replace("ṛ", "r")

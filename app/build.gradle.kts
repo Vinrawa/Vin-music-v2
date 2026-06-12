@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.hilt)
     alias(libs.plugins.google.services)
     alias(libs.plugins.firebase.crashlytics)
+    alias(libs.plugins.sentry)
 }
 
 android {
@@ -16,8 +17,8 @@ android {
         applicationId   = "com.vinmusic"
         minSdk          = 26
         targetSdk       = 35
-        versionCode     = 10
-        versionName     = "2.1.8"
+        versionCode     = 11
+        versionName     = "2.1.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -53,6 +54,12 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
     }
+}
+
+sentry {
+    // Disable proguard mapping uploads on local dev builds to avoid requiring Sentry Auth Token secrets.
+    autoUploadProguardMapping.set(false)
+    includeSourceContext.set(false)
 }
 
 configurations.all {
@@ -148,4 +155,8 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso)
+
+    // Sentry
+    implementation(libs.sentry.android)
+    implementation(libs.sentry.compose)
 }

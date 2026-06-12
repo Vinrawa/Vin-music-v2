@@ -289,8 +289,9 @@ object PlayerSingleton {
                 if (queueIndex == queue.size - 1 && !repeat && smartAutoplayEnabled) {
                     val seedSong = currentSong ?: queue[queueIndex]
                     Log.d(TAG, "Prefetching autoplay recommendations for seed=${seedSong.videoId}")
+                    val currentQueueCopy = queue.toList()
                     val recommended = withContext(Dispatchers.IO) {
-                        recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author)
+                        recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author, currentQueueCopy)
                     }
                     if (!recommended.isNullOrEmpty()) {
                         withContext(Dispatchers.Main) {
@@ -598,9 +599,9 @@ object PlayerSingleton {
                                 val file = java.io.File(dl.thumbnailPath)
                                 if (file.exists()) localBytes = file.readBytes()
                             }
-                            // Fallback: check standard cache directory
+                            // Fallback: check standard filesDir directory
                             if (localBytes == null) {
-                                val cachePath = java.io.File(ctx.cacheDir, "thumbnails/${song.videoId}.jpg")
+                                val cachePath = java.io.File(ctx.filesDir, "thumbnails/${song.videoId}.jpg")
                                 if (cachePath.exists()) localBytes = cachePath.readBytes()
                             }
                         } catch (e: Exception) {}
@@ -641,9 +642,9 @@ object PlayerSingleton {
                                 val file = java.io.File(dl.thumbnailPath)
                                 if (file.exists()) artBytes = file.readBytes()
                             }
-                            // Fallback: check standard cache directory
+                            // Fallback: check standard filesDir directory
                             if (artBytes == null) {
-                                val cachePath = java.io.File(ctx.cacheDir, "thumbnails/${song.videoId}.jpg")
+                                val cachePath = java.io.File(ctx.filesDir, "thumbnails/${song.videoId}.jpg")
                                 if (cachePath.exists()) artBytes = cachePath.readBytes()
                             }
                         } catch (e: Exception) {}
@@ -812,7 +813,8 @@ object PlayerSingleton {
             isAutoplayLoading = true
             scope.launch {
                 try {
-                    val recommended = recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author)
+                    val currentQueueCopy = queue.toList()
+                    val recommended = recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author, currentQueueCopy)
                     if (!recommended.isNullOrEmpty()) {
                         val newQueue = queue.toMutableList()
                         val existingIds = newQueue.map { it.videoId }.toSet()

@@ -151,6 +151,182 @@ object YTMusicApi {
         return if (continuation != null) parseHomeContinuation(raw) else parseHomeResponse(raw)
     }
 
+    /** Browse official playlists for specific mood/genre categories. */
+    fun getMoodPlaylists(params: String): List<com.vinmusic.innertube.AlbumItem> {
+        val raw = postBrowse("FEmusic_moods_and_genres_category", params = params) ?: return emptyList()
+        val playlists = mutableListOf<com.vinmusic.innertube.AlbumItem>()
+        try {
+            val root = gson.fromJson(raw, Map::class.java)
+            fun scan(node: Any?) {
+                when (node) {
+                    is Map<*, *> -> {
+                        val twoRow = node["musicTwoRowItemRenderer"] as? Map<*, *>
+                        if (twoRow != null) {
+                            val nav = twoRow["navigationEndpoint"] as? Map<*, *>
+                            val browse = nav?.get("browseEndpoint") as? Map<*, *>
+                            val browseId = browse?.get("browseId") as? String
+                            if (browseId != null && (browseId.startsWith("VL") || browseId.startsWith("PL") || browseId.startsWith("RDCLAK"))) {
+                                val title = ((twoRow["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                                val subtitle = ((twoRow["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+                                    ?.joinToString("") ?: ""
+                                
+                                val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
+                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
+                                val originalThumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = if (originalThumbnail.isNotEmpty()) originalThumbnail else (findUrlInNode(twoRow)?.normalizeUrl() ?: "")
+                                
+                                playlists.add(com.vinmusic.innertube.AlbumItem(
+                                    playlistId = browseId,
+                                    title = title,
+                                    author = "YouTube Music",
+                                    thumbnail = thumbnail,
+                                    songCount = subtitle
+                                ))
+                            }
+                        }
+                        node.values.forEach { scan(it) }
+                    }
+                    is List<*> -> node.forEach { scan(it) }
+                }
+            }
+            scan(root)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse mood playlists: ${e.message}")
+        }
+        return playlists.distinctBy { it.playlistId }
+    }
+
+    /**
+     * Browse official playlists for specific mood/genre categories — returns NAMED SECTIONS.
+     * Each section corresponds to a carousel shelf from YouTube Music (e.g. "Romantic Bollywood & Indian",
+     * "Pop romance", "K-Pop romance"). This preserves the full category page layout.
+     */
+    fun getMoodPlaylistSections(params: String): List<Pair<String, List<com.vinmusic.innertube.AlbumItem>>> {
+        val raw = postBrowse("FEmusic_moods_and_genres_category", params = params) ?: return emptyList()
+        val sections = mutableListOf<Pair<String, List<com.vinmusic.innertube.AlbumItem>>>()
+        try {
+            val root = gson.fromJson(raw, Map::class.java)
+
+            // Navigate to the section list contents
+            val singleColumn = (root["header"] as? Map<*, *>)
+            val tabContent = (root["contents"] as? Map<*, *>)
+                ?.get("singleColumnBrowseResultsRenderer") as? Map<*, *>
+            val tabs = (tabContent?.get("tabs") as? List<*>)?.firstOrNull() as? Map<*, *>
+            val sectionListRenderer = ((tabs?.get("tabRenderer") as? Map<*, *>)
+                ?.get("content") as? Map<*, *>)
+                ?.get("sectionListRenderer") as? Map<*, *>
+            val contents = sectionListRenderer?.get("contents") as? List<*> ?: emptyList<Any?>()
+
+            for (block in contents) {
+                val blockMap = block as? Map<*, *> ?: continue
+
+                // Try musicCarouselShelfRenderer (most common for category pages)
+                val carousel = blockMap["musicCarouselShelfRenderer"] as? Map<*, *>
+                if (carousel != null) {
+                    val header = carousel["header"] as? Map<*, *>
+                    val basicHeader = header?.get("musicCarouselShelfBasicHeaderRenderer") as? Map<*, *>
+                    val sectionTitle = ((basicHeader?.get("title") as? Map<*, *>)?.get("runs") as? List<*>)
+                        ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+                        ?.joinToString("")?.trim().orEmpty()
+
+                    if (sectionTitle.isNotEmpty()) {
+                        val playlists = mutableListOf<com.vinmusic.innertube.AlbumItem>()
+                        val items = carousel["contents"] as? List<*> ?: emptyList<Any?>()
+                        for (item in items) {
+                            val itemMap = item as? Map<*, *> ?: continue
+                            val twoRow = itemMap["musicTwoRowItemRenderer"] as? Map<*, *> ?: continue
+                            val nav = twoRow["navigationEndpoint"] as? Map<*, *>
+                            val browse = nav?.get("browseEndpoint") as? Map<*, *>
+                            val browseId = browse?.get("browseId") as? String
+                            if (browseId != null && (browseId.startsWith("VL") || browseId.startsWith("PL") || browseId.startsWith("RDCLAK"))) {
+                                val title = ((twoRow["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                                val subtitle = ((twoRow["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+                                    ?.joinToString("") ?: ""
+
+                                val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
+                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
+                                val originalThumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = if (originalThumbnail.isNotEmpty()) originalThumbnail else (findUrlInNode(twoRow)?.normalizeUrl() ?: "")
+
+                                playlists.add(com.vinmusic.innertube.AlbumItem(
+                                    playlistId = browseId,
+                                    title = title,
+                                    author = "YouTube Music",
+                                    thumbnail = thumbnail,
+                                    songCount = subtitle
+                                ))
+                            }
+                        }
+                        if (playlists.isNotEmpty()) {
+                            sections.add(sectionTitle to playlists.distinctBy { it.playlistId })
+                        }
+                    }
+                }
+
+                // Also try gridRenderer (some category pages use grids)
+                val grid = blockMap["gridRenderer"] as? Map<*, *>
+                if (grid != null) {
+                    val gridHeader = grid["header"] as? Map<*, *>
+                    val gridTitle = ((gridHeader?.get("gridHeaderRenderer") as? Map<*, *>)
+                        ?.get("title") as? Map<*, *>)?.get("runs") as? List<*>
+                    val sectionTitle = gridTitle
+                        ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+                        ?.joinToString("")?.trim().orEmpty()
+
+                    if (sectionTitle.isNotEmpty()) {
+                        val playlists = mutableListOf<com.vinmusic.innertube.AlbumItem>()
+                        val items = grid["items"] as? List<*> ?: emptyList<Any?>()
+                        for (item in items) {
+                            val itemMap = item as? Map<*, *> ?: continue
+                            val twoRow = itemMap["musicTwoRowItemRenderer"] as? Map<*, *> ?: continue
+                            val nav = twoRow["navigationEndpoint"] as? Map<*, *>
+                            val browse = nav?.get("browseEndpoint") as? Map<*, *>
+                            val browseId = browse?.get("browseId") as? String
+                            if (browseId != null && (browseId.startsWith("VL") || browseId.startsWith("PL") || browseId.startsWith("RDCLAK"))) {
+                                val title = ((twoRow["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("text") as? String } ?: ""
+                                val subtitle = ((twoRow["subtitle"] as? Map<*, *>)?.get("runs") as? List<*>)
+                                    ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }
+                                    ?.joinToString("") ?: ""
+
+                                val thumbnailRenderer = twoRow["thumbnail"] as? Map<*, *>
+                                val musicThumbnailRenderer = thumbnailRenderer?.get("musicThumbnailRenderer") as? Map<*, *>
+                                val originalThumbnail = ((musicThumbnailRenderer?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*>)
+                                    ?.firstOrNull()?.let { (it as? Map<*, *>)?.get("url") as? String }
+                                    ?.normalizeUrl() ?: ""
+                                val thumbnail = if (originalThumbnail.isNotEmpty()) originalThumbnail else (findUrlInNode(twoRow)?.normalizeUrl() ?: "")
+
+                                playlists.add(com.vinmusic.innertube.AlbumItem(
+                                    playlistId = browseId,
+                                    title = title,
+                                    author = "YouTube Music",
+                                    thumbnail = thumbnail,
+                                    songCount = subtitle
+                                ))
+                            }
+                        }
+                        if (playlists.isNotEmpty()) {
+                            sections.add(sectionTitle to playlists.distinctBy { it.playlistId })
+                        }
+                    }
+                }
+            }
+
+            Log.d(TAG, "getMoodPlaylistSections parsed ${sections.size} sections, total playlists=${sections.sumOf { it.second.size }}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse mood playlist sections: ${e.message}")
+        }
+        return sections
+    }
+
     /** Official user library playlists (FEmusic_liked_playlists). */
     fun getLibraryPlaylists(): List<com.vinmusic.innertube.AlbumItem> {
         val raw = postBrowse("FEmusic_liked_playlists")

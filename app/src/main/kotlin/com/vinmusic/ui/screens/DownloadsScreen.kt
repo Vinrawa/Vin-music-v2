@@ -122,6 +122,10 @@ fun DownloadsScreen(
                                     ctx.startService(intent)
                                     cache?.removeResource(dl.videoId)
                                     downloadCache?.removeResource(dl.videoId)
+                                    dl.thumbnailPath?.let { path ->
+                                        val file = java.io.File(path)
+                                        if (file.exists()) file.delete()
+                                    }
                                 } catch (_: Exception) {}
                                 db.downloadDao().delete(dl.videoId)
                                 cleanedCount++
@@ -159,6 +163,12 @@ fun DownloadsScreen(
                                     }
                                     ctx.startService(intent)
                                     downloadCache?.removeResource(dl.videoId)
+                                    try {
+                                        dl.thumbnailPath?.let { path ->
+                                            val file = java.io.File(path)
+                                            if (file.exists()) file.delete()
+                                        }
+                                    } catch (e: Exception) {}
                                     db.downloadDao().delete(dl.videoId)
                                     db.interactionSignalDao().updateDownloaded(dl.videoId, false)
                                 }
@@ -216,7 +226,7 @@ fun DownloadsScreen(
             }
         } else {
             LazyColumn(contentPadding = PaddingValues(bottom = 140.dp)) {
-                items(downloads, key = { it.videoId }) { dl ->
+                items(downloads) { dl ->
                     val song = VideoItem(dl.videoId, dl.title, dl.author, dl.durationText)
                     val isCompleted = dl.status == "completed"
                     val isDownloading = dl.status == "downloading"
@@ -298,10 +308,16 @@ fun DownloadsScreen(
                             }
                         }
 
-                        IconButton(onClick = {
-                            onSongMore(song)
-                        }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.MoreVert, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
+                        IconButton(
+                            onClick = { onSongMore(song) },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "Options",
+                                tint = VinColors.Secondary,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
                     }
                 }

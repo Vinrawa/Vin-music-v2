@@ -28,6 +28,8 @@ firebaseBom          = "33.1.1"
 googleServicesPlugin = "4.4.2"
 crashlyticsPlugin    = "3.0.1"
 playServicesAuth     = "21.2.0"
+sentry               = "8.1.0"
+sentryPlugin         = "4.14.1"
 
 [libraries]
 # AndroidX Core
@@ -114,6 +116,8 @@ firebase-firestore   = { group = "com.google.firebase", name = "firebase-firesto
 firebase-auth        = { group = "com.google.firebase", name = "firebase-auth" }
 firebase-config      = { group = "com.google.firebase", name = "firebase-config" }
 play-services-auth   = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
+sentry-android       = { group = "io.sentry", name = "sentry-android", version.ref = "sentry" }
+sentry-compose       = { group = "io.sentry", name = "sentry-compose-android", version.ref = "sentry" }
 
 [plugins]
 android-application  = { id = "com.android.application",          version.ref = "agp" }
@@ -123,3 +127,4 @@ ksp                  = { id = "com.google.devtools.ksp",           version.ref =
 hilt                 = { id = "com.google.dagger.hilt.android",    version.ref = "hilt" }
 google-services      = { id = "com.google.gms.google-services", version.ref = "googleServicesPlugin" }
 firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "crashlyticsPlugin" }
+sentry               = { id = "io.sentry.android.gradle", version.ref = "sentryPlugin" }

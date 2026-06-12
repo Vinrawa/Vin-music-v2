@@ -92,35 +92,20 @@ fun AlbumDetailScreen(
             .fillMaxSize()
             .background(VinColors.BgColor)
     ) {
-        // Blurs of the artwork as premium background
+        // Static solid background gradient header area
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(360.dp)
-                .graphicsLayer(alpha = 0.4f)
-        ) {
-            AsyncImage(
-                model = album.thumbnail,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(50.dp),
-                contentScale = ContentScale.Crop
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                VinColors.GradTop.copy(alpha = 0.7f),
-                                VinColors.BgColor.copy(alpha = 0.3f),
-                                VinColors.BgColor
-                            )
+                .height(260.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            VinColors.Surface2,
+                            VinColors.BgColor
                         )
                     )
-            )
-        }
+                )
+        )
 
         Column(modifier = Modifier.fillMaxSize()) {
             // Header bar
@@ -369,7 +354,7 @@ fun AlbumDetailScreen(
                             }
                         }
                     } else {
-                        itemsIndexed(songs, key = { _, s -> "alb_song_${s.videoId}" }) { index, song ->
+                        itemsIndexed(songs, key = { index, s -> "alb_song_${s.videoId}_$index" }) { index, song ->
                             val isPlaying = vm.currentSong?.videoId == song.videoId
                             AlbumSongRow(
                                 index = index + 1,
@@ -485,13 +470,13 @@ private fun AlbumSongRow(
 
         IconButton(
             onClick = onMore,
-            modifier = Modifier.size(24.dp)
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.MoreVert,
                 contentDescription = "Options",
                 tint = Color.White.copy(0.3f),
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(22.dp)
             )
         }
     }

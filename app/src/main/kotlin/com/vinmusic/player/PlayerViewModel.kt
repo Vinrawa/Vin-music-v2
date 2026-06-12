@@ -75,6 +75,7 @@ class PlayerViewModel @Inject constructor(
     var isLyricsLoading   by mutableStateOf(false)
     var isTransliterating by mutableStateOf(false)
     var currentLyricIndex by mutableIntStateOf(-1)  // for synced lyrics highlight
+    var currentSongDescription by mutableStateOf<String?>(null)
 
     fun transliterateLyricsToHinglish() {
         val currentResult = lyricsResult
@@ -552,8 +553,16 @@ class PlayerViewModel @Inject constructor(
             lyricsResult = LyricsResult.NotFound
             currentLyricIndex = -1
             lyricOffsetMs = 0L
+            currentSongDescription = null
             previousLyricsVideoId = currentId
             loadLyrics()
+            
+            viewModelScope.launch(Dispatchers.IO) {
+                val desc = com.vinmusic.innertube.InnerTube.getSongDescription(currentId)
+                withContext(Dispatchers.Main) {
+                    currentSongDescription = desc
+                }
+            }
         }
     }
 

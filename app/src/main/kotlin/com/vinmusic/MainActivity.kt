@@ -42,6 +42,7 @@ import com.vinmusic.ui.screens.*
 import com.vinmusic.ui.theme.VinColors
 import com.vinmusic.ui.theme.VinMusicTheme
 import com.vinmusic.ui.components.BottomNavBar
+import io.sentry.compose.withSentryObservableEffect
 import com.vinmusic.ui.components.MiniPlayer
 import com.vinmusic.innertube.InnerTube
 import com.vinmusic.innertube.ArtistItem
@@ -119,7 +120,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(UnstableApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
-    val navController     = rememberNavController()
+    val navController     = rememberNavController().withSentryObservableEffect()
     val currentBack       by navController.currentBackStackEntryAsState()
     val currentRoute      = currentBack?.destination?.route ?: "home"
 
@@ -129,6 +130,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
     var selectedAlbumForDetail by remember { mutableStateOf<AlbumItem?>(null) }
     var isArtistProfileLoading by remember { mutableStateOf(false) }
     var showSplashScreen  by remember { mutableStateOf(true) }
+    var showExitDialog    by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -192,85 +194,49 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
         }
     }
 
+    // Intercept back button at the root level to show an exit confirmation dialog
+    BackHandler(enabled = !showFullPlayer && selectedAlbumForDetail == null && selectedArtistForProfile == null && currentRoute == "home") {
+        showExitDialog = true
+    }
+
+    if (showExitDialog) {
+        val activity = context as? android.app.Activity
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            containerColor = VinColors.Surface2,
+            titleContentColor = Color.White,
+            textContentColor = Color.White.copy(alpha = 0.8f),
+            title = {
+                Text(text = "Exit Vin Music?", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            },
+            text = {
+                Text(text = "Do you really want to leave?", fontSize = 16.sp)
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showExitDialog = false
+                        activity?.finish()
+                    }
+                ) {
+                    Text("Yes", color = VinColors.Accent, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { showExitDialog = false }
+                ) {
+                    Text("No", color = Color.White, fontSize = 16.sp)
+                }
+            }
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(VinColors.BgColor)
+            .background(com.vinmusic.ui.theme.Vin.Gradients.background)
     ) {
-        // ── Global Dynamic Animated Lava Lamp Fluid Background ──
-        val infiniteTransition = rememberInfiniteTransition(label = "global_bg_anims")
-        val blob1X by infiniteTransition.animateFloat(
-            initialValue = -100f, targetValue = 400f,
-            animationSpec = infiniteRepeatable(tween(35000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob1X"
-        )
-        val blob2Y by infiniteTransition.animateFloat(
-            initialValue = 800f, targetValue = -150f,
-            animationSpec = infiniteRepeatable(tween(42000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob2Y"
-        )
-        val blob3X by infiniteTransition.animateFloat(
-            initialValue = 500f, targetValue = -200f,
-            animationSpec = infiniteRepeatable(tween(48000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "blob3X"
-        )
-
-        val currentSong = vm.currentSong
-        var palette by remember { mutableStateOf(com.vinmusic.ui.utils.ColorExtractor.MusicPalette(
-            gradTop = Color(0xFF6338EC),
-            gradMid = Color(0xFFEC4899),
-            gradBottom = Color(0xFF0E0E11),
-            accent = Color(0xFF1E3A8A)
-        )) }
-
-        LaunchedEffect(currentSong?.thumbnailHd) {
-            currentSong?.thumbnailHd?.let { url ->
-                val extracted = com.vinmusic.ui.utils.ColorExtractor.extractColorsFromUrl(context, url)
-                palette = extracted
-            }
-        }
-
-        val animatedColor1 by animateColorAsState(targetValue = palette.gradTop, animationSpec = tween(2000))
-        val animatedColor2 by animateColorAsState(targetValue = palette.gradMid, animationSpec = tween(2000))
-        val animatedColor3 by animateColorAsState(targetValue = palette.accent, animationSpec = tween(2000))
-
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(animatedColor2.copy(alpha = 0.15f), Color.Transparent, Color.Transparent)
-                )
-            )
-            // Blob 1: Top Gradient Color
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(animatedColor1.copy(alpha = 0.16f), Color.Transparent),
-                    center = Offset(blob1X.dp.toPx(), 220.dp.toPx()),
-                    radius = size.width * 0.75f
-                ),
-                radius = size.width * 0.75f,
-                center = Offset(blob1X.dp.toPx(), 220.dp.toPx())
-            )
-            // Blob 2: Mid Gradient Color
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(animatedColor2.copy(alpha = 0.12f), Color.Transparent),
-                    center = Offset(100.dp.toPx(), blob2Y.dp.toPx()),
-                    radius = size.width * 0.65f
-                ),
-                radius = size.width * 0.65f,
-                center = Offset(100.dp.toPx(), blob2Y.dp.toPx())
-            )
-            // Blob 3: Accent Color
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(animatedColor3.copy(alpha = 0.14f), Color.Transparent),
-                    center = Offset(blob3X.dp.toPx(), 620.dp.toPx()),
-                    radius = size.width * 0.70f
-                ),
-                radius = size.width * 0.70f,
-                center = Offset(blob3X.dp.toPx(), 620.dp.toPx())
-            )
-        }
         
         SharedTransitionLayout {
             Scaffold(
@@ -459,11 +425,16 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                     isArtistProfileLoading = true
                     scope.launch(Dispatchers.IO) {
                         try {
-                            val results = InnerTube.searchAll(artistName)
+                            val cleanArtist = artistName.replace("-topic", "", ignoreCase = true)
+                                .replace("- topic", "", ignoreCase = true).trim()
+                            val primaryArtist = cleanArtist.split(Regex("""\s*(?:feat\.?|ft\.?|&|,|and)\s*""", RegexOption.IGNORE_CASE))
+                                .map { it.trim() }.filter { it.isNotEmpty() }.firstOrNull() ?: cleanArtist
+
+                            val results = InnerTube.searchAll(primaryArtist)
                             val matchedArtist = results.artists.firstOrNull {
-                                it.name.equals(artistName, ignoreCase = true)
+                                it.name.equals(primaryArtist, ignoreCase = true)
                             } ?: results.artists.firstOrNull()
-                              ?: ArtistItem(channelId = "", name = artistName, thumbnail = "")
+                              ?: ArtistItem(channelId = "", name = primaryArtist, thumbnail = "")
 
                             withContext(Dispatchers.Main) {
                                 selectedArtistForProfile = matchedArtist
@@ -541,7 +512,7 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                 Card(
                     modifier = Modifier.padding(32.dp),
                     shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = VinColors.Surface2.copy(alpha = 0.85f)),
+                    colors = CardDefaults.cardColors(containerColor = VinColors.Surface2),
                     border = BorderStroke(1.dp, VinColors.GlassBorder)
                 ) {
                     Column(
@@ -589,6 +560,17 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                             cache?.removeResource(song.videoId)
                             val downloadCache = com.vinmusic.player.PlayerSingleton.getDownloadCache(context)
                             downloadCache?.removeResource(song.videoId)
+
+                            // Clean up thumbnail to save space
+                            try {
+                                val dlEntity = db.downloadDao().get(song.videoId)
+                                dlEntity?.thumbnailPath?.let { path ->
+                                    val file = java.io.File(path)
+                                    if (file.exists()) file.delete()
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.e("VIN_MAIN", "Failed to delete offline thumbnail: ${e.message}")
+                            }
 
                             db.downloadDao().delete(song.videoId)
                             db.interactionSignalDao().updateDownloaded(song.videoId, false)

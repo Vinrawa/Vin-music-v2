@@ -83,9 +83,40 @@ object InnerTube {
         return when {
             url.contains("c=ANDROID_VR") -> "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip"
             url.contains("c=ANDROID") -> "com.google.android.youtube/17.31.35(Linux; U; Android 11) gzip"
-            url.contains("c=IOS") -> "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X) AppleWebKit/605.1.15"
+            url.contains("c=IOS") -> "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)"
             url.contains("c=TVHTML5") -> "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 TV Safari/538.1"
             else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+    }
+
+    fun getSongDescription(videoId: String): String? {
+        val endpoint = "$BASE/player?prettyPrint=false"
+        val ctx = mapOf(
+            "clientName" to "WEB_REMIX",
+            "clientVersion" to "1.20231214.00.00",
+            "hl" to "en",
+            "gl" to "IN"
+        )
+        val body = mapOf(
+            "context" to mapOf("client" to ctx),
+            "videoId" to videoId
+        )
+        val reqBuilder = Request.Builder()
+            .url(endpoint)
+            .post(gson.toJson(body).toRequestBody(JSON))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("X-YouTube-Client-Name", "67")
+            .header("X-YouTube-Client-Version", "1.20231214.00.00")
+        try {
+            val response = http.newCall(reqBuilder.build()).execute()
+            val raw = response.body?.string() ?: return null
+            val root = gson.fromJson(raw, Map::class.java)
+            val videoDetails = root["videoDetails"] as? Map<*, *>
+            return videoDetails?.get("shortDescription") as? String
+        } catch (e: Exception) {
+            log("getSongDescription error: ${e.message}")
+            return null
         }
     }
 
@@ -122,8 +153,10 @@ object InnerTube {
                         streams.maxByOrNull { it.bitrate }?.content
                     }
                 }
-            log("NewPipe result: ${url?.take(60)}")
-            if (!url.isNullOrEmpty()) return url
+            if (!url.isNullOrEmpty()) {
+                log("NewPipe result SUCCESS Host: ${android.net.Uri.parse(url).host}")
+                return url
+            }
         } catch (e: Throwable) {
             log("NewPipe FAILED: ${e.javaClass.simpleName}: ${e.message?.take(100)}")
         }
@@ -135,7 +168,7 @@ object InnerTube {
             try {
                 val url = fetchViaClient(videoId, client, quality)
                 if (!url.isNullOrEmpty()) {
-                    log("SUCCESS via ${client.name}: ${url.take(60)}")
+                    log("SUCCESS via ${client.name} Host: ${android.net.Uri.parse(url).host}")
                     return url
                 }
             } catch (e: Throwable) {
@@ -144,16 +177,28 @@ object InnerTube {
         }
 
         log("ALL clients and fallbacks failed for $videoId")
+        
+        // Final fallback: Experimental Resolver (Metrolist IOS style)
+        val experimentalUrl = ExperimentalResolver.getStreamUrl(videoId, quality)
+        if (!experimentalUrl.isNullOrEmpty()) {
+            log("SUCCESS via ExperimentalResolver Host: ${android.net.Uri.parse(experimentalUrl).host}")
+            return experimentalUrl
+        }
+        
         return null
     }
 
     // ── InnerTube player request ──────────────────────────────────────────────
     private fun fetchViaClient(videoId: String, client: YTClient, quality: String? = null): String? {
+        val endpoint = "$BASE/player?prettyPrint=false"
+        log("--- DIAGNOSTIC: Testing ${client.name} / ${client.version} ---")
+        log("Endpoint: $endpoint")
+
         val ctx = buildMap<String, Any> {
             put("clientName",    client.name)
             put("clientVersion", client.version)
             put("hl",            "en")
-            put("gl",            "IN")   // India locale — improves music availability
+            put("gl",            "IN")
             if (visitorData.isNotEmpty()) put("visitorData", visitorData)
             putAll(client.extra)
         }
@@ -173,7 +218,7 @@ object InnerTube {
         }
 
         val reqBuilder = Request.Builder()
-            .url("$BASE/player?prettyPrint=false")
+            .url(endpoint)
             .post(gson.toJson(body).toRequestBody(JSON))
             .header("Content-Type",             "application/json")
             .header("User-Agent",               client.ua)
@@ -184,52 +229,83 @@ object InnerTube {
         if (visitorData.isNotEmpty())
             reqBuilder.header("X-Goog-Visitor-Id", visitorData)
 
-        val raw = http.newCall(reqBuilder.build()).execute().use { it.body?.string() }
-            ?: run { log("${client.name}: null body"); return null }
-
-        val root   = gson.fromJson(raw, Map::class.java)
-        val status = (root["playabilityStatus"] as? Map<*, *>)?.get("status") as? String
-        val reason = (root["playabilityStatus"] as? Map<*, *>)?.get("reason") as? String
-        log("${client.name}: status=$status reason=${reason?.take(50)}")
-
-        if (status != "OK") return null
-
-        val sd = root["streamingData"] as? Map<*, *>
-            ?: run { log("${client.name}: no streamingData"); return null }
-
-        // Best: audio-only adaptive without cipher
-        val audioUrl = (sd["adaptiveFormats"] as? List<*>)
-            ?.mapNotNull { it as? Map<*, *> }
-            ?.filter { f ->
-                val mime  = f["mimeType"] as? String ?: ""
-                val url   = f["url"]      as? String ?: ""
-                val noCip = !f.containsKey("signatureCipher") && !f.containsKey("cipher")
-                mime.startsWith("audio/") && url.isNotEmpty() && noCip
+        val raw: String
+        try {
+            val response = http.newCall(reqBuilder.build()).execute()
+            log("HTTP Status: ${response.code}")
+            raw = response.body?.string() ?: ""
+            if (raw.isEmpty()) {
+                log("Result: Empty body")
+                return null
             }
-            ?.let { streams ->
-                val targetKbps = when {
-                    quality?.contains("96") == true  -> 96
-                    quality?.contains("160") == true -> 160
-                    quality?.contains("128") == true -> 128
-                    quality?.contains("256") == true -> 256
-                    quality?.contains("320") == true -> 320
-                    else -> null
-                }
-                if (targetKbps != null) {
-                    streams.minByOrNull { Math.abs(((it["bitrate"] as? Double)?.toLong() ?: 0L) - (targetKbps * 1024)) }
-                } else {
-                    streams.maxByOrNull { (it["bitrate"] as? Double)?.toLong() ?: 0L }
-                }
+        } catch (e: Exception) {
+            log("Exception Stage: Network request failed - ${e.message}")
+            return null
+        }
+
+        try {
+            val root   = gson.fromJson(raw, Map::class.java)
+            val status = (root["playabilityStatus"] as? Map<*, *>)?.get("status") as? String
+            val reason = (root["playabilityStatus"] as? Map<*, *>)?.get("reason") as? String
+            log("playabilityStatus: $status")
+            log("reason: $reason")
+
+            val sd = root["streamingData"] as? Map<*, *>
+            val hasFormats = sd?.containsKey("formats") == true
+            val hasAdaptiveFormats = sd?.containsKey("adaptiveFormats") == true
+            val hasHls = sd?.containsKey("hlsManifestUrl") == true
+            val hasDash = sd?.containsKey("dashManifestUrl") == true
+            log("Returned -> formats: $hasFormats, adaptiveFormats: $hasAdaptiveFormats, HLS: $hasHls, DASH: $hasDash")
+
+            if (status != "OK") return null
+            if (sd == null) return null
+
+            val adaptiveFormats = sd["adaptiveFormats"] as? List<*>
+            if (adaptiveFormats != null) {
+                val hasCipher = adaptiveFormats.any { (it as? Map<*, *>)?.containsKey("signatureCipher") == true || (it as? Map<*, *>)?.containsKey("cipher") == true }
+                log("adaptiveFormats URLs contained cipher/signature: $hasCipher")
             }
-            ?.get("url") as? String
 
-        if (!audioUrl.isNullOrEmpty()) return audioUrl
+            // Best: audio-only adaptive without cipher
+            val audioUrl = adaptiveFormats
+                ?.mapNotNull { it as? Map<*, *> }
+                ?.filter { f ->
+                    val mime  = f["mimeType"] as? String ?: ""
+                    val url   = f["url"]      as? String ?: ""
+                    val noCip = !f.containsKey("signatureCipher") && !f.containsKey("cipher")
+                    mime.startsWith("audio/") && url.isNotEmpty() && noCip
+                }
+                ?.let { streams ->
+                    val targetKbps = when {
+                        quality?.contains("96") == true  -> 96
+                        quality?.contains("160") == true -> 160
+                        quality?.contains("128") == true -> 128
+                        quality?.contains("256") == true -> 256
+                        quality?.contains("320") == true -> 320
+                        else -> null
+                    }
+                    if (targetKbps != null) {
+                        streams.minByOrNull { Math.abs(((it["bitrate"] as? Double)?.toLong() ?: 0L) - (targetKbps * 1024)) }
+                    } else {
+                        streams.maxByOrNull { (it["bitrate"] as? Double)?.toLong() ?: 0L }
+                    }
+                }
+                ?.get("url") as? String
 
-        // Fallback: muxed stream
-        return (sd["formats"] as? List<*>)
-            ?.mapNotNull { it as? Map<*, *> }
-            ?.filter { it.containsKey("url") && !it.containsKey("signatureCipher") }
-            ?.firstOrNull()?.get("url") as? String
+            if (!audioUrl.isNullOrEmpty()) {
+                log("Found direct adaptive audio format.")
+                return audioUrl
+            }
+
+            // Fallback: muxed stream
+            return (sd["formats"] as? List<*>)
+                ?.mapNotNull { it as? Map<*, *> }
+                ?.filter { it.containsKey("url") && !it.containsKey("signatureCipher") && !it.containsKey("cipher") }
+                ?.firstOrNull()?.get("url") as? String
+        } catch (e: Exception) {
+            log("Exception Stage: JSON parsing/extraction failed - ${e.message}")
+            return null
+        }
     }
 
     /**

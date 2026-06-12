@@ -11,10 +11,19 @@ import coil3.disk.directory
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
 
+import io.sentry.android.core.SentryAndroid
+
 @HiltAndroidApp
 class VinMusicApp : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        
+        // Initialize Sentry with custom runtime options
+        SentryAndroid.init(this) { options ->
+            options.isEnableUserInteractionTracing = true
+            options.isEnableUserInteractionBreadcrumbs = true
+        }
+
         NewPipeInit.init()
         YTMusicApi.attachContext(this)
         com.vinmusic.config.RemoteConfigHelper.init()

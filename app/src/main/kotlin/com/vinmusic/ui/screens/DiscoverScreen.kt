@@ -335,28 +335,11 @@ fun DiscoverScreen(
                 label = "pulse"
             )
 
-            // Blur background cover
-            AsyncImage(
-                model = currentCard.videoItem.thumbnailHd ?: currentCard.videoItem.thumbnail,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize().blur(60.dp).graphicsLayer(alpha = 0.5f),
-                contentScale = ContentScale.Crop
-            )
-
-            // Dynamic light overlay
+            // Solid dark gradient background
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer(rotationZ = bgRotation, scaleX = 1.5f, scaleY = 1.5f)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                Color(0xFF8B5CF6).copy(alpha = pulseAlpha),
-                                Color(0xFFEC4899).copy(alpha = pulseAlpha * 0.6f),
-                                Color.Transparent
-                            )
-                        )
-                    )
+                    .background(com.vinmusic.ui.theme.Vin.Gradients.background)
             )
 
             Box(

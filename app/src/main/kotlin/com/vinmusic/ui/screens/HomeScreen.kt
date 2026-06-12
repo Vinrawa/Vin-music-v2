@@ -185,6 +185,7 @@ fun HomeScreen(
     var selectedSpotifyMix by remember { mutableStateOf<com.vinmusic.recommendation.SpotifyMix?>(null) }
     var isRecommendationsLoading by remember { mutableStateOf(true) }
     var isRefreshing by remember { mutableStateOf(false) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
     val pullRefreshState = rememberPullToRefreshState()
 
     var quickPicks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
@@ -758,8 +759,8 @@ fun HomeScreen(
         scope.launch(Dispatchers.IO) {
             try {
                 val cachePrefs = ctx.getSharedPreferences("suggested_artists_cache", Context.MODE_PRIVATE)
-                val cachedJson = cachePrefs.getString("artists_json", null)
-                val cacheTime = cachePrefs.getLong("cache_time", 0L)
+                val cachedJson = cachePrefs.getString("artists_json_v2", null)
+                val cacheTime = cachePrefs.getLong("cache_time_v2", 0L)
                 val now = System.currentTimeMillis()
                 
                 if (cachedJson != null && (now - cacheTime < 6 * 60 * 60 * 1000L)) {
@@ -839,11 +840,14 @@ fun HomeScreen(
                             } catch (_: Exception) { null }
                         }
                     }
-                    val resolved = deferreds.awaitAll().filterNotNull().distinctBy { it.channelId }.take(8)
+                    val resolved = deferreds.awaitAll()
+                        .filterNotNull()
+                        .distinctBy { normalizeArtistName(it.name) }
+                        .take(8)
                     if (resolved.isNotEmpty()) {
                         cachePrefs.edit()
-                            .putString("artists_json", com.google.gson.Gson().toJson(resolved))
-                            .putLong("cache_time", now)
+                            .putString("artists_json_v2", com.google.gson.Gson().toJson(resolved))
+                            .putLong("cache_time_v2", now)
                             .apply()
                             
                         withContext(Dispatchers.Main) {
@@ -871,17 +875,35 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(filter) {
+    LaunchedEffect(filter, refreshTrigger) {
         if (filter == "All" || filter == "For You") return@LaunchedEffect
 
         val moodChips = setOf("Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party")
 
         if (filter in moodChips) {
-            // ── Deep Mood Sections: artist-specific songs for this mood
+            // ── Deep Mood Sections: official YTM category sections + artist-specific
             isMoodLoading = true
             moodSections = emptyList()
             scope.launch(Dispatchers.IO) {
                 try {
+                    val MOOD_PARAMS_MAP = mapOf(
+                        "Chill" to "ggMPOg1uX1JOQWZFeDByc2Jm",
+                        "Energize" to "ggMPOg1uX2lRZUZiMnNrQnJW",
+                        "Happy" to "ggMPOg1uXzZQbDB5eThLRTQ3",
+                        "Feel Good" to "ggMPOg1uXzZQbDB5eThLRTQ3",
+                        "Focus" to "ggMPOg1uX0NvNGNhWThMYWRh",
+                        "Romance" to "ggMPOg1uX0FzQ2FhZWtUY211",
+                        "Sad" to "ggMPOg1uX0JLQ0gySWZKZVY1",
+                        "Sleep" to "ggMPOg1uX1MxaFQ3Z0JMZkN4",
+                        "Workout" to "ggMPOg1uX09LWkhnTjRGRUJh",
+                        "Party" to "ggMPOg1uX0pmQ0s2V0JRclZs",
+                        "Bollywood" to "ggMPOg1uX2ZvbzNJMzJwRkFT",
+                        "Indie" to "ggMPOg1uX3FzMXBrNWlUMWNH",
+                        "Lo-fi" to "ggMPOg1uX1JOQWZFeDByc2Jm",
+                        "K-Pop" to "ggMPOg1uX0JrbjBDOFFPSzJW",
+                        "90s Hits" to "ggMPOg1uX253QXk4VXN5NGdj"
+                    )
+                    
                     val moodKeyword = when (filter) {
                         "Happy"    -> "happy upbeat feel good"
                         "Sad"      -> "sad emotional heartbreak"
@@ -895,26 +917,38 @@ fun HomeScreen(
                     val moodLabel = filter.filter { it.isLetter() || it.isWhitespace() }.trim()
                     val sections = mutableListOf<Pair<String, List<AlbumItem>>>()
 
-                    // Primary: use YTM community playlist search (much better results for mood queries)
-                    try {
-                        val genericResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("best $moodKeyword playlist").take(8)
-                        if (genericResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to genericResults)
-                    } catch (_: Exception) {}
+                    // Try official category sections first (preserves all named shelves from YTM)
+                    val officialParams = MOOD_PARAMS_MAP[filter]
+                    if (officialParams != null) {
+                        try {
+                            val officialSections = com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            sections.addAll(officialSections)
+                        } catch (e: Exception) {
+                            android.util.Log.e("HomeScreen", "Failed to fetch official category sections: ${e.message}")
+                        }
+                    }
 
-                    // Fallback: if community search returned nothing, try standard YouTube search
+                    // Fallback if official sections returned nothing
                     if (sections.isEmpty()) {
                         try {
-                            val fallbackResults = com.vinmusic.innertube.InnerTube.searchAll("best $moodKeyword playlist 2025").albums.take(8)
-                            if (fallbackResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to fallbackResults)
+                            val genericResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("best $moodKeyword playlist").take(8)
+                            if (genericResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to genericResults)
+                        } catch (_: Exception) {}
+
+                        if (sections.isEmpty()) {
+                            try {
+                                val fallbackResults = com.vinmusic.innertube.InnerTube.searchAll("best $moodKeyword playlist 2025").albums.take(8)
+                                if (fallbackResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to fallbackResults)
+                            } catch (_: Exception) {}
+                        }
+
+                        try {
+                            val moreResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$moodKeyword songs mix").take(8)
+                            if (moreResults.isNotEmpty()) sections.add("$moodLabel Mixes" to moreResults)
                         } catch (_: Exception) {}
                     }
 
-                    // More mood playlists with different queries
-                    try {
-                        val moreResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$moodKeyword songs mix").take(8)
-                        if (moreResults.isNotEmpty()) sections.add("$moodLabel Mixes" to moreResults)
-                    } catch (_: Exception) {}
-
+                    // Add artist-specific mood sections from recently played
                     val topArtists = recentlyPlayed
                         .map { it.author.trim() }
                         .filter { it.isNotBlank() && it.lowercase() != "unknown" && !com.vinmusic.recommendation.RecommendationManager.isCorporateOrDistributorChannel(it) }
@@ -937,10 +971,14 @@ fun HomeScreen(
                     withContext(Dispatchers.Main) {
                         moodSections = sections
                         isMoodLoading = false
+                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Deep Mood failed: ${e.message}")
-                    withContext(Dispatchers.Main) { isMoodLoading = false }
+                    withContext(Dispatchers.Main) {
+                        isMoodLoading = false
+                        isRefreshing = false
+                    }
                 }
             }
         } else if (filter == "Rap") {
@@ -953,39 +991,83 @@ fun HomeScreen(
                     withContext(Dispatchers.Main) {
                         rapSubSections = sections
                         isRapSubLoading = false
+                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Rap sub-category failed: ${e.message}")
-                    withContext(Dispatchers.Main) { isRapSubLoading = false }
+                    withContext(Dispatchers.Main) {
+                        isRapSubLoading = false
+                        isRefreshing = false
+                    }
                 }
             }
         } else {
-            // Genre chips: Bollywood, Lo-fi, Indie, K-Pop, 90s Hits
-            isCategoryLoading = true
-            categoryPlaylists = emptyList()
+            // Genre chips: Bollywood, Lo-fi, Indie, K-Pop, 90s Hits — load full sectioned layout
+            isMoodLoading = true
+            moodSections = emptyList()
             scope.launch(Dispatchers.IO) {
                 try {
-                    val query = when (filter) {
-                        "Bollywood" -> "bollywood hits playlist 2025"
-                        "Lo-fi"     -> "lofi beats chill playlist"
-                        "Indie"     -> "indie pop playlist"
-                        "K-Pop"     -> "kpop hits playlist"
-                        "90s Hits"  -> "90s bollywood classic hits playlist"
-                        else        -> "$filter playlist"
+                    val MOOD_PARAMS_MAP = mapOf(
+                        "Chill" to "ggMPOg1uX1JOQWZFeDByc2Jm",
+                        "Energize" to "ggMPOg1uX2lRZUZiMnNrQnJW",
+                        "Happy" to "ggMPOg1uXzZQbDB5eThLRTQ3",
+                        "Feel Good" to "ggMPOg1uXzZQbDB5eThLRTQ3",
+                        "Focus" to "ggMPOg1uX0NvNGNhWThMYWRh",
+                        "Romance" to "ggMPOg1uX0FzQ2FhZWtUY211",
+                        "Sad" to "ggMPOg1uX0JLQ0gySWZKZVY1",
+                        "Sleep" to "ggMPOg1uX1MxaFQ3Z0JMZkN4",
+                        "Workout" to "ggMPOg1uX09LWkhnTjRGRUJh",
+                        "Party" to "ggMPOg1uX0pmQ0s2V0JRclZs",
+                        "Bollywood" to "ggMPOg1uX2ZvbzNJMzJwRkFT",
+                        "Indie" to "ggMPOg1uX3FzMXBrNWlUMWNH",
+                        "Lo-fi" to "ggMPOg1uX1JOQWZFeDByc2Jm",
+                        "K-Pop" to "ggMPOg1uX0JrbjBDOFFPSzJW",
+                        "90s Hits" to "ggMPOg1uX253QXk4VXN5NGdj"
+                    )
+
+                    val sections = mutableListOf<Pair<String, List<AlbumItem>>>()
+                    val officialParams = MOOD_PARAMS_MAP[filter]
+                    if (officialParams != null) {
+                        try {
+                            val officialSections = com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            sections.addAll(officialSections)
+                        } catch (e: Exception) {
+                            android.util.Log.e("HomeScreen", "Failed to fetch official category genre sections: ${e.message}")
+                        }
                     }
-                    // Primary: YTM community playlists
-                    var results = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(query).take(15)
-                    // Fallback: standard YouTube search
-                    if (results.isEmpty()) {
-                        results = com.vinmusic.innertube.InnerTube.searchAll(query).albums.take(15)
+
+                    // Fallback: search-based if official sections returned nothing
+                    if (sections.isEmpty()) {
+                        val query = when (filter) {
+                            "Bollywood" -> "bollywood hits playlist 2025"
+                            "Lo-fi"     -> "lofi beats chill playlist"
+                            "Indie"     -> "indie pop playlist"
+                            "K-Pop"     -> "kpop hits playlist"
+                            "90s Hits"  -> "90s bollywood classic hits playlist"
+                            else        -> "$filter playlist"
+                        }
+                        val results = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(query).take(15)
+                        if (results.isNotEmpty()) {
+                            sections.add("Top ${filter.filter { it.isLetter() || it.isWhitespace() }.trim()} Picks" to results)
+                        } else {
+                            val fallback = com.vinmusic.innertube.InnerTube.searchAll(query).albums.take(15)
+                            if (fallback.isNotEmpty()) {
+                                sections.add("Top ${filter.filter { it.isLetter() || it.isWhitespace() }.trim()} Picks" to fallback)
+                            }
+                        }
                     }
+
                     withContext(Dispatchers.Main) {
-                        categoryPlaylists = results
-                        isCategoryLoading = false
+                        moodSections = sections
+                        isMoodLoading = false
+                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Category filter failed: ${e.message}")
-                    withContext(Dispatchers.Main) { isCategoryLoading = false }
+                    withContext(Dispatchers.Main) {
+                        isMoodLoading = false
+                        isRefreshing = false
+                    }
                 }
             }
         }
@@ -1075,7 +1157,14 @@ fun HomeScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         PullToRefreshBox(
             isRefreshing = isRefreshing,
-            onRefresh = { triggerRefresh() },
+            onRefresh = {
+                if (filter == "All" || filter == "For You") {
+                    triggerRefresh()
+                } else {
+                    isRefreshing = true
+                    refreshTrigger++
+                }
+            },
             state = pullRefreshState,
             modifier = Modifier.fillMaxSize()
         ) {
@@ -1312,13 +1401,6 @@ fun HomeScreen(
                                 letterSpacing = (-0.5).sp
                             )
                         }
-                        Text(
-                            text = "Your Acoustic Sanctuary",
-                            fontSize = 11.sp,
-                            color = VinColors.Secondary,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
                     }
 
                     // Frosted search bar
@@ -1435,7 +1517,7 @@ fun HomeScreen(
                             modifier = Modifier.padding(bottom = 24.dp)
                         ) {
                             val historySongs = recentlyPlayed.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            items(historySongs.take(8), key = { it.videoId }) { song ->
+                            items(historySongs.take(8)) { song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, historySongs)
                                 }
@@ -1456,7 +1538,7 @@ fun HomeScreen(
                                 .fillMaxWidth()
                                 .padding(bottom = 24.dp)
                         ) {
-                            items(ytLibraryPlaylists, key = { it.playlistId }) { pl ->
+                            items(ytLibraryPlaylists) { pl ->
                                 RecommendedPlaylistCard(
                                     playlist = pl,
                                     onClick = { selectedRecommendedPlaylist = pl }
@@ -1490,7 +1572,7 @@ fun HomeScreen(
                                         .fillMaxWidth()
                                         .padding(bottom = 24.dp)
                                 ) {
-                                    items(recommendedPlaylists, key = { it.playlistId }) { pl ->
+                                    items(recommendedPlaylists) { pl ->
                                         RecommendedPlaylistCard(
                                             playlist = pl,
                                             onClick = { selectedRecommendedPlaylist = pl }
@@ -1529,7 +1611,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(onRepeatTracks, key = { it.videoId }) { song ->
+                            items(onRepeatTracks) { song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, onRepeatTracks)
                                 }
@@ -1564,9 +1646,11 @@ fun HomeScreen(
                                     modifier = Modifier.width(280.dp)
                                 ) {
                                     columnSongs.forEach { song ->
-                                        QuickPickRow(song = song) {
-                                            onSongClick(song, quickPicks)
-                                        }
+                                        QuickPickRow(
+                                            song = song,
+                                            onClick = { onSongClick(song, quickPicks) },
+                                            onMore = { onSongMore(song) }
+                                        )
                                     }
                                 }
                             }
@@ -1630,7 +1714,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(recommendedRadio, key = { it.videoId }) { song ->
+                            items(recommendedRadio) { song ->
                                 RecommendedRadioCard(song = song) {
                                     onSongClick(song, recommendedRadio)
                                 }
@@ -1700,7 +1784,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(similarToSongs, key = { it.videoId }) { s ->
+                            items(similarToSongs) { s ->
                                 RecommendedRadioCard(song = s) { onSongClick(s, similarToSongs) }
                             }
                         }
@@ -1731,7 +1815,7 @@ fun HomeScreen(
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
                                     val videoItems = recList.map { it.videoItem }
-                                    items(recList, key = { it.videoItem.videoId }) { rec ->
+                                    items(recList) { rec ->
                                         RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                             onSongClick(rec.videoItem, videoItems)
                                         }
@@ -1756,7 +1840,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             val downloadedSongs = downloads.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            items(downloadedSongs.take(8), key = { it.videoId }) { song ->
+                            items(downloadedSongs.take(8)) { song ->
                                 TrackCard(song = song) {
                                     onSongClick(song, downloadedSongs)
                                 }
@@ -1777,7 +1861,7 @@ fun HomeScreen(
                             modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
                         )
                     }
-                    items(longListens.take(8), key = { it.videoId }) { song ->
+                    items(longListens.take(8)) { song ->
                         SongListItem(
                             song = song,
                             isPlaying = vm.currentSong?.videoId == song.videoId,
@@ -1800,7 +1884,7 @@ fun HomeScreen(
                                 .fillMaxWidth()
                                 .padding(bottom = 24.dp)
                         ) {
-                            items(ytLibraryPlaylists, key = { it.playlistId }) { pl ->
+                            items(ytLibraryPlaylists) { pl ->
                                 RecommendedPlaylistCard(
                                     playlist = pl,
                                     onClick = { selectedRecommendedPlaylist = pl }
@@ -1842,7 +1926,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(section.songs, key = { it.videoId }) { song ->
+                                    items(section.songs) { song ->
                                         TrackCard(song = song) {
                                             onSongClick(song, section.songs)
                                         }
@@ -1863,7 +1947,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(onRepeatTracks, key = { it.videoId }) { song ->
+                            items(onRepeatTracks) { song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, onRepeatTracks)
                                 }
@@ -1898,9 +1982,11 @@ fun HomeScreen(
                                     modifier = Modifier.width(280.dp)
                                 ) {
                                     columnSongs.forEach { song ->
-                                        QuickPickRow(song = song) {
-                                            onSongClick(song, quickPicks)
-                                        }
+                                        QuickPickRow(
+                                            song = song,
+                                            onClick = { onSongClick(song, quickPicks) },
+                                            onMore = { onSongMore(song) }
+                                        )
                                     }
                                 }
                             }
@@ -1964,7 +2050,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(recommendedRadio, key = { it.videoId }) { song ->
+                            items(recommendedRadio) { song ->
                                 RecommendedRadioCard(song = song) {
                                     onSongClick(song, recommendedRadio)
                                 }
@@ -2024,7 +2110,7 @@ fun HomeScreen(
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
                                     val videoItems = recList.map { it.videoItem }
-                                    items(recList, key = { it.videoItem.videoId }) { rec ->
+                                    items(recList) { rec ->
                                         RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                             onSongClick(rec.videoItem, videoItems)
                                         }
@@ -2032,6 +2118,118 @@ fun HomeScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            "Rap" -> {
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    ) {
+                        items(RAP_SUB_CATEGORIES, key = { it.name }) { sub ->
+                            val active = sub.name == rapSubFilter
+                            val interactionSource = remember { MutableInteractionSource() }
+                            val isPressed by interactionSource.collectIsPressedAsState()
+                            val scale by animateFloatAsState(
+                                targetValue = if (isPressed) 0.94f else 1f,
+                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                                label = "sub_chip_scale"
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .graphicsLayer(
+                                        scaleX = scale,
+                                        scaleY = scale,
+                                        shadowElevation = if (active) 4.dp.value else 0f,
+                                        shape = RoundedCornerShape(20.dp),
+                                        clip = false
+                                    )
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(
+                                        if (active) {
+                                            Brush.horizontalGradient(
+                                                listOf(Color(0xFF8B5CF6), Color(0xFF4C1D95))
+                                            )
+                                        } else {
+                                            Brush.verticalGradient(
+                                                listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.02f))
+                                            )
+                                        }
+                                    )
+                                    .border(
+                                        BorderStroke(
+                                            1.dp,
+                                            if (active) Color.Transparent else Color.White.copy(alpha = 0.08f)
+                                        ),
+                                        RoundedCornerShape(20.dp)
+                                    )
+                                    .clickable(
+                                        interactionSource = interactionSource,
+                                        indication = null
+                                    ) { rapSubFilter = sub.name }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(sub.icon, fontSize = 14.sp)
+                                    Text(
+                                        text = sub.name,
+                                        fontSize = 13.sp,
+                                        color = if (active) Color.White else Color.White.copy(alpha = 0.7f),
+                                        fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (isRapSubLoading && rapSubSections.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(300.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(36.dp))
+                                Text(
+                                    "Curating your $rapSubFilter vibe...",
+                                    color = VinColors.Secondary,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    rapSubSections.forEach { (title, playlists) ->
+                        if (playlists.isNotEmpty()) {
+                            item {
+                                SectionTitle(title)
+                                Spacer(Modifier.height(10.dp))
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.padding(bottom = 24.dp)
+                                ) {
+                                    items(playlists) { playlist ->
+                                        RecommendedPlaylistCard(playlist = playlist) {
+                                            onAlbumClick(playlist)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (rapSubSections.isEmpty() && !isRapSubLoading) {
+                        item { EmptyScreenState("No playlists found for this sub-category.") }
                     }
                 }
             }
@@ -2068,7 +2266,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(playlists, key = { it.playlistId }) { playlist ->
+                                    items(playlists) { playlist ->
                                         RecommendedPlaylistCard(playlist = playlist) {
                                             onAlbumClick(playlist)
                                         }
@@ -2296,7 +2494,7 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            itemsIndexed(mix.songs, key = { index, recSong -> recSong.videoItem.videoId }) { index, recSong ->
+                            itemsIndexed(mix.songs, key = { index, recSong -> "${recSong.videoItem.videoId}_$index" }) { index, recSong ->
                                 val song = recSong.videoItem
                                 Row(
                                     modifier = Modifier
@@ -2480,7 +2678,7 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            itemsIndexed(recommendedPlaylistSongs, key = { index, song -> song.videoId }) { index, song ->
+                            itemsIndexed(recommendedPlaylistSongs, key = { index, song -> "${song.videoId}_$index" }) { index, song ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -2543,7 +2741,12 @@ private suspend fun loadRapSubSections(
         val deferreds = sub.queries.map { q ->
             async(Dispatchers.IO) {
                 try {
-                    com.vinmusic.innertube.InnerTube.searchAll("$q playlist").albums.take(8)
+                    // Use searchCommunityPlaylists (YTMusic WEB_REMIX client) for proper playlist results
+                    val playlists = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$q playlist").take(8)
+                    // Fallback to searchAll().albums if community playlists return nothing
+                    playlists.ifEmpty {
+                        com.vinmusic.innertube.InnerTube.searchAll("$q playlist").albums.take(8)
+                    }
                 } catch (_: Exception) { emptyList<AlbumItem>() }
             }
         }
@@ -2923,7 +3126,11 @@ fun SpotifyMixCard(
 }
 
 @Composable
-fun QuickPickRow(song: VideoItem, onClick: () -> Unit) {
+fun QuickPickRow(
+    song: VideoItem,
+    onClick: () -> Unit,
+    onMore: (() -> Unit)? = null
+) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
@@ -2983,12 +3190,21 @@ fun QuickPickRow(song: VideoItem, onClick: () -> Unit) {
                 fontWeight = FontWeight.Medium
             )
         }
-        Icon(
-            imageVector = Icons.Default.MoreVert,
-            contentDescription = "Options",
-            tint = VinColors.Secondary,
-            modifier = Modifier.size(20.dp).padding(end = 4.dp)
-        )
+        if (onMore != null) {
+            IconButton(
+                onClick = onMore,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Options",
+                    tint = VinColors.Secondary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        } else {
+            Spacer(Modifier.width(8.dp))
+        }
     }
 }
 

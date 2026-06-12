@@ -209,36 +209,20 @@ fun PlaylistDetailScreen(
         // Blurs of the first song artwork or custom gradient as background
         val coverArtUrl = songs.firstOrNull()?.let { "https://i.ytimg.com/vi/${it.videoId}/hqdefault.jpg" }
         
+        // Static solid background gradient header area
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(360.dp)
-                .graphicsLayer(alpha = 0.35f)
-        ) {
-            if (coverArtUrl != null) {
-                AsyncImage(
-                    model = coverArtUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(50.dp),
-                    contentScale = ContentScale.Crop
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                VinColors.GradTop.copy(alpha = 0.7f),
-                                VinColors.BgColor.copy(alpha = 0.3f),
-                                VinColors.BgColor
-                            )
+                .height(260.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            VinColors.Surface2,
+                            VinColors.BgColor
                         )
                     )
-            )
-        }
+                )
+        )
 
         Column(modifier = Modifier.fillMaxSize()) {
             // Header bar with vertical three-dot menu
@@ -566,7 +550,7 @@ fun PlaylistDetailScreen(
                         }
                     } else {
                         // Songs list items
-                        itemsIndexed(filteredSongs, key = { _, s -> "pl_song_${s.videoId}" }) { index, s ->
+                        itemsIndexed(filteredSongs, key = { index, s -> "pl_song_${s.videoId}_$index" }) { index, s ->
                             val isPlaying = vm.currentSong?.videoId == s.videoId
                             
                             Row(
@@ -623,13 +607,13 @@ fun PlaylistDetailScreen(
                                         val videoItem = VideoItem(s.videoId, s.title, s.author, s.durationText)
                                         onSongMore(videoItem)
                                     },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(48.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.MoreVert,
                                         contentDescription = "More Options",
                                         tint = VinColors.Secondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             }

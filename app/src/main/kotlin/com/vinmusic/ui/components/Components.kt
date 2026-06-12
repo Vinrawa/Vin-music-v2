@@ -100,7 +100,7 @@ fun MiniPlayer(
                 .border(
                     BorderStroke(
                         0.8.dp,
-                        Color.White.copy(alpha = 0.08f)
+                        VinColors.GlassBorder
                     ),
                     RoundedCornerShape(20.dp)
                 )
@@ -193,7 +193,7 @@ fun MiniPlayer(
                 progress = { vm.progress },
                 modifier = Modifier.fillMaxWidth().height(2.dp).align(Alignment.BottomStart),
                 color    = dominantColor,
-                trackColor = Color.White.copy(alpha = 0.05f)
+                trackColor = VinColors.Surface
             )
 
             Row(
@@ -290,16 +290,9 @@ fun BottomNavBar(currentRoute: String, onNavigate: (String) -> Unit) {
                 .fillMaxWidth()
                 .height(64.dp) // sleek, premium capsule height
                 .clip(CircleShape)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.White.copy(alpha = 0.08f),
-                            Color.Black.copy(alpha = 0.65f)
-                        )
-                    )
-                )
+                .background(VinColors.Surface2)
                 .border(
-                    BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                    BorderStroke(1.dp, VinColors.GlassBorder),
                     CircleShape
                 )
                 .padding(horizontal = 10.dp),
@@ -332,11 +325,11 @@ fun BottomNavBar(currentRoute: String, onNavigate: (String) -> Unit) {
                             .scale(scale)
                             .clip(CircleShape)
                             .background(
-                                if (selected) Color.White.copy(alpha = 0.08f) else Color.Transparent
+                                if (selected) VinColors.Surface else Color.Transparent
                             )
                             .border(
                                 width = 1.dp,
-                                color = if (selected) Color.White.copy(alpha = 0.15f) else Color.Transparent,
+                                color = if (selected) VinColors.GlassBorder else Color.Transparent,
                                 shape = CircleShape
                             )
                             .padding(horizontal = 14.dp, vertical = 8.dp),
@@ -462,9 +455,16 @@ fun SongListItem(
             }
 
             if (onMore != null) {
-                IconButton(onClick = onMore, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.MoreVert, null,
-                        tint = VinColors.Secondary, modifier = Modifier.size(20.dp))
+                IconButton(
+                    onClick = onMore,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Options",
+                        tint = VinColors.Secondary,
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }

@@ -117,9 +117,13 @@ fun MusicDnaScreen(
         containerColor = Color.Transparent,
         modifier = Modifier.fillMaxSize()
     ) { padding ->
-        if (isLoading || profile == null) {
+        if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = VinColors.Accent)
+            }
+        } else if (profile == null) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Not enough listening data yet.\nKeep discovering music!", color = VinColors.Secondary, textAlign = TextAlign.Center)
             }
         } else {
             // Infinite gradient mesh background
@@ -136,18 +140,18 @@ fun MusicDnaScreen(
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
-                Canvas(modifier = Modifier.fillMaxSize().blur(100.dp)) {
-                    drawCircle(
-                        color = Color(0xFF4F46E5).copy(alpha = 0.25f),
-                        radius = size.width * 0.7f,
-                        center = androidx.compose.ui.geometry.Offset(blob1X.dp.toPx(), 200.dp.toPx())
-                    )
-                    drawCircle(
-                        color = Color(0xFF10B981).copy(alpha = 0.2f),
-                        radius = size.width * 0.6f,
-                        center = androidx.compose.ui.geometry.Offset(150.dp.toPx(), blob2Y.dp.toPx())
-                    )
-                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFF151030),
+                                    VinColors.BgColor
+                                )
+                            )
+                        )
+                )
 
                 Column(
                     modifier = Modifier

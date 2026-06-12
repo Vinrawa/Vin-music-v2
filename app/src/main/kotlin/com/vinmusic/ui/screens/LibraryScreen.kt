@@ -289,7 +289,7 @@ fun LibraryScreen(
                                 }
                             }
                         }
-                        items(songs, key = { it.videoId }) { song ->
+                        items(songs) { song ->
                             SongListItem(song = song, isPlaying = vm.currentSong?.videoId == song.videoId,
                                 onClick = { onSongClick(song, songs) },
                                 onMore = { onSongMore(song) })
@@ -400,7 +400,7 @@ fun LibraryScreen(
                             EmptyState(Icons.Default.CloudQueue, "No online playlists", "Log in or check your YouTube Music account connection")
                         } else {
                             LazyColumn(contentPadding = PaddingValues(bottom = 140.dp)) {
-                                items(ytPlaylists, key = { it.playlistId }) { pl ->
+                                items(ytPlaylists) { pl ->
                                     YtPlaylistItem(
                                         playlist = pl,
                                         onClick = { selectedYtPlaylist = pl }
@@ -491,7 +491,7 @@ fun LibraryScreen(
                                 }
                             }
                         }
-                        items(songs, key = { it.videoId }) { song ->
+                        items(songs) { song ->
                             SongListItem(song = song, isPlaying = vm.currentSong?.videoId == song.videoId,
                                 onClick = { onSongClick(song, songs) })
                         }
@@ -963,8 +963,16 @@ private fun PlaylistItem(playlist: PlaylistEntity, db: VinDatabase, onClick: () 
             }
             Text("Playlist • ${songs.size} tracks", fontSize = 13.sp, color = VinColors.Secondary)
         }
-        IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.MoreVert, null, tint = VinColors.Secondary, modifier = Modifier.size(20.dp))
+        IconButton(
+            onClick = onMore,
+            modifier = Modifier.size(48.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "Options",
+                tint = VinColors.Secondary,
+                modifier = Modifier.size(22.dp)
+            )
         }
     }
 }

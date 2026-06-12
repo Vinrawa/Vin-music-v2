@@ -16,7 +16,7 @@ class EightDAudioProcessor : BaseAudioProcessor() {
         }
 
     private var theta = 0.0
-    private val speed = 0.5 // Panning rotation speed
+    private val speed = 0.12 // Panning rotation speed (lower is more relaxing, ~8s per rotation)
 
     override fun onConfigure(inputAudioFormat: AudioFormat): AudioFormat {
         if (inputAudioFormat.encoding != androidx.media3.common.C.ENCODING_PCM_16BIT) {
@@ -46,17 +46,34 @@ class EightDAudioProcessor : BaseAudioProcessor() {
 
             val limit = inputBuffer.limit()
             while (inputBuffer.position() + 3 < limit) {
-                var leftVal = inputBuffer.getShort().toDouble()
-                var rightVal = inputBuffer.getShort().toDouble()
+                val leftVal = inputBuffer.getShort().toDouble()
+                val rightVal = inputBuffer.getShort().toDouble()
 
-                val leftGain = Math.cos(theta) * 0.45 + 0.55
-                val rightGain = Math.sin(theta) * 0.45 + 0.55
+                // Calculate pan position (-1.0 to 1.0)
+                val pan = Math.sin(theta)
+                
+                // Equal power panning curve
+                val panAngle = (pan + 1.0) * Math.PI / 4.0 // 0 to PI/2
+                val gainL = Math.cos(panAngle)
+                val gainR = Math.sin(panAngle)
 
-                leftVal *= leftGain
-                rightVal *= rightGain
+                // Create a mono mix to pan across ears
+                val mono = (leftVal + rightVal) * 0.5
+                
+                // Extremeness controls how much we collapse to the panned mono mix.
+                // At pan=0 (center), we keep true stereo. At extremes, we use the panned mono mix.
+                val extremeness = Math.abs(pan)
+                
+                // 1.414 compensates for the equal power drop so volume stays consistent
+                val targetL = mono * gainL * 1.414
+                val targetR = mono * gainR * 1.414
 
-                outputBuffer.putShort(leftVal.toInt().coerceIn(-32768, 32767).toShort())
-                outputBuffer.putShort(rightVal.toInt().coerceIn(-32768, 32767).toShort())
+                // Crossfade between original stereo and panned mix
+                val outL = leftVal * (1.0 - extremeness) + targetL * extremeness
+                val outR = rightVal * (1.0 - extremeness) + targetR * extremeness
+
+                outputBuffer.putShort(outL.toInt().coerceIn(-32768, 32767).toShort())
+                outputBuffer.putShort(outR.toInt().coerceIn(-32768, 32767).toShort())
 
                 // Increment panning angle per stereo frame
                 theta += (2.0 * Math.PI * speed) / sampleRate
