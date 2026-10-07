@@ -227,7 +227,7 @@ fun SearchScreen(
                 val recQuery = when {
                     merged.artists.isNotEmpty() -> "${merged.artists[0].name} top songs audio"
                     words.isNotEmpty()     -> "${words.take(3).joinToString(" ")} song audio"
-                    else                   -> "top hindi songs 2025 audio"
+                    else                   -> "top hindi songs ${java.time.LocalDate.now().year} audio"
                 }
                 val recs = withContext(Dispatchers.IO) {
                     runCatching { withTimeout(5_500L) { InnerTube.search(recQuery) } }.getOrDefault(emptyList())
@@ -658,7 +658,7 @@ private fun searchMonthlyListenersText(source: String): String {
         .replace(Regex("""[•|·]+"""), " ")
         .replace(Regex("""\s+"""), " ")
         .trim()
-    return if (compact.isBlank()) "" else "$compact Monthly Listeners"
+    return if (compact.isBlank()) "" else "$compact Subscribers"
 }
 
 @Composable
@@ -696,8 +696,9 @@ private fun AlbumListItem(album: AlbumItem, onClick: () -> Unit) {
             Text(album.title, fontSize = 14.sp, fontWeight = FontWeight.Medium,
                 color = VinColors.Primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(album.author, fontSize = 12.sp, color = VinColors.Secondary)
-            if (album.songCount.isNotEmpty())
-                Text("${album.songCount} tracks", fontSize = 11.sp, color = VinColors.Secondary)
+            album.metadataSummary().takeIf { it.isNotEmpty() }?.let { metadata ->
+                Text(metadata, fontSize = 11.sp, color = VinColors.Secondary)
+            }
         }
         Icon(Icons.Default.PlayCircle, null, tint = VinColors.Accent, modifier = Modifier.size(28.dp))
     }

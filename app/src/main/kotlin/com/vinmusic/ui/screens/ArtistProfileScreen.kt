@@ -390,7 +390,7 @@ fun ArtistProfileScreen(
                                     color = Color.White
                                 )
                                 Text(
-                                    text = "Monthly Listeners",
+                                    text = "Subscribers",
                                     fontSize = 12.sp,
                                     color = Color.White.copy(0.4f),
                                     fontWeight = FontWeight.Medium
@@ -445,9 +445,15 @@ fun ArtistProfileScreen(
                 val latestThumb = latestRelease?.thumbnail ?: (topSongs.firstOrNull()?.thumbnailHd ?: "")
                 val latestMeta = if (latestRelease != null) {
                     val type = if (albums.contains(latestRelease)) "Album" else "Single"
-                    "$type · March 3, 2025"
+                    // YT Music's subtitle carries its actual available release
+                    // metadata (year, type, artist, and/or track count). Never
+                    // invent a date when the source does not provide one.
+                    val details = latestRelease.metadataSummary()
+                        .replace(Regex("""(?i)\b(album|single|ep)\b\s*[•·]?\s*"""), "")
+                        .trim(' ', '•', '·')
+                    if (details.isBlank()) type else "$type · $details"
                 } else {
-                    "Single · March 3, 2025"
+                    "Popular single"
                 }
 
                 Card(
@@ -905,9 +911,9 @@ private fun ArtAlbumCard(album: AlbumItem, isAlbum: Boolean, onClick: () -> Unit
         ) {
             val typeLabel = if (isAlbum) "Album" else "Single"
             Text(typeLabel, fontSize = 11.sp, color = VinColors.Accent.copy(0.8f), fontWeight = FontWeight.Medium)
-            if (album.songCount.isNotEmpty() && album.songCount != "1") {
+            album.trackCountLabel()?.let { trackCount ->
                 Text("·", fontSize = 11.sp, color = Color.White.copy(0.3f))
-                Text("${album.songCount} tracks", fontSize = 11.sp, color = Color.White.copy(0.4f))
+                Text(trackCount, fontSize = 11.sp, color = Color.White.copy(0.4f))
             }
         }
     }

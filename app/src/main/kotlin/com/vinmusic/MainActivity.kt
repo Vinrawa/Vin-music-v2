@@ -86,11 +86,14 @@ class MainActivity : ComponentActivity() {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         
-        // Prompt user to disable battery optimizations to ensure stable background playback
-        val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        // Prompt user once to disable battery optimizations to ensure stable background playback
+        val batteryPrefs = getSharedPreferences("vin_music_prefs", MODE_PRIVATE)
+        val hasPromptedBattery = batteryPrefs.getBoolean("has_prompted_battery_opt", false)
+        if (!hasPromptedBattery && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
             if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
                 try {
+                    batteryPrefs.edit().putBoolean("has_prompted_battery_opt", true).apply()
                     val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                         data = android.net.Uri.parse("package:$packageName")
                     }
@@ -329,8 +332,10 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                 composable("home") {
                     HomeScreen(
                         vm = vm,
-                        onSongClick = { song, _ ->
-                            vm.playSongWithRadio(song)
+                        onSongClick = { song, songs ->
+                            // Home playback must replace the queue with the current
+                            // Home shelf, just like Search and Downloads do.
+                            vm.setQueue(songs, songs.indexOf(song).coerceAtLeast(0))
                             showFullPlayer = true
                         },
                         onPlayQueue = { song, songs ->

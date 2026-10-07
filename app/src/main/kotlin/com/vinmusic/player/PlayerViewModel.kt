@@ -24,6 +24,9 @@ import com.vinmusic.lyrics.LyricsResult
 import com.vinmusic.lyrics.qualityOf
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -41,6 +44,109 @@ class PlayerViewModel @Inject constructor(
     val recommendationRepository: com.vinmusic.recommendation.RecommendationRepository,
     val tasteProfileManager: com.vinmusic.recommendation.TasteProfileManager
 ) : AndroidViewModel(app) {
+
+    data class HomeRefreshPayload(
+        val recommendationSections: List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>,
+        val spotifyMixes: List<com.vinmusic.recommendation.SpotifyMix>,
+        val quickPicks: List<VideoItem>,
+        val ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection>,
+        val ytLibraryPlaylists: List<com.vinmusic.innertube.AlbumItem>,
+        val recommendedRadio: List<VideoItem>,
+        val recommendedAlbums: List<com.vinmusic.innertube.AlbumItem>
+    )
+
+    private val _isHomeRefreshing = MutableStateFlow(false)
+    val isHomeRefreshing: StateFlow<Boolean> = _isHomeRefreshing.asStateFlow()
+    private val _homeRefreshGeneration = MutableStateFlow(0)
+    val homeRefreshGeneration: StateFlow<Int> = _homeRefreshGeneration.asStateFlow()
+    private val _homeRefreshPayload = MutableStateFlow<HomeRefreshPayload?>(null)
+    val homeRefreshPayload: StateFlow<HomeRefreshPayload?> = _homeRefreshPayload.asStateFlow()
+    private var homeRefreshJob: Job? = null
+
+    fun refreshHome() {
+        if (homeRefreshJob?.isActive == true) return
+        homeRefreshJob = viewModelScope.launch {
+            Log.d("HomeViewModel", "Home refresh started")
+            _isHomeRefreshing.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val cache = getApplication<Application>()
+                        .getSharedPreferences("vin_music_repository_cache", Context.MODE_PRIVATE)
+                    cache.edit().remove("quick_picks").remove("youtube_home").apply()
+                    com.vinmusic.recommendation.RecommendationManager.invalidateCache(getApplication())
+
+                    val payload = withTimeout(35_000L) {
+                        coroutineScope {
+                        val recs = async {
+                            com.vinmusic.recommendation.RecommendationManager
+                                .getRecommendations(getApplication(), forceRefresh = true)
+                        }
+                        val mixes = async {
+                            com.vinmusic.recommendation.RecommendationManager
+                                .getSpotifyMixes(getApplication(), forceRefresh = true)
+                        }
+                        val quickPicks = async {
+                            try { recommendationRepository.getQuickPicks() }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
+                        }
+                        val ytHome = async {
+                            try { recommendationRepository.getYouTubeMusicHomeSections() }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
+                        }
+                        val playlists = async {
+                            try {
+                                if (com.vinmusic.innertube.YTMusicSession.hasCookie(getApplication())) {
+                                    recommendationRepository.getLibraryPlaylists()
+                                } else emptyList()
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
+                        }
+                        val radio = async {
+                            val seed = PlayerSingleton.currentSong
+                            if (seed == null) emptyList()
+                            else try {
+                                recommendationRepository.getSongRadio(seed.videoId, seed.title, seed.author)
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
+                        }
+                        val albums = async {
+                            try {
+                                val db = com.vinmusic.data.db.VinDatabase.getInstance(getApplication())
+                                val profile = com.vinmusic.recommendation.RecommendationManager.buildTasteProfile(db)
+                                val genre = profile.topGenres.firstOrNull()?.first
+                                    ?.lowercase()?.replace("rap/hip-hop", "rap hip hop")
+                                    ?.replace("punjabi folk", "punjabi") ?: "pop"
+                                val language = profile.topLanguages.firstOrNull()?.first
+                                    ?.lowercase()?.takeIf { it != "unknown" } ?: ""
+                                com.vinmusic.innertube.InnerTube
+                                    .searchAll("$genre $language best albums".trim().replace(Regex("\\s+"), " "))
+                                    .albums.take(6)
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
+                        }
+                            HomeRefreshPayload(
+                                recs.await(), mixes.await(), quickPicks.await(), ytHome.await(),
+                                playlists.await(), radio.await(), albums.await()
+                            )
+                        }
+                    }
+                    _homeRefreshPayload.value = payload
+                    _homeRefreshGeneration.value++
+                }
+                Log.d("HomeViewModel", "Home refresh applied")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Refresh failed", e)
+            } finally {
+                _isHomeRefreshing.value = false
+                homeRefreshJob = null
+                Log.d("HomeViewModel", "Home refresh finished")
+            }
+        }
+    }
 
     // ── Playback state ─────────────────────────────────────────────────────────
     val currentSong    get() = PlayerSingleton.currentSong
@@ -1424,6 +1530,21 @@ class PlayerViewModel @Inject constructor(
                 durationText = song.durationText
             )
             signal.searchClickCount += 1
+            db.interactionSignalDao().insert(signal)
+            com.vinmusic.recommendation.RecommendationManager.invalidateTasteProfile()
+        }
+    }
+
+    /** A left swipe is explicit negative discovery feedback, even without playback. */
+    fun recordDiscoverSkip(song: VideoItem) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val signal = db.interactionSignalDao().get(song.videoId) ?: InteractionSignal(
+                videoId = song.videoId,
+                title = song.title,
+                author = song.author,
+                durationText = song.durationText
+            )
+            signal.skipCount += 1
             db.interactionSignalDao().insert(signal)
             com.vinmusic.recommendation.RecommendationManager.invalidateTasteProfile()
         }

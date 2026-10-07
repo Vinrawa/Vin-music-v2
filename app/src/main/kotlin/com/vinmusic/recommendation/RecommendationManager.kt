@@ -15,6 +15,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -60,13 +62,19 @@ data class SpotifyMix(
 
 object RecommendationManager {
     private const val TAG = "VIN_REC"
+    private val currentMusicYear: Int get() = java.time.LocalDate.now().year
     
     // Cache recommendations for 15 minutes to prevent frequent network requests
     private const val CACHE_EXPIRY_MS = 15 * 60 * 1000L
-    // Disk-cached shelves live for 6 hours so home refreshes between sessions
-    // instead of staying frozen until a manual pull-to-refresh.
-    private const val SHELF_DISK_TTL_MS = 6 * 60 * 60 * 1000L
-    private const val CACHE_SCHEMA_VERSION = 4
+    // Home shelves should feel stable during a listening session, not frozen for
+    // most of a day. A short cache also lets new discovery lanes appear quickly.
+    private const val SHELF_DISK_TTL_MS = 45 * 60 * 1000L
+    private const val CACHE_SCHEMA_VERSION = 6
+    private const val HOME_REFRESH_GENERATION_KEY = "home_refresh_generation"
+    // Kept separate from the shelf cache: invalidateCache() deliberately clears
+    // that cache, but a pull-to-refresh still needs to remember which curation
+    // lane it served last.
+    private const val HOME_REFRESH_PREFS = "vin_music_home_refresh_state"
     private var lastCacheTime: Long = 0L
     private val cachedSections = ArrayList<Pair<String, List<RecommendedSong>>>()
     
@@ -856,12 +864,13 @@ object RecommendationManager {
             }
         }
 
-        // 5. Year
-        var year = 2025
+        // 5. Year. Unknown is deliberately zero: assigning the current year to
+        // missing metadata falsely turns arbitrary old music into a new release.
+        var year = 0
         val yearRegex = Regex("\\b(19\\d\\d|20[0-2]\\d)\\b")
         val matchResult = yearRegex.find(item.title)
         if (matchResult != null) {
-            year = matchResult.value.toIntOrNull() ?: 2025
+            year = matchResult.value.toIntOrNull() ?: 0
         } else if (fullText.contains("retro") || fullText.contains("classic") || fullText.contains("90s") || fullText.contains("80s") || fullText.contains("kishore") || fullText.contains("lata")) {
             year = 1998
         }
@@ -1259,7 +1268,7 @@ object RecommendationManager {
         }
 
         // 4. Discover Weekly Mix
-        val dwQueries = listOf("underrated fresh acoustic gems", "new independent music releases 2026", "indie folk playlist viral")
+        val dwQueries = listOf("underrated fresh acoustic gems", "new independent music releases $currentMusicYear", "indie folk playlist viral")
         val dwPool = fetchCandidatesFromQueries(dwQueries)
         val dwSongs = curateDiscoverWeekly(db, dwPool, profile, globalShownIds, 8)
         globalShownIds.addAll(dwSongs.map { it.videoItem.videoId })
@@ -1273,7 +1282,7 @@ object RecommendationManager {
         ))
 
         // 5. Release Radar Mix
-        val rrQueries = listOf("new music release 2026", "latest official hits charts 2026")
+        val rrQueries = listOf("new music release $currentMusicYear", "latest official hits charts $currentMusicYear")
         val rrPool = fetchCandidatesFromQueries(rrQueries)
         val rrSongs = curateReleaseRadar(db, rrPool, profile, globalShownIds, 8)
         globalShownIds.addAll(rrSongs.map { it.videoItem.videoId })
@@ -1532,8 +1541,8 @@ object RecommendationManager {
                 )
             }
 
-            // Release radar focuses heavily on fresh 2025/2026 releases!
-            if (meta.year < 2024) continue
+            // Release Radar only accepts a date that was actually observed.
+            if (meta.year < currentMusicYear - 2) continue
 
             val similarity = calculateTasteSimilarity(meta, profile.tasteDNA)
             var artistBoost = 0.0
@@ -1767,7 +1776,9 @@ object RecommendationManager {
 
         // 2. Memory cache is stale-first. Only forceRefresh should replace it.
         synchronized(cachedSections) {
-            if (!forceRefresh && cachedSections.isNotEmpty()) {
+            if (!forceRefresh && cachedSections.isNotEmpty() &&
+                now - lastCacheTime <= CACHE_EXPIRY_MS
+            ) {
                 val totalSongs = cachedSections.sumOf { it.second.size }
                 if (totalSongs > 0) {
                     Log.d(TAG, "Returning memory cached personalized sections.")
@@ -1776,6 +1787,10 @@ object RecommendationManager {
                     cachedSections.clear()
                     lastCacheTime = 0L
                 }
+            } else if (!forceRefresh) {
+                cachedSections.clear()
+                lastCacheTime = 0L
+                Log.d(TAG, "Memory recommendation cache expired — rotating shelves.")
             }
         }
 
@@ -1796,11 +1811,18 @@ object RecommendationManager {
         val profile = buildTasteProfile(db)
         val dna = profile.tasteDNA
 
-        // ── Session rotation offset ────────────────────────────────────────────
-        // Advances once a day so seeds, featured artists and the rotating shelf
-        // subset change between days — but stay STABLE within a day. Pull-to-
-        // refresh refreshes content, it must not reshuffle which shelves exist.
-        val rotationOffset = currentRotationBucket()
+        // A normal visit is stable for the day. A manual pull-to-refresh must
+        // deliberately advance the curation lane; otherwise it sends the same
+        // queries, ranks the same candidates, and looks completely broken.
+        val refreshPrefs = ctx.getSharedPreferences(HOME_REFRESH_PREFS, Context.MODE_PRIVATE)
+        val refreshGeneration = if (forceRefresh) {
+            (refreshPrefs.getInt(HOME_REFRESH_GENERATION_KEY, 0) + 1).also {
+                refreshPrefs.edit().putInt(HOME_REFRESH_GENERATION_KEY, it).apply()
+            }
+        } else {
+            refreshPrefs.getInt(HOME_REFRESH_GENERATION_KEY, 0)
+        }
+        val rotationOffset = currentRotationBucket() + refreshGeneration
 
         data class CurationTask(
             val sectionKey: String,
@@ -1816,7 +1838,7 @@ object RecommendationManager {
         val mixQueries = mutableListOf<String>()
         for (genre in topGenresForMix) {
             val genreLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
-            mixQueries.add("$genreLower official hits 2026")
+            mixQueries.add("$genreLower official hits $currentMusicYear")
             mixQueries.add("$genreLower underrated songs")
             // Add Every Noise similar genres for cross-genre discovery
             val similarGenres = genreSimilarMap?.get(genreLower)?.take(1) ?: emptyList()
@@ -1829,7 +1851,7 @@ object RecommendationManager {
         val topLangForMix = profile.topLanguages.firstOrNull()?.first?.lowercase(Locale.ROOT) ?: "english"
         mixQueries.add("$topMoodForMix $topLangForMix music official")
         if (mixQueries.isEmpty()) {
-            mixQueries.addAll(listOf("popular hits music 2026", "hindi english punjabi songs hits"))
+            mixQueries.addAll(listOf("popular hits music $currentMusicYear", "hindi english punjabi songs hits"))
         }
         tasks.add(CurationTask(
             sectionKey = "Side A",
@@ -1971,7 +1993,7 @@ object RecommendationManager {
             // Cold start: no listening history — serve diverse genre discovery
             val coldStartGenres = listOf("hip hop", "pop", "indie", "r&b", "bollywood", "electronic")
             val selectedGenres = coldStartGenres.shuffled().take(3)
-            selectedGenres.flatMap { g -> listOf("$g official hits 2026", "$g underrated songs") }
+            selectedGenres.flatMap { g -> listOf("$g official hits $currentMusicYear", "$g underrated songs") }
         }
         val seedVideo = similarSeed?.let { VideoItem(it.videoId, it.title, it.author, it.durationText) }
         tasks.add(CurationTask("Similar songs", similarQueries, seedVideo, "similar_songs"))
@@ -1985,10 +2007,10 @@ object RecommendationManager {
             tasks.add(CurationTask(
                 sectionKey = "$genre for you",
                 queries = listOf(
-                    "$genreLower official hits 2026",
+                    "$genreLower official hits $currentMusicYear",
                     "$genreLower fresh releases",
                     "$genreLower underrated songs",
-                    "$genreLower$similarGenreQuery playlist 2026"
+                    "$genreLower$similarGenreQuery playlist $currentMusicYear"
                 ),
                 seedItem = null,
                 sourceType = "genre_for_you"
@@ -2017,7 +2039,7 @@ object RecommendationManager {
             tasks.add(CurationTask(
                 sectionKey = "$language picks",
                 queries = listOf(
-                    "$langLower songs latest hits 2026",
+                    "$langLower songs latest hits $currentMusicYear",
                     "$langLower music official audio",
                     "$langLower indie pop playlist",
                     "$langLower romantic energetic songs"
@@ -2072,9 +2094,9 @@ object RecommendationManager {
         tasks.add(CurationTask(
             sectionKey = "Fresh finds",
             queries = listOf(
-                "new music releases 2026 official audio",
-                "fresh indie pop songs 2026",
-                "underrated artists songs 2026",
+                "new music releases $currentMusicYear official audio",
+                "fresh indie pop songs $currentMusicYear",
+                "underrated artists songs $currentMusicYear",
                 "new hindi punjabi english songs"
             ),
             seedItem = null,
@@ -2202,6 +2224,9 @@ object RecommendationManager {
         val globalArtistCounts = HashMap<String, Int>()
         val globalShownVideoIds = HashSet<String>()
         val globalShownTitlesAndArtists = HashSet<String>()
+        // Each shelf is fetched in parallel. Protect the shared de-duplication
+        // state so two shelves cannot accept the same song at the same time.
+        val globalSelectionMutex = Mutex()
 
         // Global exploration flag: 10% chance across ALL shelves (not per-shelf)
         val shouldExplore = Math.random() < 0.10
@@ -2427,57 +2452,67 @@ object RecommendationManager {
                     .distinctBy { "${normalizeTitle(it.videoItem.title)}|${it.videoItem.author.lowercase(Locale.ROOT)}" }
                     .sortedByDescending { it.score }
 
-                val selected = ArrayList<RecommendedSong>()
-                
-                if (task.sourceType == "more_from_artist") {
-                    // For artist-specific shelves, bypass the global capping and select a randomized subset of the top 15 matches
-                    // to guarantee highly relevant yet completely fresh/different tracks on reload!
-                    val topCandidates = distinctScored.take(24).shuffled()
-                    for (rec in topCandidates) {
-                        if (selected.size >= 12) break
-                        selected.add(rec)
+                val selected = globalSelectionMutex.withLock {
+                    val available = distinctScored.filter { rec ->
+                        val key = "${normalizeTitle(rec.videoItem.title)}|${rec.videoItem.author.lowercase(Locale.ROOT)}"
+                        rec.videoItem.videoId !in globalShownVideoIds && key !in globalShownTitlesAndArtists
                     }
-                } else {
-                    // Incorporate GLOBAL ARTIST CAPPING: max 2 songs per artist combined for general/time-of-day mixes.
-                    for (rec in distinctScored) {
-                        if (selected.size >= 12) break
-                        val artLow = rec.videoItem.author.lowercase(Locale.ROOT)
-                        val globalCount = globalArtistCounts[artLow] ?: 0
-                        
-                        if (globalCount < 2) {
-                            selected.add(rec)
-                            globalArtistCounts[artLow] = globalCount + 1
+                    // Advance the starting point for a manual refresh, while
+                    // keeping score order on ordinary Home visits. This makes a
+                    // refresh visibly fresh without turning recommendations into
+                    // random, lower-quality songs.
+                    val selectionPool = if (forceRefresh && available.size > 1) {
+                        val offset = (refreshGeneration * 5 + (task.sectionKey.hashCode() and Int.MAX_VALUE)) % available.size
+                        available.drop(offset) + available.take(offset)
+                    } else available
+                    val chosen = ArrayList<RecommendedSong>()
+
+                    if (task.sourceType == "more_from_artist") {
+                        // Artist shelves can go deeper, but still never repeat a song from another shelf.
+                        selectionPool.take(24).shuffled().take(12).forEach { chosen.add(it) }
+                    } else {
+                        for (rec in selectionPool) {
+                            if (chosen.size >= 12) break
+                            val artist = rec.videoItem.author.lowercase(Locale.ROOT)
+                            if ((globalArtistCounts[artist] ?: 0) < 2) {
+                                chosen.add(rec)
+                                globalArtistCounts[artist] = (globalArtistCounts[artist] ?: 0) + 1
+                            }
                         }
                     }
-                }
 
-                // Epsilon-greedy exploration: global 10% chance, used at most once across all shelves
-                if (shouldExplore && !explorationUsed && selected.size >= 3) {
-                    val userGenres = dna.preferredGenres.keys.map { it.lowercase(Locale.ROOT) }
-                    val explorationCandidate = distinctScored.lastOrNull { rec ->
-                        val recGenre = inferMetadata(rec.videoItem).genre.lowercase(Locale.ROOT)
-                        recGenre !in userGenres && rec.videoItem.videoId !in globalShownVideoIds
+                    // Use a single exploration slot across all shelves, never a duplicate.
+                    if (shouldExplore && !explorationUsed && chosen.size >= 3) {
+                        val userGenres = dna.preferredGenres.keys.map { it.lowercase(Locale.ROOT) }
+                        val chosenVideoIds = chosen.mapTo(HashSet()) { it.videoItem.videoId }
+                        val exploration = available.lastOrNull { rec ->
+                            rec.videoItem.videoId !in chosenVideoIds &&
+                                inferMetadata(rec.videoItem).genre.lowercase(Locale.ROOT) !in userGenres
+                        }
+                        if (exploration != null) {
+                            chosen[chosen.lastIndex] = RecommendedSong(
+                                exploration.videoItem,
+                                exploration.score * 0.5,
+                                "exploration",
+                                "Discovering something new for you"
+                            )
+                            explorationUsed = true
+                        }
                     }
-                    if (explorationCandidate != null && selected.size >= 2) {
-                        val replaceIdx = selected.size - 1
-                        selected[replaceIdx] = RecommendedSong(
-                            explorationCandidate.videoItem,
-                            explorationCandidate.score * 0.5,
-                            "exploration",
-                            "Discovering something new for you"
-                        )
-                        explorationUsed = true
-                    }
-                }
 
+                    if (chosen.size >= 3) {
+                        newSections.add(task.sectionKey to chosen)
+                        chosen.forEach { rec ->
+                            globalShownVideoIds.add(rec.videoItem.videoId)
+                            globalShownTitlesAndArtists.add(
+                                "${normalizeTitle(rec.videoItem.title)}|${rec.videoItem.author.lowercase(Locale.ROOT)}"
+                            )
+                        }
+                    }
+                    chosen
+                }
                 if (selected.size >= 3) {
-                    newSections.add(task.sectionKey to selected)
-                    for (sel in selected) {
-                        globalShownVideoIds.add(sel.videoItem.videoId)
-                        val normKey = "${normalizeTitle(sel.videoItem.title)}|${sel.videoItem.author.lowercase(Locale.ROOT)}"
-                        globalShownTitlesAndArtists.add(normKey)
-                    }
-                    Log.d(TAG, "Shelf '${task.sectionKey}' curated with ${selected.size} tracks successfully.")
+                    Log.d(TAG, "Shelf '${task.sectionKey}' curated with ${selected.size} unique tracks successfully.")
                 }
             }
         }
@@ -2510,12 +2545,12 @@ object RecommendationManager {
             }
         }
 
-        // ── Shelf rotation: keep home light ────────────────────────────────────
-        // Core personal shelves always show; everything else rotates through a
-        // capped set so the screen never drowns in shelves. The visible subset
+        // ── Shelf rotation ─────────────────────────────────────────────────────
+        // Keep the core personal shelves first while leaving room for the richer
+        // discovery lanes the user deliberately added. The visible subset still
         // advances daily and on every pull-to-refresh.
         val CORE_SHELF_PREFIXES = listOf("Side A", "Similar songs", "Fans also like")
-        val MAX_SHELVES = 6
+        val MAX_SHELVES = 10
 
         val finalSections = run {
             val core = newSections.filter { (title, _) ->

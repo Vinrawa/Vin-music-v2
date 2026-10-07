@@ -65,3 +65,4 @@ claude_export/
 dsfd.jpg
 fix_*.py
 add_*.py
+.claude/

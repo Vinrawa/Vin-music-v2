@@ -141,6 +141,23 @@ class VinMusicService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // If music is actively playing, keep foreground playback active even if app is swiped from recents.
+        // If music is not playing, stop the service to avoid unnecessary battery use.
+        if (PlayerSingleton.isPlaying) {
+            Log.d("VIN_SERVICE", "App swiped from recents while playing — keeping foreground service active")
+        } else {
+            Log.d("VIN_SERVICE", "App swiped from recents while paused/stopped — stopping service")
+            stopSelf()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         Log.d("VIN_SERVICE", "VinMusicService destroyed")
         mediaSession?.run {

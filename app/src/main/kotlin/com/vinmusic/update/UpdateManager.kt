@@ -236,7 +236,13 @@ object UpdateManager {
     private fun isAllowedUpdateUrl(urlStr: String?): Boolean = runCatching {
         if (urlStr.isNullOrBlank()) return false
         val uri = Uri.parse(urlStr)
-        uri.scheme.equals("https", ignoreCase = true) && uri.host?.lowercase() in ALLOWED_HOSTS
+        val host = uri.host?.lowercase() ?: return false
+        uri.scheme.equals("https", ignoreCase = true) && (
+            host in ALLOWED_HOSTS ||
+            host.endsWith(".github.com") ||
+            host.endsWith(".githubusercontent.com") ||
+            host.endsWith(".amazonaws.com")
+        )
     }.getOrDefault(false)
 
     private fun sha256Hex(file: File): String? = try {

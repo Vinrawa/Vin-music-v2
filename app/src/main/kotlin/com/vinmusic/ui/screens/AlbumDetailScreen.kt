@@ -239,10 +239,12 @@ fun AlbumDetailScreen(
                                     if (album.songCount.isNotEmpty() || songs.isNotEmpty()) {
                                         Spacer(Modifier.height(4.dp))
                                         val metaText = buildString {
-                                            val typeLabel = if (album.playlistId.startsWith("single_") || album.songCount == "1") "Single" else "Album"
+                                            val typeLabel = if (album.isSingleRelease()) "Single" else "Album"
                                             append(typeLabel)
                                             if (songs.isNotEmpty()) {
                                                 append("  •  ${songs.size} tracks")
+                                            } else {
+                                                album.trackCountLabel()?.let { append("  •  $it") }
                                             }
                                         }
                                         Text(

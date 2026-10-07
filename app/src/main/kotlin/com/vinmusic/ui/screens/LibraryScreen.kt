@@ -27,6 +27,7 @@ import com.vinmusic.data.db.*
 import com.vinmusic.innertube.InnerTube
 import com.vinmusic.innertube.VideoItem
 import com.vinmusic.innertube.ArtistItem
+import com.vinmusic.innertube.metadataSummary
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.ui.components.SongListItem
 import com.vinmusic.ui.theme.VinColors
@@ -52,7 +53,7 @@ private fun libraryMonthlyListenersText(source: String): String {
         .replace(Regex("""[•|·]+"""), " ")
         .replace(Regex("""\s+"""), " ")
         .trim()
-    return if (compact.isBlank()) "" else "$compact Monthly Listeners"
+    return if (compact.isBlank()) "" else "$compact Subscribers"
 }
 
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
@@ -1216,7 +1217,7 @@ private fun YtPlaylistItem(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = playlist.songCount.ifBlank { "Playlist • YouTube Music" },
+                text = playlist.metadataSummary().ifBlank { "Playlist • YouTube Music" },
                 style = Vin.Text.cardSubtitle,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1503,7 +1504,7 @@ private fun LocalMusicSection(
                             }
                         }
 
-                        itemsIndexed(filteredFolderSongs, key = { _, s -> s.videoId }) { _, song ->
+                        itemsIndexed(filteredFolderSongs, key = { index, s -> "folder_${s.videoId}_$index" }) { _, song ->
                             SongListItem(
                                 song = song,
                                 isPlaying = (currentPlayingVideoId == song.videoId),
@@ -1564,7 +1565,7 @@ private fun LocalMusicSection(
                             }
                         }
 
-                        itemsIndexed(allTracks, key = { _, s -> s.videoId }) { _, song ->
+                        itemsIndexed(allTracks, key = { index, s -> "local_${s.videoId}_$index" }) { _, song ->
                             SongListItem(
                                 song = song,
                                 isPlaying = (currentPlayingVideoId == song.videoId),

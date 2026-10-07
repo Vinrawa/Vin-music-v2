@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
@@ -52,16 +53,55 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 private val CATEGORIES = listOf("All", "For You", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits", "Long Listens")
+private val HOME_CURRENT_YEAR: Int get() = java.time.LocalDate.now().year
 
-// Locally generated shelves that aren't derived from the user's taste. When real
-// YT Music personalized shelves are available they are hidden to reduce noise.
-private val TASTE_INDEPENDENT_SHELVES = setOf(
-    "Fresh finds",
-    "Deep cuts & hidden gems",
-    "Morning Acoustic Sunshine",
-    "Midday Chill & Focus",
-    "Midnight Sanctuary",
+private data class DedupedHomeRecommendations(
+    val ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection>,
+    val quickPicks: List<VideoItem>,
+    val radio: List<VideoItem>,
+    val sections: List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>,
 )
+
+/**
+ * The Home tab receives recommendations from several independent engines. Give
+ * each song one home on the page so Quick Picks, YT Music, Radio, and local
+ * shelves do not echo the same track.
+ */
+private fun dedupeHomeRecommendations(
+    ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection>,
+    quickPicks: List<VideoItem>,
+    radio: List<VideoItem>,
+    sections: List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>,
+): DedupedHomeRecommendations {
+    val seen = HashSet<String>()
+    val seenVideoIds = HashSet<String>()
+    fun key(song: VideoItem): String {
+        val title = song.title.lowercase().replace(Regex("""[^\p{L}\p{N}\s]"""), " ")
+            .replace(Regex("""\s+"""), " ").trim()
+        val artist = song.author.lowercase().replace(Regex("""\s+"""), " ").trim()
+        return "$title|$artist"
+    }
+    fun accept(song: VideoItem): Boolean {
+        val videoId = song.videoId.trim()
+        // A provider may attach slightly different title/artist metadata to the
+        // same video ID. Treat that as one track as well; semantic de-duping
+        // alone cannot prevent duplicate Compose keys in that case.
+        if (videoId.isNotEmpty() && videoId in seenVideoIds) return false
+        if (!seen.add(key(song))) return false
+        if (videoId.isNotEmpty()) seenVideoIds += videoId
+        return true
+    }
+
+    val filteredYt = ytMusicSections.mapNotNull { shelf ->
+        shelf.copy(songs = shelf.songs.filter(::accept)).takeIf { it.songs.isNotEmpty() }
+    }
+    val filteredQuickPicks = quickPicks.filter(::accept)
+    val filteredRadio = radio.filter(::accept)
+    val filteredSections = sections.mapNotNull { (title, songs) ->
+        (title to songs.filter { accept(it.videoItem) }).takeIf { it.second.isNotEmpty() }
+    }
+    return DedupedHomeRecommendations(filteredYt, filteredQuickPicks, filteredRadio, filteredSections)
+}
 
 data class RapSubCategory(
     val name: String,
@@ -69,14 +109,14 @@ data class RapSubCategory(
 )
 
 private val RAP_SUB_CATEGORIES = listOf(
-    RapSubCategory("All Rap",        listOf("best rap songs 2025", "top rap hits")),
+    RapSubCategory("All Rap",        listOf("best rap songs $HOME_CURRENT_YEAR", "top rap hits")),
     RapSubCategory("Lyrical",        listOf("lyrical rap deep bars", "lyrical hip hop conscious rap")),
     RapSubCategory("Storytelling",   listOf("storytelling rap songs", "narrative rap best songs")),
     RapSubCategory("Vibe",           listOf("chill vibe rap songs", "vibe rap relaxed flow")),
     RapSubCategory("Sad",            listOf("sad rap songs emotional", "sad rap heartbreak")),
     RapSubCategory("Happy",          listOf("happy upbeat rap songs", "feel good rap")),
     RapSubCategory("Aggressive",     listOf("aggressive rap hard bars", "aggressive trap rap")),
-    RapSubCategory("Desi Hip-Hop",   listOf("desi hip hop indian rap", "indian rap songs 2025")),
+    RapSubCategory("Desi Hip-Hop",   listOf("desi hip hop indian rap", "indian rap songs $HOME_CURRENT_YEAR")),
     RapSubCategory("Old School",     listOf("old school hip hop classic", "90s rap golden era")),
     RapSubCategory("Trap",           listOf("trap music best songs", "trap rap hard beats")),
     RapSubCategory("Drill",          listOf("drill rap songs", "uk drill rap")),
@@ -147,16 +187,6 @@ data class QuickPlaylist(
     val gradEnd: Color
 )
 
-private data class HomeRefreshPayload(
-    val recommendationSections: List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>,
-    val spotifyMixes: List<com.vinmusic.recommendation.SpotifyMix>,
-    val quickPicks: List<VideoItem>,
-    val ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection>,
-    val ytLibraryPlaylists: List<AlbumItem>,
-    val recommendedRadio: List<VideoItem>,
-    val recommendedAlbums: List<AlbumItem>
-)
-
 private data class PlaylistSectionCache(
     val title: String,
     val playlists: List<AlbumItem>
@@ -164,8 +194,8 @@ private data class PlaylistSectionCache(
 
 private val QUICK_PLAYLISTS = listOf(
     QuickPlaylist("Chill Vibes", "chill lofi hindi music",  Icons.Default.MusicNote,  Color(0xFFC5A880), Color(0xFF1E1A14)),
-    QuickPlaylist("Workout",    "gym workout music 2025",  Icons.Default.Bolt,       Color(0xFFB39873), Color(0xFF191612)),
-    QuickPlaylist("Party Hits",  "party hits 2025 india",   Icons.Default.Star,       Color(0xFFD6BE9C), Color(0xFF2C251C)),
+    QuickPlaylist("Workout",    "gym workout music $HOME_CURRENT_YEAR",  Icons.Default.Bolt, Color(0xFFB39873), Color(0xFF191612)),
+    QuickPlaylist("Party Hits", "party hits $HOME_CURRENT_YEAR india", Icons.Default.Star, Color(0xFFD6BE9C), Color(0xFF2C251C)),
     QuickPlaylist("Focus",      "study focus music",       Icons.Default.School,     Color(0xFFA38C6D), Color(0xFF171411)),
     QuickPlaylist("Bollywood",  "bollywood superhits",     Icons.Default.Favorite,   Color(0xFFC5A880), Color(0xFF251F17)),
 )
@@ -271,9 +301,11 @@ fun HomeScreen(
     var isLoadingMixes by remember { mutableStateOf(false) }
     var selectedSpotifyMix by remember { mutableStateOf<com.vinmusic.recommendation.SpotifyMix?>(null) }
     var isRecommendationsLoading by remember { mutableStateOf(true) }
-    var isRefreshing by remember { mutableStateOf(false) }
-    var refreshTrigger by remember { mutableIntStateOf(0) }
+    val isRefreshing by vm.isHomeRefreshing.collectAsStateWithLifecycle()
+    val homeRefreshGeneration by vm.homeRefreshGeneration.collectAsStateWithLifecycle()
+    var categoryRefreshTrigger by remember { mutableIntStateOf(0) }
     val pullRefreshState = rememberPullToRefreshState()
+    val homeRefreshPayload by vm.homeRefreshPayload.collectAsStateWithLifecycle()
 
     var quickPicks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoadingQuickPicks by remember { mutableStateOf(false) }
@@ -595,86 +627,16 @@ fun HomeScreen(
         } catch (_: Exception) { emptyList() }
     }
 
-    fun triggerRefresh() {
-        isRefreshing = true
-        scope.launch(Dispatchers.IO) {
-            try {
-                ctx.getSharedPreferences("vin_music_repository_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                com.vinmusic.recommendation.RecommendationManager.invalidateCache(ctx)
-                
-                // Clear persistent caches
-                ctx.getSharedPreferences("suggested_artists_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                ctx.getSharedPreferences("long_listens_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                ctx.getSharedPreferences("recommended_albums_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                ctx.getSharedPreferences("recommended_playlists_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                ctx.getSharedPreferences("home_playlist_section_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                ctx.getSharedPreferences("home_auto_video_cache", Context.MODE_PRIVATE).edit().clear().apply()
-                
-                loadRecommendedPlaylists(forceRefresh = true)
-
-                // Concurrently resolve all recommendation and network streams
-                val seed = radioSeedSong
-                val (recs, mixes, qp, yt, playlists, rad, albumsResult) = coroutineScope {
-                    val recsDeferred = async { com.vinmusic.recommendation.RecommendationManager.getRecommendations(ctx, forceRefresh = true) }
-                    val mixesDeferred = async { com.vinmusic.recommendation.RecommendationManager.getSpotifyMixes(ctx, forceRefresh = true) }
-                    val qpDeferred = async { try { vm.recommendationRepository.getQuickPicks() } catch (_: Exception) { emptyList() } }
-                    val ytDeferred = async { try { vm.recommendationRepository.getYouTubeMusicHomeSections() } catch (_: Exception) { emptyList() } }
-                    val playlistsDeferred = async {
-                        try {
-                            if (YTMusicSession.hasCookie(ctx)) vm.recommendationRepository.getLibraryPlaylists() else emptyList()
-                        } catch (_: Exception) { emptyList() }
-                    }
-                    val radDeferred = async {
-                        if (seed != null) {
-                            try { vm.recommendationRepository.getSongRadio(seed.videoId, seed.title, seed.author) } catch (_: Exception) { emptyList() }
-                        } else emptyList()
-                    }
-                    val albumsDeferred = async {
-                        try {
-                            // Taste-derived album search instead of a hardcoded query.
-                            val prof = com.vinmusic.recommendation.RecommendationManager.buildTasteProfile(db)
-                            val genreTerm = prof.topGenres.firstOrNull()?.first
-                                ?.lowercase()?.replace("rap/hip-hop", "rap hip hop")
-                                ?.replace("punjabi folk", "punjabi") ?: "pop"
-                            val langTerm = prof.topLanguages.firstOrNull()?.first?.lowercase()
-                                ?.takeIf { it != "unknown" } ?: ""
-                            InnerTube.searchAll("$genreTerm $langTerm best albums".trim().replace(Regex("\\s+"), " "))
-                                .albums.take(6)
-                        } catch (_: Exception) { emptyList() }
-                    }
-                    HomeRefreshPayload(
-                        recsDeferred.await(),
-                        mixesDeferred.await(),
-                        qpDeferred.await(),
-                        ytDeferred.await(),
-                        playlistsDeferred.await(),
-                        radDeferred.await(),
-                        albumsDeferred.await()
-                    )
-                }
-
-                // Single unified Main thread dispatch
-                withContext(Dispatchers.Main) {
-                    recommendationSections = recs
-                    spotifyMixes = mixes
-                    quickPicks = qp
-                    if (yt.isNotEmpty()) ytMusicSections = yt
-                    ytMusicConnected = YTMusicSession.hasCookie(ctx)
-                    if (playlists.isNotEmpty()) ytLibraryPlaylists = playlists
-                    if (rad.isNotEmpty()) {
-                        recommendedRadio = rad
-                    }
-                    if (albumsResult.isNotEmpty()) {
-                        recommendedAlbums = albumsResult
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Refresh failed: ${e.message}")
-            } finally {
-                withContext(Dispatchers.Main) {
-                    isRefreshing = false
-                }
-            }
+    LaunchedEffect(homeRefreshPayload) {
+        homeRefreshPayload?.let { payload ->
+            recommendationSections = payload.recommendationSections
+            spotifyMixes = payload.spotifyMixes
+            quickPicks = payload.quickPicks
+            ytMusicSections = payload.ytMusicSections
+            ytMusicConnected = YTMusicSession.hasCookie(ctx)
+            ytLibraryPlaylists = payload.ytLibraryPlaylists
+            recommendedRadio = payload.recommendedRadio
+            recommendedAlbums = payload.recommendedAlbums
         }
     }
 
@@ -701,8 +663,11 @@ fun HomeScreen(
                 withContext(Dispatchers.Main) {
                     recommendationSections = fastRecs
                 }
-                val fullRecs = kotlinx.coroutines.withTimeoutOrNull(25_000L) {
-                    com.vinmusic.recommendation.RecommendationManager.getRecommendations(ctx, forceRefresh = false)
+                // Reuse the recommendation cache on normal Home entry. Fresh
+                // rotation is reserved for pull-to-refresh so expensive
+                // network curation never blocks the first usable Home render.
+                val fullRecs = kotlinx.coroutines.withTimeoutOrNull(35_000L) {
+                    com.vinmusic.recommendation.RecommendationManager.getRecommendations(ctx)
                 }.orEmpty()
                 if (fullRecs.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
@@ -776,8 +741,8 @@ fun HomeScreen(
                     homeDeferred.await() to playlistsDeferred.await()
                 }
                 withContext(Dispatchers.Main) {
-                    if (ytHome.isNotEmpty()) ytMusicSections = ytHome
-                    if (ytPlaylists.isNotEmpty()) ytLibraryPlaylists = ytPlaylists
+                    ytMusicSections = ytHome
+                    ytLibraryPlaylists = ytPlaylists
                     ytMusicConnected = YTMusicSession.hasCookie(ctx)
                     isLoadingYtHome = false
                     isLoadingYtPlaylists = false
@@ -799,6 +764,7 @@ fun HomeScreen(
                 ytMusicConnected = connected
                 isLoadingYtPlaylists = false
                 if (!connected) {
+                    ytMusicSections = emptyList()
                     ytLibraryPlaylists = emptyList()
                 }
             }
@@ -1033,7 +999,7 @@ fun HomeScreen(
                 }
                 
                 val fallbackAlbumPool = listOf(
-                    "best hindi albums 2025",
+                    "best hindi albums $HOME_CURRENT_YEAR",
                     "punjabi hit albums popular",
                     "billboard top albums english",
                     "indie artist music albums",
@@ -1043,7 +1009,7 @@ fun HomeScreen(
                     "slowed acoustic albums hits",
                     "ambient synthwave albums",
                     "top hip hop rap albums",
-                    "new english albums 2026",
+                    "new english albums $HOME_CURRENT_YEAR",
                     "underrated indie albums",
                     "r&b soul albums popular",
                     "desi hip hop albums",
@@ -1260,7 +1226,7 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(filter, refreshTrigger) {
+    LaunchedEffect(filter, categoryRefreshTrigger, homeRefreshGeneration) {
         if (filter == "All" || filter == "For You") return@LaunchedEffect
 
         val moodChips = setOf("Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party")
@@ -1316,7 +1282,9 @@ fun HomeScreen(
                     val officialParams = MOOD_PARAMS_MAP[filter]
                     if (officialParams != null) {
                         try {
-                            val officialSections = com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            val officialSections = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            }.orEmpty()
                             sections.addAll(officialSections)
                         } catch (e: Exception) {
                             android.util.Log.e("HomeScreen", "Failed to fetch official category sections: ${e.message}")
@@ -1326,19 +1294,25 @@ fun HomeScreen(
                     // Fallback if official sections returned nothing
                     if (sections.isEmpty()) {
                         try {
-                            val genericResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("best $moodKeyword playlist").take(8)
+                            val genericResults = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("best $moodKeyword playlist")
+                            }.orEmpty().take(8)
                             if (genericResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to genericResults)
                         } catch (_: Exception) {}
 
                         if (sections.isEmpty()) {
                             try {
-                                val fallbackResults = com.vinmusic.innertube.InnerTube.searchAll("best $moodKeyword playlist 2025").albums.take(8)
+                                val fallbackResults = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                    com.vinmusic.innertube.InnerTube.searchAll("best $moodKeyword playlist $HOME_CURRENT_YEAR").albums
+                                }.orEmpty().take(8)
                                 if (fallbackResults.isNotEmpty()) sections.add("Top $moodLabel Playlists" to fallbackResults)
                             } catch (_: Exception) {}
                         }
 
                         try {
-                            val moreResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$moodKeyword songs mix").take(8)
+                            val moreResults = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$moodKeyword songs mix")
+                            }.orEmpty().take(8)
                             if (moreResults.isNotEmpty()) sections.add("$moodLabel Mixes" to moreResults)
                         } catch (_: Exception) {}
                     }
@@ -1356,7 +1330,9 @@ fun HomeScreen(
                     for (artistName in topArtists) {
                         try {
                             val shortKeyword = moodKeyword.split(" ").take(2).joinToString(" ")
-                            val artistResults = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$artistName $shortKeyword").take(6)
+                            val artistResults = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                                com.vinmusic.innertube.InnerTube.searchCommunityPlaylists("$artistName $shortKeyword")
+                            }.orEmpty().take(6)
                             if (artistResults.isNotEmpty()) {
                                 sections.add("$artistName · $moodLabel" to artistResults)
                             }
@@ -1369,13 +1345,11 @@ fun HomeScreen(
                             moodSections = sections
                         }
                         isMoodLoading = false
-                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Deep Mood failed: ${e.message}")
                     withContext(Dispatchers.Main) {
                         isMoodLoading = false
-                        isRefreshing = false
                     }
                 }
             }
@@ -1401,13 +1375,11 @@ fun HomeScreen(
                             rapSubSections = sections
                         }
                         isRapSubLoading = false
-                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Rap sub-category failed: ${e.message}")
                     withContext(Dispatchers.Main) {
                         isRapSubLoading = false
-                        isRefreshing = false
                     }
                 }
             }
@@ -1448,7 +1420,9 @@ fun HomeScreen(
                     val officialParams = MOOD_PARAMS_MAP[filter]
                     if (officialParams != null) {
                         try {
-                            val officialSections = com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            val officialSections = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                com.vinmusic.innertube.YTMusicApi.getMoodPlaylistSections(officialParams)
+                            }.orEmpty()
                             sections.addAll(officialSections)
                         } catch (e: Exception) {
                             android.util.Log.e("HomeScreen", "Failed to fetch official category genre sections: ${e.message}")
@@ -1458,18 +1432,22 @@ fun HomeScreen(
                     // Fallback: search-based if official sections returned nothing
                     if (sections.isEmpty()) {
                         val query = when (filter) {
-                            "Bollywood" -> "bollywood hits playlist 2025"
+                            "Bollywood" -> "bollywood hits playlist $HOME_CURRENT_YEAR"
                             "Lo-fi"     -> "lofi beats chill playlist"
                             "Indie"     -> "indie pop playlist"
                             "K-Pop"     -> "kpop hits playlist"
                             "90s Hits"  -> "90s bollywood classic hits playlist"
                             else        -> "$filter playlist"
                         }
-                        val results = com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(query).take(15)
+                        val results = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                            com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(query)
+                        }.orEmpty().take(15)
                         if (results.isNotEmpty()) {
                             sections.add("Top ${filter.filter { it.isLetter() || it.isWhitespace() }.trim()} Picks" to results)
                         } else {
-                            val fallback = com.vinmusic.innertube.InnerTube.searchAll(query).albums.take(15)
+                            val fallback = kotlinx.coroutines.withTimeoutOrNull(7_000L) {
+                                com.vinmusic.innertube.InnerTube.searchAll(query).albums
+                            }.orEmpty().take(15)
                             if (fallback.isNotEmpty()) {
                                 sections.add("Top ${filter.filter { it.isLetter() || it.isWhitespace() }.trim()} Picks" to fallback)
                             }
@@ -1482,13 +1460,11 @@ fun HomeScreen(
                             moodSections = sections
                         }
                         isMoodLoading = false
-                        isRefreshing = false
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("HomeScreen", "Category filter failed: ${e.message}")
                     withContext(Dispatchers.Main) {
                         isMoodLoading = false
-                        isRefreshing = false
                     }
                 }
             }
@@ -1570,7 +1546,7 @@ fun HomeScreen(
                 // Add genre-based queries
                 val genreQueries = listOf(
                     "long lofi beats study 3 hours",
-                    "extended mix nonstop hits 2025",
+                    "extended mix nonstop hits $HOME_CURRENT_YEAR",
                     "1 hour music mix playlist"
                 )
                 longQueries.addAll(genreQueries.shuffled().take(2))
@@ -1666,16 +1642,22 @@ fun HomeScreen(
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = {
-                if (filter == "All" || filter == "For You") {
-                    triggerRefresh()
-                } else {
-                    isRefreshing = true
-                    refreshTrigger++
-                }
+                vm.refreshHome()
+                categoryRefreshTrigger++
             },
             state = pullRefreshState,
             modifier = Modifier.fillMaxSize()
         ) {
+        val displayedRecommendations = remember(
+            ytMusicSections, quickPicks, recommendedRadio, recommendationSections
+        ) {
+            dedupeHomeRecommendations(
+                ytMusicSections = ytMusicSections,
+                quickPicks = quickPicks,
+                radio = recommendedRadio,
+                sections = recommendationSections,
+            )
+        }
         LazyColumn(
             modifier = Modifier.fillMaxSize().background(Color.Transparent),
             contentPadding = PaddingValues(bottom = 140.dp)
@@ -1966,7 +1948,10 @@ fun HomeScreen(
                             modifier = Modifier.padding(bottom = 24.dp)
                         ) {
                             val historySongs = recentlyPlayed.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            items(historySongs.take(8), key = { it.videoId }) { song ->
+                            // History is event-based, so the same song can
+                            // legitimately occur more than once. Its list key
+                            // must include the position, not just videoId.
+                            itemsIndexed(historySongs.take(8), key = { index, song -> "history_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, historySongs)
                                 }
@@ -2060,7 +2045,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(onRepeatTracks, key = { it.videoId }) { song ->
+                            itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, onRepeatTracks)
                                 }
@@ -2069,20 +2054,20 @@ fun HomeScreen(
                     }
                 }
 
-                if (isLoadingQuickPicks && quickPicks.isEmpty()) {
+                if (isLoadingQuickPicks && displayedRecommendations.quickPicks.isEmpty()) {
                     item { ShelfSkeleton(cardHeight = 64.dp, cardWidth = 280.dp) }
-                } else if (quickPicks.isNotEmpty()) {
+                } else if (displayedRecommendations.quickPicks.isNotEmpty()) {
                     item {
                         SectionTitle("Quick Picks")
                         Spacer(Modifier.height(10.dp))
                         
-                        val columns = quickPicks.chunked(3)
+                        val columns = displayedRecommendations.quickPicks.chunked(3)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(columns, key = { col -> col.firstOrNull()?.videoId ?: "" }) { columnSongs ->
+                            itemsIndexed(columns, key = { index, _ -> "quick_pick_column_$index" }) { _, columnSongs ->
                                 Column(
                                     verticalArrangement = Arrangement.spacedBy(10.dp),
                                     modifier = Modifier.width(280.dp)
@@ -2090,7 +2075,7 @@ fun HomeScreen(
                                     columnSongs.forEach { song ->
                                         QuickPickRow(
                                             song = song,
-                                            onClick = { onSongClick(song, quickPicks) },
+                                            onClick = { onSongClick(song, displayedRecommendations.quickPicks) },
                                             onMore = { onSongMore(song) }
                                         )
                                     }
@@ -2132,7 +2117,7 @@ fun HomeScreen(
                 }
 
                 // 1.6. Recommended Radio
-                if (isLoadingRecommendedRadio && recommendedRadio.isEmpty()) {
+                if (isLoadingRecommendedRadio && displayedRecommendations.radio.isEmpty()) {
                     item {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
@@ -2141,7 +2126,7 @@ fun HomeScreen(
                             CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(24.dp))
                         }
                     }
-                } else if (recommendedRadio.isNotEmpty() && radioSeedSong != null) {
+                } else if (displayedRecommendations.radio.isNotEmpty() && radioSeedSong != null) {
                     item {
                         SectionTitle("Recommended Radio")
                         Spacer(Modifier.height(4.dp))
@@ -2156,9 +2141,9 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(recommendedRadio, key = { it.videoId }) { song ->
+                            itemsIndexed(displayedRecommendations.radio, key = { index, song -> "radio_${song.videoId}_$index" }) { _, song ->
                                 RecommendedRadioCard(song = song) {
-                                    onSongClick(song, recommendedRadio)
+                                    onSongClick(song, displayedRecommendations.radio)
                                 }
                             }
                         }
@@ -2245,7 +2230,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(similarToSongs, key = { it.videoId }) { s ->
+                            itemsIndexed(similarToSongs, key = { index, song -> "similar_${song.videoId}_$index" }) { _, s ->
                                 RecommendedRadioCard(song = s) { onSongClick(s, similarToSongs) }
                             }
                         }
@@ -2254,8 +2239,8 @@ fun HomeScreen(
 
                 // 1.9. YouTube Music personalized shelves (account-connected) —
                 // real YT-engine picks lead above locally generated shelves.
-                if (!isLoadingYtHome && ytMusicSections.isNotEmpty()) {
-                    ytMusicSections.forEach { section ->
+                if (!isLoadingYtHome && displayedRecommendations.ytMusicSections.isNotEmpty()) {
+                    displayedRecommendations.ytMusicSections.forEach { section ->
                         if (section.songs.isNotEmpty()) {
                             item {
                                 SectionTitle(section.title)
@@ -2265,7 +2250,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(section.songs, key = { it.videoId }) { song ->
+                                    itemsIndexed(section.songs, key = { index, song -> "yt_shelf_${song.videoId}_$index" }) { _, song ->
                                         TrackCard(song = song) {
                                             onSongClick(song, section.songs)
                                         }
@@ -2277,15 +2262,13 @@ fun HomeScreen(
                 }
 
                 // 2. Dynamic Recommendations Sections (Personalized Music Engine)
-                if (isRecommendationsLoading && recommendationSections.isEmpty()) {
+                if (isRecommendationsLoading && displayedRecommendations.sections.isEmpty()) {
                     item { ShelfSkeleton() }
                 } else {
-                    recommendationSections.forEach { (title, recList) ->
-                        // With YT Music connected, real YTM-engine shelves carry home —
-                        // drop our weakest taste-independent query shelves to cut noise.
-                        if (recList.isNotEmpty() &&
-                            !(ytMusicSections.isNotEmpty() && title in TASTE_INDEPENDENT_SHELVES)
-                        ) {
+                    displayedRecommendations.sections.forEach { (title, recList) ->
+                        // Local discovery shelves add a different signal to the
+                        // connected YT Music shelves, so show both.
+                        if (recList.isNotEmpty()) {
                             if (title == "Side A") {
                                 // Hero treatment: big top pick + regular row below.
                                 item {
@@ -2302,7 +2285,7 @@ fun HomeScreen(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
-                                        items(recList.drop(1), key = { it.videoItem.videoId }) { rec ->
+                                        itemsIndexed(recList.drop(1), key = { index, rec -> "side_a_${rec.videoItem.videoId}_$index" }) { _, rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, heroItems)
                                             }
@@ -2319,7 +2302,7 @@ fun HomeScreen(
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
                                         val videoItems = recList.map { it.videoItem }
-                                        items(recList, key = { it.videoItem.videoId }) { rec ->
+                                        itemsIndexed(recList, key = { index, rec -> "recommendation_${rec.videoItem.videoId}_$index" }) { _, rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, videoItems)
                                             }
@@ -2345,7 +2328,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             val downloadedSongs = downloads.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            items(downloadedSongs.take(8), key = { it.videoId }) { song ->
+                            itemsIndexed(downloadedSongs.take(8), key = { index, song -> "download_${song.videoId}_$index" }) { _, song ->
                                 TrackCard(song = song) {
                                     onPlayQueue(song, downloadedSongs)
                                 }
@@ -2388,7 +2371,7 @@ fun HomeScreen(
                 }
 
                 // 0. YouTube Music official home (Metrolist FEmusic_home)
-                if (isLoadingYtHome && ytMusicSections.isEmpty()) {
+                if (isLoadingYtHome && displayedRecommendations.ytMusicSections.isEmpty()) {
                     item {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
@@ -2399,7 +2382,7 @@ fun HomeScreen(
                         }
                     }
                 } else {
-                    ytMusicSections.forEach { section ->
+                    displayedRecommendations.ytMusicSections.forEach { section ->
                         if (section.songs.isNotEmpty()) {
                             item {
                                 SectionTitle(section.title)
@@ -2409,7 +2392,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(section.songs, key = { it.videoId }) { song ->
+                                    itemsIndexed(section.songs, key = { index, song -> "yt_shelf_${song.videoId}_$index" }) { _, song ->
                                         TrackCard(song = song) {
                                             onSongClick(song, section.songs)
                                         }
@@ -2430,7 +2413,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(onRepeatTracks, key = { it.videoId }) { song ->
+                            itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, onRepeatTracks)
                                 }
@@ -2439,20 +2422,20 @@ fun HomeScreen(
                     }
                 }
 
-                if (isLoadingQuickPicks && quickPicks.isEmpty()) {
+                if (isLoadingQuickPicks && displayedRecommendations.quickPicks.isEmpty()) {
                     item { ShelfSkeleton(cardHeight = 64.dp, cardWidth = 280.dp) }
-                } else if (quickPicks.isNotEmpty()) {
+                } else if (displayedRecommendations.quickPicks.isNotEmpty()) {
                     item {
                         SectionTitle("Quick Picks")
                         Spacer(Modifier.height(10.dp))
                         
-                        val columns = quickPicks.chunked(3)
+                        val columns = displayedRecommendations.quickPicks.chunked(3)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(columns, key = { col -> col.firstOrNull()?.videoId ?: "" }) { columnSongs ->
+                            itemsIndexed(columns, key = { index, _ -> "quick_pick_column_$index" }) { _, columnSongs ->
                                 Column(
                                     verticalArrangement = Arrangement.spacedBy(10.dp),
                                     modifier = Modifier.width(280.dp)
@@ -2460,7 +2443,7 @@ fun HomeScreen(
                                     columnSongs.forEach { song ->
                                         QuickPickRow(
                                             song = song,
-                                            onClick = { onSongClick(song, quickPicks) },
+                                            onClick = { onSongClick(song, displayedRecommendations.quickPicks) },
                                             onMore = { onSongMore(song) }
                                         )
                                     }
@@ -2502,7 +2485,7 @@ fun HomeScreen(
                 }
 
                 // 2. Recommended Radio
-                if (isLoadingRecommendedRadio && recommendedRadio.isEmpty()) {
+                if (isLoadingRecommendedRadio && displayedRecommendations.radio.isEmpty()) {
                     item {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
@@ -2511,7 +2494,7 @@ fun HomeScreen(
                             CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(24.dp))
                         }
                     }
-                } else if (recommendedRadio.isNotEmpty() && radioSeedSong != null) {
+                } else if (displayedRecommendations.radio.isNotEmpty() && radioSeedSong != null) {
                     item {
                         SectionTitle("Recommended Radio")
                         Spacer(Modifier.height(4.dp))
@@ -2526,9 +2509,9 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            items(recommendedRadio, key = { it.videoId }) { song ->
+                            itemsIndexed(displayedRecommendations.radio, key = { index, song -> "radio_${song.videoId}_$index" }) { _, song ->
                                 RecommendedRadioCard(song = song) {
-                                    onSongClick(song, recommendedRadio)
+                                    onSongClick(song, displayedRecommendations.radio)
                                 }
                             }
                         }
@@ -2582,15 +2565,13 @@ fun HomeScreen(
                 // (Artists you may like shown above after Quick Picks)
 
                 // 4. Personalized Recommendations Sections
-                if (isRecommendationsLoading && recommendationSections.isEmpty()) {
+                if (isRecommendationsLoading && displayedRecommendations.sections.isEmpty()) {
                     item { ShelfSkeleton() }
                 } else {
-                    recommendationSections.forEach { (title, recList) ->
-                        // With YT Music connected, real YTM-engine shelves carry home —
-                        // drop our weakest taste-independent query shelves to cut noise.
-                        if (recList.isNotEmpty() &&
-                            !(ytMusicSections.isNotEmpty() && title in TASTE_INDEPENDENT_SHELVES)
-                        ) {
+                    displayedRecommendations.sections.forEach { (title, recList) ->
+                        // Local discovery shelves add a different signal to the
+                        // connected YT Music shelves, so show both.
+                        if (recList.isNotEmpty()) {
                             if (title == "Side A") {
                                 // Hero treatment: big top pick + regular row below.
                                 item {
@@ -2607,7 +2588,7 @@ fun HomeScreen(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
-                                        items(recList.drop(1), key = { it.videoItem.videoId }) { rec ->
+                                        itemsIndexed(recList.drop(1), key = { index, rec -> "side_a_${rec.videoItem.videoId}_$index" }) { _, rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, heroItems)
                                             }
@@ -2624,7 +2605,7 @@ fun HomeScreen(
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
                                         val videoItems = recList.map { it.videoItem }
-                                        items(recList, key = { it.videoItem.videoId }) { rec ->
+                                        itemsIndexed(recList, key = { index, rec -> "recommendation_${rec.videoItem.videoId}_$index" }) { _, rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, videoItems)
                                             }
@@ -2756,7 +2737,7 @@ fun HomeScreen(
                                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
                             )
                         }
-                        items(longListens, key = { it.videoId }) { song ->
+                        itemsIndexed(longListens, key = { index, song -> "long_listen_${song.videoId}_$index" }) { _, song ->
                             SongListItem(
                                 song = song,
                                 isPlaying = vm.currentSong?.videoId == song.videoId,
@@ -4164,7 +4145,7 @@ private fun homeMonthlyListenersText(source: String): String {
         .replace(Regex("""[•|·]+"""), " ")
         .replace(Regex("""\s+"""), " ")
         .trim()
-    return if (compact.isBlank()) "" else "$compact Monthly Listeners"
+    return if (compact.isBlank()) "" else "$compact Subscribers"
 }
 
 @Composable

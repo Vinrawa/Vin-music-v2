@@ -3,6 +3,9 @@ package com.vinmusic.player
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.compose.runtime.*
 import androidx.media3.common.AudioAttributes
@@ -155,16 +158,92 @@ object PlayerSingleton {
     private var prefs: android.content.SharedPreferences? = null
     internal var context: Context? = null
 
-    // WakeLock/WifiLock management removed — ExoPlayer's setWakeMode(C.WAKE_MODE_NETWORK) handles this automatically
+    // Dedicated transition WakeLock to keep CPU awake during network stream resolution between tracks when screen is OFF.
+    // ExoPlayer's setWakeMode only keeps CPU awake while ExoPlayer is actively playing/buffering; between tracks when
+    // ExoPlayer is stopped and Dispatchers.IO is fetching the stream URL, Linux kernel can suspend the CPU.
+    private var transitionWakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    @Synchronized
+    private fun acquireTransitionWakeLock(ctx: Context) {
+        try {
+            if (transitionWakeLock == null) {
+                val powerManager = ctx.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                transitionWakeLock = powerManager?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "VinMusic:TransitionWakeLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            // 20-second safety timeout guarantees CPU will never stay awake indefinitely if network stalls
+            transitionWakeLock?.acquire(20_000L)
+            Log.d(TAG, "TransitionWakeLock acquired for background track switch")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire transition WakeLock: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun releaseTransitionWakeLock() {
+        try {
+            transitionWakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "TransitionWakeLock released (ExoPlayer active)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release transition WakeLock: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun acquireWifiLock(ctx: Context) {
+        try {
+            if (wifiLock == null) {
+                val wifiManager = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager?.createWifiLock(mode, "VinMusic:WifiStreamingLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wifiLock?.isHeld != true) {
+                wifiLock?.acquire()
+                Log.d(TAG, "WifiStreamingLock acquired for low-latency background streaming")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire WifiLock: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun releaseWifiLock() {
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "WifiStreamingLock released")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release WifiLock: ${e.message}")
+        }
+    }
 
     private fun acquireWakeLocks(ctx: Context) {
-        // No-op: ExoPlayer's setWakeMode(C.WAKE_MODE_NETWORK) handles both
-        // CPU and WiFi wake locks automatically. Manual locks were removed
-        // because a 30-second WiFi lock timeout was killing background streams.
+        acquireTransitionWakeLock(ctx)
+        acquireWifiLock(ctx)
     }
 
     private fun releaseWakeLocks() {
-        // No-op: ExoPlayer manages wake locks via setWakeMode(C.WAKE_MODE_NETWORK)
+        releaseTransitionWakeLock()
+        releaseWifiLock()
     }
 
     private val coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
@@ -246,6 +325,7 @@ object PlayerSingleton {
                 Log.d(TAG, "PlaybackState = $stateStr")
                 when (state) {
                     Player.STATE_READY     -> {
+                        releaseTransitionWakeLock()
                         isLoading  = false
                         errorMessage = null
                         // Reset the per-error retry budget on a successful load so a
@@ -280,7 +360,12 @@ object PlayerSingleton {
                     errorRetryCount++
                     scope.launch {
                         nextStreamUrlDeferred = null
-                        if (httpCode == 401 || httpCode == 403) {
+                        val isAuthRejection = httpCode == 401 || httpCode == 403
+                        if (isAuthRejection) {
+                            // Evict rejected stream URL from in-memory cache so retry doesn't re-use it
+                            com.vinmusic.innertube.InnerTube.invalidateStreamUrl(song.videoId)
+                            // Force refresh the YouTube visitor token so challenges are cleared
+                            com.vinmusic.innertube.InnerTube.ensureVisitorData(force = true)
                             // The online player cache is disposable. Sweep it on an
                             // authorization failure so an expired/partial signed URL
                             // cannot survive and force the user to clear app data.
@@ -290,7 +375,7 @@ object PlayerSingleton {
                                 attempt = errorRetryCount, status = "ok", httpCode = httpCode
                             )
                         }
-                        playSong(song, startPositionMs = pos)
+                        playSong(song, startPositionMs = pos, forceFresh = isAuthRejection)
                     }
                     return
                 }
@@ -486,7 +571,10 @@ object PlayerSingleton {
                     // YouTube CDN validates the UA against the `c=` param in the URL.
                     val urlStr = dataSpec.uri.toString()
                     val resolvedUa = com.vinmusic.innertube.InnerTube.getUserAgentForUrl(urlStr)
-                    val isNativeClient = urlStr.contains("c=IOS") || urlStr.contains("c=ANDROID")
+                    val isNativeClient = urlStr.contains("c=IOS") ||
+                        urlStr.contains("c=ANDROID") ||
+                        urlStr.contains("c=VISIONOS") ||
+                        urlStr.contains("cps=1021")
                     val requestProps = mutableMapOf(
                         "Accept-Encoding" to "identity"
                     )
@@ -655,7 +743,7 @@ object PlayerSingleton {
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun playSong(song: VideoItem, startPositionMs: Long = 0L) {
+    fun playSong(song: VideoItem, startPositionMs: Long = 0L, forceFresh: Boolean = false) {
         ReliabilityDiagnostics.record("playback", "start", song.videoId, status = "started")
         context?.let { acquireWakeLocks(it) }
         fetchJob?.cancel()
@@ -704,7 +792,15 @@ object PlayerSingleton {
 
         // Save to history + Metrolist-style related cache for recommendations
         scope.launch(Dispatchers.IO) {
-            database.historyDao().insert(HistoryEntry(song.videoId, song.title, song.author, null, song.durationText))
+            database.historyDao().insert(
+                HistoryEntry(
+                    videoId = song.videoId,
+                    title = song.title,
+                    author = song.author,
+                    genre = null,
+                    durationText = song.durationText
+                )
+            )
             recommendationRepository?.touchSongPlayMeta(song)
             recommendationRepository?.cacheRelatedForSong(song.videoId)
         }
@@ -797,7 +893,7 @@ object PlayerSingleton {
                     // Fetch stream URL and artwork bytes in parallel
                     var fetchedUrl: String? = null
                     
-                    if (prefetchedUrlDeferred != null && prefetchedUrlDeferred.first == song.videoId) {
+                    if (!forceFresh && prefetchedUrlDeferred != null && prefetchedUrlDeferred.first == song.videoId) {
                         fetchedUrl = prefetchedUrlDeferred.second.await()
                         ReliabilityDiagnostics.record(
                             "playback", "resolve_prefetch", song.videoId,
@@ -811,7 +907,7 @@ object PlayerSingleton {
                         for (attempt in 1..2) {
                             ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = attempt, status = "started")
                             fetchedUrl = try {
-                                InnerTube.getStreamUrl(song.videoId, quality)
+                                InnerTube.getStreamUrl(song.videoId, quality, forceFresh = forceFresh)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Stream URL fetch attempt $attempt failed: ${e.message}")
                                 null

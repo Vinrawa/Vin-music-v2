@@ -15,8 +15,8 @@ object ExperimentalResolver {
     private val gson = Gson()
 
     private val http = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .followRedirects(true)
         .addInterceptor { chain ->
             val req = chain.request()

@@ -3,6 +3,7 @@ package com.vinmusic.data
 import android.content.Context
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.vinmusic.data.db.*
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -23,6 +24,24 @@ class FirebaseSyncManager @Inject constructor(
 
     private fun getUserId(): String? = auth.currentUser?.uid
 
+    private suspend fun writeInBatches(writes: List<Pair<DocumentReference, Map<String, Any>>>) {
+        // Firestore accepts at most 500 operations per batch. Leave room below
+        // that ceiling so a large music library can still be backed up safely.
+        writes.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { (document, data) -> batch.set(document, data) }
+            batch.commit().await()
+        }
+    }
+
+    private suspend fun deleteInBatches(documents: List<DocumentReference>) {
+        documents.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { batch.delete(it) }
+            batch.commit().await()
+        }
+    }
+
     /**
      * Backup all local user data (Liked Songs, Followed Artists, and Playlists) to Cloud Firestore.
      */
@@ -33,25 +52,25 @@ class FirebaseSyncManager @Inject constructor(
             
             // 1. Fetch local liked songs
             val likedSongs = db.likedSongDao().getAll()
-            val likedList = likedSongs.map {
-                mapOf(
-                    "videoId" to it.videoId,
-                    "title" to it.title,
-                    "author" to it.author,
-                    "durationText" to it.durationText,
-                    "likedAt" to it.likedAt
+            val likedWrites = likedSongs.filter { it.videoId.isNotBlank() }.map { song ->
+                userDocRef(uid).collection("likedSongs").document(song.videoId) to mapOf(
+                    "videoId" to song.videoId,
+                    "title" to song.title,
+                    "author" to song.author,
+                    "durationText" to song.durationText,
+                    "likedAt" to song.likedAt
                 )
             }
             
             // 2. Fetch local followed artists
             val followedArtists = db.followedArtistDao().getAll()
-            val artistList = followedArtists.map {
-                mapOf(
-                    "channelId" to it.channelId,
-                    "name" to it.name,
-                    "thumbnail" to it.thumbnail,
-                    "subscriberCount" to it.subscriberCount,
-                    "followedAt" to it.followedAt
+            val artistWrites = followedArtists.filter { it.channelId.isNotBlank() }.map { artist ->
+                userDocRef(uid).collection("followedArtists").document(artist.channelId) to mapOf(
+                    "channelId" to artist.channelId,
+                    "name" to artist.name,
+                    "thumbnail" to artist.thumbnail,
+                    "subscriberCount" to artist.subscriberCount,
+                    "followedAt" to artist.followedAt
                 )
             }
 
@@ -59,35 +78,57 @@ class FirebaseSyncManager @Inject constructor(
             val localPlaylists = db.playlistDao().getAll()
             val allPlaylistSongs = db.playlistDao().getAllPlaylistSongs()
             
-            val playlistList = localPlaylists.map { playlist ->
+            val playlistWrites = mutableListOf<Pair<DocumentReference, Map<String, Any>>>()
+            for (playlist in localPlaylists) {
                 val songsInPlaylist = allPlaylistSongs
                     .filter { it.playlistId == playlist.id }
-                    .map {
-                        mapOf(
-                            "videoId" to it.videoId,
-                            "title" to it.title,
-                            "author" to it.author,
-                            "durationText" to it.durationText,
-                            "position" to it.position
-                        )
-                    }
-                mapOf(
+                val playlistRef = userDocRef(uid).collection("playlists")
+                    .document("${playlist.createdAt}_${playlist.id}")
+                val songWrites = songsInPlaylist.filter { it.videoId.isNotBlank() }.map { song ->
+                    playlistRef.collection("songs").document(song.videoId) to mapOf(
+                        "videoId" to song.videoId,
+                        "title" to song.title,
+                        "author" to song.author,
+                        "durationText" to song.durationText,
+                        "position" to song.position
+                    )
+                }
+                writeInBatches(songWrites)
+                val currentSongIds = songWrites.map { it.first.id }.toSet()
+                val staleSongDocs = playlistRef.collection("songs").get().await().documents
+                    .filter { it.id !in currentSongIds }
+                    .map { it.reference }
+                deleteInBatches(staleSongDocs)
+                playlistWrites += playlistRef to mapOf(
                     "name" to playlist.name,
-                    "createdAt" to playlist.createdAt,
-                    "songs" to songsInPlaylist
+                    "createdAt" to playlist.createdAt
                 )
             }
 
-            // 4. Batch write to Firestore
-            val userDocRef = firestore.collection("users").document(uid)
-            val backupData = mapOf(
-                "lastBackupAt" to System.currentTimeMillis(),
-                "likedSongs" to likedList,
-                "followedArtists" to artistList,
-                "playlists" to playlistList
+            // Keep the user document tiny; each growing data type lives in its
+            // own collection instead of eventually exceeding Firestore's 1 MiB
+            // document limit.
+            val userDocRef = userDocRef(uid)
+            userDocRef.set(mapOf("lastBackupAt" to System.currentTimeMillis(), "schemaVersion" to 2)).await()
+            writeInBatches(likedWrites)
+            writeInBatches(artistWrites)
+            writeInBatches(playlistWrites)
+            deleteInBatches(
+                userDocRef.collection("likedSongs").get().await().documents
+                    .filter { it.id !in likedWrites.map { write -> write.first.id }.toSet() }
+                    .map { it.reference }
             )
-
-            userDocRef.set(backupData).await()
+            deleteInBatches(
+                userDocRef.collection("followedArtists").get().await().documents
+                    .filter { it.id !in artistWrites.map { write -> write.first.id }.toSet() }
+                    .map { it.reference }
+            )
+            val currentPlaylistIds = playlistWrites.map { it.first.id }.toSet()
+            for (stalePlaylist in userDocRef.collection("playlists").get().await().documents
+                .filter { it.id !in currentPlaylistIds }) {
+                deleteInBatches(stalePlaylist.reference.collection("songs").get().await().documents.map { it.reference })
+                stalePlaylist.reference.delete().await()
+            }
             Log.d(TAG, "Cloud backup completed successfully!")
             Result.success(Unit)
         } catch (e: Exception) {
@@ -104,7 +145,7 @@ class FirebaseSyncManager @Inject constructor(
         try {
             Log.d(TAG, "Starting cloud data restore for user=$uid")
             
-            val userDocRef = firestore.collection("users").document(uid)
+            val userDocRef = userDocRef(uid)
             val snapshot = userDocRef.get().await()
             
             if (!snapshot.exists()) {
@@ -112,8 +153,13 @@ class FirebaseSyncManager @Inject constructor(
                 return@withContext Result.success(Unit)
             }
 
-            // 1. Restore Liked Songs
-            val cloudLiked = snapshot.get("likedSongs") as? List<Map<String, Any>>
+            // 1. Restore Liked Songs. Use the scalable subcollection format;
+            // old single-document backups remain readable as a fallback.
+            val storedLiked = userDocRef.collection("likedSongs").get().await()
+                .documents.mapNotNull { it.data }
+            val cloudLiked = storedLiked.ifEmpty {
+                snapshot.get("likedSongs") as? List<Map<String, Any>> ?: emptyList()
+            }
             cloudLiked?.forEach { map ->
                 val videoId = map["videoId"] as? String ?: return@forEach
                 val title = map["title"] as? String ?: ""
@@ -144,7 +190,11 @@ class FirebaseSyncManager @Inject constructor(
             }
 
             // 2. Restore Followed Artists
-            val cloudArtists = snapshot.get("followedArtists") as? List<Map<String, Any>>
+            val storedArtists = userDocRef.collection("followedArtists").get().await()
+                .documents.mapNotNull { it.data }
+            val cloudArtists = storedArtists.ifEmpty {
+                snapshot.get("followedArtists") as? List<Map<String, Any>> ?: emptyList()
+            }
             cloudArtists?.forEach { map ->
                 val channelId = map["channelId"] as? String ?: return@forEach
                 val name = map["name"] as? String ?: ""
@@ -157,8 +207,17 @@ class FirebaseSyncManager @Inject constructor(
                 )
             }
 
-            // 3. Restore Playlists
-            val cloudPlaylists = snapshot.get("playlists") as? List<Map<String, Any>>
+            // 3. Restore Playlists and their separately stored songs.
+            val storedPlaylists = mutableListOf<Map<String, Any>>()
+            for (doc in userDocRef.collection("playlists").get().await().documents) {
+                val playlist = HashMap<String, Any>(doc.data ?: emptyMap())
+                playlist["songs"] = doc.reference.collection("songs").get().await()
+                    .documents.mapNotNull { it.data }
+                storedPlaylists += playlist
+            }
+            val cloudPlaylists = storedPlaylists.ifEmpty {
+                snapshot.get("playlists") as? List<Map<String, Any>> ?: emptyList()
+            }
             val currentLocalPlaylists = db.playlistDao().getAll()
             
             cloudPlaylists?.forEach { playlistMap ->
@@ -208,4 +267,6 @@ class FirebaseSyncManager @Inject constructor(
             Result.failure(e)
         }
     }
+
+    private fun userDocRef(uid: String) = firestore.collection("users").document(uid)
 }

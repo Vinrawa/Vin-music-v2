@@ -62,4 +62,17 @@ class VinMusicApp : Application(), SingletonImageLoader.Factory {
             .crossfade(true) // Smooth 100ms transitions
             .build()
     }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // When app is hidden or OS is under memory pressure, purge Coil's in-memory bitmap
+        // cache so Android's Low Memory Killer (LMK) doesn't kill the background playback process.
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            try {
+                SingletonImageLoader.get(this).memoryCache?.clear()
+            } catch (_: Exception) {}
+        }
+    }
 }

@@ -41,6 +41,7 @@ import com.vinmusic.data.db.VinDatabase
 import com.vinmusic.innertube.AlbumItem
 import com.vinmusic.innertube.InnerTube
 import com.vinmusic.innertube.VideoItem
+import com.vinmusic.innertube.trackCountText
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.recommendation.RecommendationManager
 import com.vinmusic.ui.theme.VinColors
@@ -1196,7 +1197,7 @@ fun RecommendedPlaylistCard(
             }
             
             // Video Count Tag Overlay on the bottom right
-            if (playlist.songCount.isNotBlank()) {
+            playlist.trackCountText()?.let { trackCount ->
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -1214,7 +1215,7 @@ fun RecommendedPlaylistCard(
                         modifier = Modifier.size(12.dp)
                     )
                     Text(
-                        text = playlist.songCount.filter { it.isDigit() },
+                        text = trackCount,
                         color = Color.White,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold

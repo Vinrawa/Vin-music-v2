@@ -325,23 +325,40 @@ fun DownloadsScreen(
         } else if (selectedTab == "Downloads") {
             LazyColumn(contentPadding = PaddingValues(bottom = 220.dp)) {
                 itemsIndexed(downloads, key = { index, dl -> "dl_song_${dl.videoId}_$index" }) { index, dl ->
-                    val song = VideoItem(dl.videoId, dl.title, dl.author, dl.durationText)
+                    val cleanTitle = remember(dl.title) { dl.title.replace(Regex("[\\r\\n]+"), " ").trim() }
+                    val cleanAuthor = remember(dl.author) { dl.author.replace(Regex("[\\r\\n]+"), " ").trim() }
+                    val song = remember(dl.videoId, cleanTitle, cleanAuthor, dl.durationText) {
+                        VideoItem(dl.videoId, cleanTitle, cleanAuthor, dl.durationText)
+                    }
                     val isCompleted = dl.status == "completed"
                     val isDownloading = dl.status == "downloading"
                     val isQueued = dl.status == "queued"
                     val isFailed = dl.status == "failed"
                     val isPlaying = vm.currentSong?.videoId == dl.videoId
 
-                    Row(modifier = Modifier.fillMaxWidth()
-                        .background(if (isPlaying) VinColors.White10 else Color.Transparent)
-                        .clickable(enabled = isCompleted) {
-                            val completedSongs = downloads.filter { it.status == "completed" }.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            onSongClick(song, completedSongs)
-                        }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 3.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isPlaying) VinColors.White10 else Color.Transparent)
+                            .clickable(enabled = isCompleted) {
+                                val completedSongs = downloads
+                                    .filter { it.status == "completed" }
+                                    .map {
+                                        VideoItem(
+                                            it.videoId,
+                                            it.title.replace(Regex("[\\r\\n]+"), " ").trim(),
+                                            it.author.replace(Regex("[\\r\\n]+"), " ").trim(),
+                                            it.durationText
+                                        )
+                                    }
+                                onSongClick(song, completedSongs)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         // Serial Number on the left
                         Box(
                             modifier = Modifier.width(30.dp),
@@ -365,6 +382,7 @@ fun DownloadsScreen(
                             }
                         }
 
+                        // Artwork Box
                         Box(modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp))) {
                             val thumbPath = dl.thumbnailPath
                             val thumbnailModel = if (thumbPath != null && File(thumbPath).exists()) {
@@ -372,35 +390,71 @@ fun DownloadsScreen(
                             } else {
                                 song.thumbnail
                             }
-                            AsyncImage(model = thumbnailModel, contentDescription = null,
-                                modifier = Modifier.fillMaxSize().scale(1.3f), contentScale = ContentScale.Crop)
+                            AsyncImage(
+                                model = thumbnailModel,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize().scale(1.3f),
+                                contentScale = ContentScale.Crop
+                            )
                             if (isCompleted) {
-                                Box(modifier = Modifier.align(Alignment.BottomEnd).size(18.dp)
-                                    .clip(CircleShape).background(VinColors.Success),
-                                    contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(VinColors.Success),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(10.dp))
                                 }
                             } else if (isDownloading || isQueued) {
-                                Box(modifier = Modifier.fillMaxSize().background(Color(0x80000000)),
-                                    contentAlignment = Alignment.Center) {
-                                    CircularProgressIndicator(color = VinColors.AccentLight, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                Box(
+                                    modifier = Modifier.fillMaxSize().background(Color(0x80000000)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = VinColors.AccentLight,
+                                        modifier = Modifier.size(24.dp),
+                                        strokeWidth = 2.dp
+                                    )
                                 }
                             }
                         }
 
-                        Column(Modifier.weight(1f)) {
-                            Text(dl.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                fontSize = 14.sp, fontWeight = FontWeight.Medium, color = VinColors.Primary)
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(dl.author, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, color = VinColors.Secondary)
+                        // Title & Subtitle column
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = cleanTitle,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = VinColors.Primary
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = cleanAuthor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 12.sp,
+                                    color = VinColors.Secondary,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
                                 if (isCompleted && dl.sizeBytes > 0) {
-                                    Text("• ${formatBytes(dl.sizeBytes)}", fontSize = 12.sp, color = VinColors.Secondary)
+                                    Text("• ${formatBytes(dl.sizeBytes)}", fontSize = 12.sp, color = VinColors.Secondary, maxLines = 1)
                                 } else if (isDownloading) {
-                                    Text("• Caching ${dl.progress}%", fontSize = 12.sp, color = VinColors.AccentLight, fontWeight = FontWeight.SemiBold)
+                                    Text("• Caching ${dl.progress}%", fontSize = 12.sp, color = VinColors.AccentLight, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                 } else if (isQueued) {
-                                    Text("• Queued...", fontSize = 12.sp, color = VinColors.Secondary)
+                                    Text("• Queued...", fontSize = 12.sp, color = VinColors.Secondary, maxLines = 1)
                                 } else if (isFailed) {
-                                    Text("• Failed", fontSize = 12.sp, color = Color(0xFFFF5252))
+                                    Text("• Failed", fontSize = 12.sp, color = Color(0xFFFF5252), maxLines = 1)
                                 }
                             }
                         }
@@ -474,15 +528,24 @@ fun DownloadsScreen(
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 220.dp)) {
                     itemsIndexed(cachedSongs, key = { index, song -> "cached_${song.videoId}_$index" }) { index, song ->
+                        val cleanTitle = remember(song.title) { song.title.replace(Regex("[\\r\\n]+"), " ").trim() }
+                        val cleanAuthor = remember(song.author) { song.author.replace(Regex("[\\r\\n]+"), " ").trim() }
+                        val safeSong = remember(song.videoId, cleanTitle, cleanAuthor, song.durationText) {
+                            VideoItem(song.videoId, cleanTitle, cleanAuthor, song.durationText)
+                        }
                         val isPlaying = vm.currentSong?.videoId == song.videoId
 
-                        Row(modifier = Modifier.fillMaxWidth()
-                            .background(if (isPlaying) VinColors.White10 else Color.Transparent)
-                            .clickable { onSongClick(song, cachedSongs) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 3.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isPlaying) VinColors.White10 else Color.Transparent)
+                                .clickable { onSongClick(safeSong, cachedSongs) }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
                             // Serial Number
                             Box(
                                 modifier = Modifier.width(30.dp),
@@ -508,26 +571,51 @@ fun DownloadsScreen(
 
                             // Thumbnail
                             Box(modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp))) {
-                                AsyncImage(model = song.thumbnail, contentDescription = null,
-                                    modifier = Modifier.fillMaxSize().scale(1.3f), contentScale = ContentScale.Crop)
+                                AsyncImage(
+                                    model = safeSong.thumbnail,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize().scale(1.3f),
+                                    contentScale = ContentScale.Crop
+                                )
                                 // Cached indicator
-                                Box(modifier = Modifier.align(Alignment.BottomEnd).size(18.dp)
-                                    .clip(CircleShape).background(VinColors.Accent),
-                                    contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(VinColors.Accent),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Icon(Icons.Default.Cached, null, tint = Color.White, modifier = Modifier.size(10.dp))
                                 }
                             }
 
                             // Song info
-                            Column(Modifier.weight(1f)) {
-                                Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    fontSize = 14.sp, fontWeight = FontWeight.Medium, color = VinColors.Primary)
-                                Text(song.author, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, color = VinColors.Secondary)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = cleanTitle,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = VinColors.Primary
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = cleanAuthor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 12.sp,
+                                    color = VinColors.Secondary
+                                )
                             }
 
                             // More options
                             IconButton(
-                                onClick = { onCachedSongMore(song) },
+                                onClick = { onCachedSongMore(safeSong) },
                                 modifier = Modifier.size(48.dp)
                             ) {
                                 Icon(

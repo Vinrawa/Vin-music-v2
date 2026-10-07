@@ -47,35 +47,38 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
+private val DISCOVER_CURRENT_YEAR: Int get() = java.time.LocalDate.now().year
+
 // Diverse premium discovery query templates - focused on quality and variety
 private val DISCOVER_QUERIES = listOf(
-    "best rap hip hop songs 2025",
-    "top r&b soul hits 2025",
-    "new electronic dance music 2025",
+    "best rap hip hop songs $DISCOVER_CURRENT_YEAR",
+    "top r&b soul hits $DISCOVER_CURRENT_YEAR",
+    "new electronic dance music $DISCOVER_CURRENT_YEAR",
     "best jazz fusion songs",
     "top neo soul hits",
-    "new synthwave retrowave 2025",
+    "new synthwave retrowave $DISCOVER_CURRENT_YEAR",
     "best lo-fi hip hop beats",
     "top funk disco classics",
     "new ambient chill music",
     "best dream pop shoegaze",
-    "top alternative rock 2025",
+    "top alternative rock $DISCOVER_CURRENT_YEAR",
     "new bedroom pop indie",
     "best trip hop downtempo",
     "top progressive rock modern",
     "new art pop experimental",
-    "best afrobeat songs 2025",
+    "best afrobeat songs $DISCOVER_CURRENT_YEAR",
     "top reggae dancehall hits",
-    "new latin reggaeton 2025",
+    "new latin reggaeton $DISCOVER_CURRENT_YEAR",
     "best punk rock songs",
-    "top country hits 2025",
-    "new k-pop hits 2025",
-    "best metal songs 2025",
+    "top country hits $DISCOVER_CURRENT_YEAR",
+    "new k-pop hits $DISCOVER_CURRENT_YEAR",
+    "best metal songs $DISCOVER_CURRENT_YEAR",
     "top house techno music",
-    "new drum and bass 2025",
+    "new drum and bass $DISCOVER_CURRENT_YEAR",
     "best acoustic folk songs",
     "top grime uk rap",
     "new vaporwave chill",
@@ -88,15 +91,45 @@ private val DISCOVER_QUERIES = listOf(
 data class DiscoverSong(
     val videoItem: VideoItem,
     val recommendationReason: String,
-    val vibeScore: Int
+    val vibeScore: Int,
+    val matchHighlights: List<String> = emptyList()
 )
+
+/** Explains the signals the local recommendation engine actually used. */
+private fun discoverMatchHighlights(
+    song: VideoItem,
+    profile: RecommendationManager.TasteProfile?
+): List<String> {
+    val metadata = runCatching { RecommendationManager.inferMetadata(song) }.getOrNull()
+        ?: return listOf("Fresh official release")
+    val highlights = mutableListOf<String>()
+
+    profile?.topGenres?.take(3)?.firstOrNull {
+        it.first.equals(metadata.genre, ignoreCase = true)
+    }?.let { highlights += "Matches your ${metadata.genre} taste" }
+    profile?.topMoods?.take(3)?.firstOrNull {
+        it.first.equals(metadata.mood, ignoreCase = true)
+    }?.let { highlights += "Fits your ${metadata.mood.lowercase()} mood" }
+    profile?.tasteDNA?.let { dna ->
+        if (kotlin.math.abs(metadata.energy - dna.targetEnergy) <= 0.12) {
+            highlights += "Energy close to your usual"
+        }
+        if (kotlin.math.abs(metadata.tempo - dna.targetTempo) <= 14) {
+            highlights += "Tempo close to your usual"
+        }
+    }
+    if (highlights.isEmpty() && metadata.genre != "Unknown") {
+        highlights += "A fresh ${metadata.genre} pick"
+    }
+    return highlights.ifEmpty { listOf("Fresh official release") }.take(2)
+}
 
 // ── Shown-card memory ────────────────────────────────────────────────────────
 // Persists which songs were already dealt into a deck so repeated visits never
 // reshuffle the same tracks. Keys are title|artist based (discoverSongKey), so
 // re-uploads of the same song are caught too.
 private const val DISCOVER_SHOWN_PREFS = "discover_shown_cards"
-private const val DISCOVER_SHOWN_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
+private const val DISCOVER_SHOWN_MAX_AGE_MS = 3L * 24 * 60 * 60 * 1000
 
 private fun loadShownDiscoverKeys(ctx: android.content.Context): Set<String> {
     return try {
@@ -296,43 +329,31 @@ fun DiscoverScreen(
                     }
                 }
 
-                // ── Instant deck: cached YT related songs + forgotten favorites ──
-                // (previously this seeded your own liked/history/playlist tracks —
-                // i.e. songs you already know — as "discoveries")
-                // Pool is deliberately generous: marking happens on swipe, not on
-                // deal, so repeat visits still open instantly with fresh cards.
-                try { db.relatedSongDao().quickPickVideos(60).forEach { row ->
-                    val item = VideoItem(row.videoId, row.title, row.author, row.durationText)
-                    addCandidate(item, "Because of what you've been playing", dnaScore(item))
-                } } catch (_: Exception) {}
-                try {
-                    db.songCacheMetaDao().forgottenFavorites(
-                        System.currentTimeMillis() - 86_400_000L * 14, 15
-                    ).forEach { meta ->
-                        val item = VideoItem(meta.videoId, meta.title, meta.author, meta.durationText)
-                        addCandidate(item, "An old favorite you haven't heard in a while", dnaScore(item))
-                    }
-                } catch (_: Exception) {}
-
-                // If pool is still sparse, seed from user's liked tracks & top history
-                if (discoverPool.size < 6) {
-                    liked.shuffled().take(8).forEach { l ->
-                        val item = VideoItem(l.videoId, l.title, l.author, l.durationText)
-                        addCandidate(item, "From your liked tracks", dnaScore(item))
-                    }
-                    history.take(15).shuffled().take(8).forEach { h ->
-                        val item = VideoItem(h.videoId, h.title, h.author, h.durationText)
-                        addCandidate(item, "Rediscover this vibe", dnaScore(item))
-                    }
+                // ── Instant deck: only related tracks from this user's own seeds ─
+                // Do not use the broad cache here. Its recency query can contain
+                // stale metadata and makes Discover feel unrelated to the listener.
+                val instantSeedIds = (
+                    signals.sortedByDescending { it.completeCount + it.repeatCount * 2 + it.playCount }
+                        .map { it.videoId } + history.map { it.videoId }
+                    ).filter { it.isNotBlank() }.distinct().take(4)
+                instantSeedIds.forEach { seedId ->
+                    try {
+                        db.relatedSongDao().relatedForSong(seedId, 8).forEach { row ->
+                            val item = VideoItem(row.videoId, row.title, row.author, row.durationText)
+                            addCandidate(item, "A fresh match for your listening", dnaScore(item))
+                        }
+                    } catch (_: Exception) {}
                 }
-
                 val instantDeck = buildDiscoverDeck(discoverPool)
                 if (instantDeck.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
                         cards = instantDeck
-                        isLoading = false
                         autoPreviewEnabled = true
                     }
+                    // A dealt card should not be dealt again next visit—even if
+                    // the user exits without swiping it. This is what prevents the
+                    // same deck from returning over and over.
+                    rememberShownDiscoverKeys(ctx, instantDeck.map { discoverSongKey(it.videoItem) })
                 }
 
                 // Gather top artists from signals, history, and custom playlists
@@ -364,17 +385,24 @@ fun DiscoverScreen(
                 val rotationBucket = (System.currentTimeMillis() / (6L * 3_600_000)).toInt()
                 val rotatedArtists = if (combinedArtists.isEmpty()) emptyList() else
                     List(combinedArtists.size) { i -> combinedArtists[(i + rotationBucket) % combinedArtists.size] }
-                val seedArtists = (rotatedArtists.take(2) + combinedArtists.shuffled().take(1))
+                val seedArtists = rotatedArtists.take(2)
                     .distinct()
-                    .take(3)
-                val seedLikes = liked.shuffled().take(2)
+                    .take(2)
+                val seedLikes = liked.shuffled().take(1)
                 val seedPlaylists = playlistSongs.shuffled().take(1)
 
                 coroutineScope {
                     val deferreds = mutableListOf<Deferred<List<DiscoverSong>>>()
+                    // A slow YouTube request must not keep the first card behind
+                    // a spinner. Individual sources are optional; the deck uses
+                    // whichever personalized sources return within this budget.
+                    fun boundedFetch(block: suspend () -> List<DiscoverSong>): Deferred<List<DiscoverSong>> =
+                        async(Dispatchers.IO) {
+                            withTimeoutOrNull(7_500L) { block() } ?: emptyList()
+                        }
 
                     // Quick picks from recommendation engine
-                    deferreds.add(async(Dispatchers.IO) {
+                    deferreds.add(boundedFetch {
                         try {
                             usableForDeck(vm.recommendationRepository.getQuickPicks())
                                 .take(12)
@@ -394,11 +422,11 @@ fun DiscoverScreen(
                         history.map { VideoItem(it.videoId, it.title, it.author, it.durationText) } +
                         playlistSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
                         .distinctBy { it.videoId }
-                        .shuffled()
-                        .take(3)
+                        .sortedByDescending { song -> signals.firstOrNull { it.videoId == song.videoId }?.playCount ?: 0 }
+                        .take(1)
 
                     radioSeeds.forEach { seed ->
-                        deferreds.add(async(Dispatchers.IO) {
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(vm.recommendationRepository.getSongRadio(seed.videoId, seed.title, seed.author))
                                     .take(6)
@@ -416,7 +444,7 @@ fun DiscoverScreen(
                     // Artist-specific searches — rotated by time bucket so repeated
                     // sessions explore different artists instead of the same two.
                     seedArtists.forEach { artist ->
-                        deferreds.add(async(Dispatchers.IO) {
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(InnerTube.search("$artist popular songs"))
                                     .take(3)
@@ -430,7 +458,7 @@ fun DiscoverScreen(
                             } catch (_: Exception) { emptyList() }
                         })
 
-                        deferreds.add(async(Dispatchers.IO) {
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(InnerTube.search("$artist new song"))
                                     .take(2)
@@ -448,7 +476,7 @@ fun DiscoverScreen(
                     // Similar to Liked Songs — YT Music's own related-tracks engine
                     // (scored similar songs), not "songs like X" text search.
                     seedLikes.forEach { likedSong ->
-                        deferreds.add(async(Dispatchers.IO) {
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(vm.recommendationRepository.getRelatedSongs(likedSong.videoId))
                                     .take(5)
@@ -465,7 +493,7 @@ fun DiscoverScreen(
 
                     // Similar to Playlist Songs seed
                     seedPlaylists.forEach { plSong ->
-                        deferreds.add(async(Dispatchers.IO) {
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(vm.recommendationRepository.getRelatedSongs(plSong.videoId))
                                     .take(5)
@@ -481,15 +509,20 @@ fun DiscoverScreen(
                     }
 
                     // Fresh discovery queries for variety
-                    DISCOVER_QUERIES.shuffled().take(3).forEach { freshQuery ->
-                        deferreds.add(async(Dispatchers.IO) {
+                    val personalizedFreshQueries = tasteProfile?.topGenres
+                        ?.take(2)
+                        ?.map { (genre, _) -> "$genre new releases $DISCOVER_CURRENT_YEAR" }
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: DISCOVER_QUERIES.shuffled().take(2)
+                    personalizedFreshQueries.forEach { freshQuery ->
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(InnerTube.search(freshQuery))
                                     .take(5)
                                     .map { song ->
                                         DiscoverSong(
                                             videoItem = song,
-                                            recommendationReason = "Fresh: ${freshQuery.replace("2025", "").trim()}",
+                                        recommendationReason = "Fresh: ${freshQuery.replace(DISCOVER_CURRENT_YEAR.toString(), "").trim()}",
                                             vibeScore = dnaScore(song)
                                         )
                                     }
@@ -497,26 +530,28 @@ fun DiscoverScreen(
                         })
                     }
 
-                    // Genre-diverse queries for variety (different from user's usual taste)
+                    // Generic exploration is useful only for a true cold start.
+                    // Never let it flood an established user's deck with music
+                    // that has no connection to their listening behavior.
                     val genreDiversityQueries = listOf(
                         "best jazz songs all time",
-                        "top electronic music 2025",
+                        "top electronic music $DISCOVER_CURRENT_YEAR",
                         "best classical crossover",
-                        "top afrobeat songs 2025",
+                        "top afrobeat songs $DISCOVER_CURRENT_YEAR",
                         "new reggae dancehall hits",
                         "best metal songs trending",
                         "top punk rock songs",
                         "new latin reggaeton hits",
-                        "best drum and bass 2025",
-                        "top country hits 2025",
+                        "best drum and bass $DISCOVER_CURRENT_YEAR",
+                        "top country hits $DISCOVER_CURRENT_YEAR",
                         "new k-pop songs trending",
                         "best grime uk rap",
-                        "top house techno 2025",
+                        "top house techno $DISCOVER_CURRENT_YEAR",
                         "new bossa nova songs",
                         "best blues rock classics"
                     )
-                    genreDiversityQueries.shuffled().take(3).forEach { query ->
-                        deferreds.add(async(Dispatchers.IO) {
+                    if (combinedArtists.isEmpty() && liked.isEmpty() && playlistSongs.isEmpty()) genreDiversityQueries.shuffled().take(2).forEach { query ->
+                        deferreds.add(boundedFetch {
                             try {
                                 usableForDeck(InnerTube.search(query))
                                     .take(3)
@@ -539,7 +574,11 @@ fun DiscoverScreen(
                 // Cards are remembered as "shown" only when actually swiped
                 // (see dropCurrentCard) — marking the whole deck on deal made
                 // every repeat visit slower and emptier.
-                val uniqueDiscover = buildDiscoverDeck(discoverPool)
+                val uniqueDiscover = buildDiscoverDeck(discoverPool).map { candidate ->
+                    candidate.copy(
+                        matchHighlights = discoverMatchHighlights(candidate.videoItem, tasteProfile)
+                    )
+                }
 
                 withContext(Dispatchers.Main) {
                     val existingKeys = cards.map { discoverSongKey(it.videoItem) }.toSet()
@@ -554,6 +593,9 @@ fun DiscoverScreen(
                     }
                     isLoading = false
                     autoPreviewEnabled = true
+                }
+                if (uniqueDiscover.isNotEmpty()) {
+                    rememberShownDiscoverKeys(ctx, uniqueDiscover.map { discoverSongKey(it.videoItem) })
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { isLoading = false }
@@ -702,7 +744,11 @@ fun DiscoverScreen(
                         autoPreviewEnabled = autoPreviewEnabled,
                         onSwipedLeft = {
                             scope.launch {
-                                swipeState.animateLeft { dropCurrentCard() }
+                                swipeState.animateLeft {
+                                    vm.recordDiscoverSkip(currentCard.videoItem)
+                                    showToastMessage = "We'll show less like this"
+                                    dropCurrentCard()
+                                }
                             }
                         },
                         onSwipedRight = {
@@ -713,6 +759,12 @@ fun DiscoverScreen(
                                     dropCurrentCard()
                                 }
                             }
+                        },
+                        onSwipedUp = {
+                            val discoveryQueue = cards.asReversed().map { it.videoItem }
+                            onSongClick(currentCard.videoItem, discoveryQueue)
+                            showToastMessage = "Playing your discovery queue"
+                            dropCurrentCard()
                         }
                     )
                 }
@@ -726,7 +778,15 @@ fun DiscoverScreen(
                     // Skip button
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         IconButton(
-                            onClick = { scope.launch { swipeState.animateLeft { dropCurrentCard() } } },
+                            onClick = {
+                                scope.launch {
+                                    swipeState.animateLeft {
+                                        vm.recordDiscoverSkip(currentCard.videoItem)
+                                        showToastMessage = "We'll show less like this"
+                                        dropCurrentCard()
+                                    }
+                                }
+                            },
                             modifier = Modifier.size(64.dp).clip(CircleShape)
                                 .background(Color(0xFFFF4D4D).copy(alpha = 0.15f))
                                 .border(1.5.dp, Color(0xFFFF4D4D).copy(alpha = 0.5f), CircleShape)
@@ -971,7 +1031,8 @@ fun DiscoverCard(
     swipeState: SwipeState,
     autoPreviewEnabled: Boolean,
     onSwipedLeft: () -> Unit,
-    onSwipedRight: () -> Unit
+    onSwipedRight: () -> Unit,
+    onSwipedUp: () -> Unit
 ) {
     val song = discoverSong.videoItem
     val isCurrentSong = vm.currentSong?.videoId == song.videoId
@@ -997,7 +1058,15 @@ fun DiscoverCard(
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDrag = { change, drag -> change.consume(); swipeState.drag(drag.x, drag.y) },
-                    onDragEnd = { swipeState.released(size.width * 0.32f, onSwipedLeft, onSwipedRight) }
+                    onDragEnd = {
+                        swipeState.released(
+                            horizontalThreshold = size.width * 0.32f,
+                            verticalThreshold = size.height * 0.18f,
+                            onLeft = onSwipedLeft,
+                            onRight = onSwipedRight,
+                            onUp = onSwipedUp
+                        )
+                    }
                 )
             }
             .clip(RoundedCornerShape(28.dp))
@@ -1076,6 +1145,38 @@ fun DiscoverCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+
+        if (discoverSong.matchHighlights.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 96.dp, start = 20.dp, end = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                discoverSong.matchHighlights.forEach { highlight ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color.Black.copy(alpha = 0.46f))
+                            .border(0.5.dp, Color.White.copy(alpha = 0.13f), RoundedCornerShape(14.dp))
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = VinColors.AccentLight, modifier = Modifier.size(11.dp))
+                        Text(
+                            text = highlight,
+                            fontSize = 9.sp,
+                            color = Color.White.copy(alpha = 0.88f),
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
         }
 
         // Center artwork, no decorative disc behind it.
@@ -1187,6 +1288,21 @@ fun DiscoverCard(
                     .padding(horizontal = 18.dp, vertical = 8.dp)
             ) { Text("SKIP", fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White) }
         }
+
+        AnimatedVisibility(
+            visible = swipeState.offsetY.value < -90f && kotlin.math.abs(swipeState.offsetY.value) > kotlin.math.abs(swipeState.offsetX.value),
+            enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(VinColors.Accent.copy(alpha = 0.92f))
+                    .padding(horizontal = 16.dp, vertical = 9.dp)
+            ) {
+                Text("PLAY THIS DISCOVERY QUEUE", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = Color.White)
+            }
+        }
     }
 }
 
@@ -1214,7 +1330,7 @@ private fun DiscoverGenreFilterRow(
                 color = Color.White
             )
             Text(
-                text = "Smart matching",
+                text = "Swipe up to play the deck",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = VinColors.AccentLight
@@ -1389,11 +1505,24 @@ class SwipeState(val scope: kotlinx.coroutines.CoroutineScope) {
         offsetX.snapTo(0f); offsetY.snapTo(0f)
     }
 
-    fun released(threshold: Float, onLeft: () -> Unit, onRight: () -> Unit) {
+    suspend fun animateUp(onComplete: () -> Unit) {
+        offsetY.animateTo(-1800f, tween(300, easing = FastOutSlowInEasing))
+        onComplete()
+        offsetX.snapTo(0f); offsetY.snapTo(0f)
+    }
+
+    fun released(
+        horizontalThreshold: Float,
+        verticalThreshold: Float,
+        onLeft: () -> Unit,
+        onRight: () -> Unit,
+        onUp: () -> Unit
+    ) {
         scope.launch {
             when {
-                offsetX.value > threshold -> onRight()
-                offsetX.value < -threshold -> onLeft()
+                offsetY.value < -verticalThreshold && kotlin.math.abs(offsetY.value) > kotlin.math.abs(offsetX.value) -> animateUp(onUp)
+                offsetX.value > horizontalThreshold -> onRight()
+                offsetX.value < -horizontalThreshold -> onLeft()
                 else -> {
                     launch { offsetX.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
                     launch { offsetY.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }

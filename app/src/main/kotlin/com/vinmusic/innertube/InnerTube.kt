@@ -92,10 +92,19 @@ object InnerTube {
     )
 
     private val CLIENTS = listOf(
+        // [OK] Top Fallback: VISIONOS — unthrottled, unciphered direct audio, reliable botguard bypass
+        YTClient("VISIONOS", "0.1", "101",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+            mapOf("deviceMake" to "Apple", "deviceModel" to "RealityDevice14,1",
+                  "osName" to "visionOS",    "osVersion"   to "1.3.21O771")),
         // [OK] Primary: ANDROID_VR — confirmed OK + direct googlevideo.com URL
         YTClient("ANDROID_VR", "1.60.19", "28",
             "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip",
             mapOf("androidSdkVersion" to 32)),
+        // YouTube Music web client fallback. Cellular IPs may reject ANDROID_VR
+        // with LOGIN_REQUIRED while accepting the first-party Music client.
+        YTClient("WEB_REMIX", WEB_REMIX_CLIENT_VERSION, "67",
+            "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36"),
         // TV embed — no cipher decryption needed
         YTClient("TVHTML5_SIMPLY_EMBEDDED_PLAYER", "2.0", "85",
             "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 TV Safari/538.1"),
@@ -139,8 +148,14 @@ object InnerTube {
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .build()
 
-                val raw = http.newCall(req).execute().use { it.body?.string() }
-                val root = raw?.let { gson.fromJson(it, Map::class.java) }
+                val raw = http.newCall(req).execute().use { response ->
+                    response.body?.string().orEmpty()
+                }
+                // YouTube may return an HTML/string challenge instead of JSON.
+                // Never let that prevent the HTML visitor-data fallback.
+                val root = raw.trimStart().takeIf { it.startsWith("{") }?.let {
+                    runCatching { gson.fromJson(it, Map::class.java) }.getOrNull()
+                }
                 val responseContext = root?.get("responseContext") as? Map<*, *>
                 var vd = responseContext?.get("visitorData") as? String
 
@@ -178,11 +193,22 @@ object InnerTube {
     // Helper to dynamically match the User-Agent based on googlevideo URL params
     fun getUserAgentForUrl(url: String): String {
         return when {
-            url.contains("c=ANDROID_VR") -> "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip"
-            url.contains("c=IOS") -> "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X) AppleWebKit/605.1.15"
-            url.contains("c=ANDROID_TESTSUITE") -> "com.google.android.youtube.testsuite/1.9 (Linux; U; Android 12; en_US)"
-            url.contains("c=TVHTML5") -> "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 TV Safari/538.1"
-            else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            url.contains("c=VISIONOS") || url.contains("cps=1021") ->
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+            url.contains("c=ANDROID_VR") ->
+                "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12; GB) gzip"
+            url.contains("c=ANDROID_TESTSUITE") ->
+                "com.google.android.youtube.testsuite/1.9 (Linux; U; Android 12; en_US)"
+            url.contains("c=ANDROID") ->
+                "com.google.android.youtube/19.29.35 (Linux; U; Android 14; en_US) gzip"
+            url.contains("c=IOS") ->
+                "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X) AppleWebKit/605.1.15"
+            url.contains("c=TVHTML5") ->
+                "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 TV Safari/538.1"
+            url.contains("c=WEB_REMIX") ->
+                "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 Chrome/128.0.0.0 Mobile Safari/537.36"
+            else ->
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
     }
 
@@ -291,40 +317,83 @@ object InnerTube {
         return matchedTerms * 10_000 + description.length.coerceAtMost(10_000)
     }
 
-    private val streamUrlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, String>>()
+    private data class CachedStreamUrl(
+        val fetchedAt: Long,
+        val url: String,
+        val networkKey: String
+    )
+
+    private val streamUrlCache =
+        java.util.concurrent.ConcurrentHashMap<String, CachedStreamUrl>()
+
+    private fun currentNetworkKey(): String {
+        val context = appContext ?: return "unknown"
+        return try {
+            val connectivityManager =
+                context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+                    as? android.net.ConnectivityManager
+            val network = connectivityManager?.activeNetwork
+            val capabilities = network?.let { connectivityManager.getNetworkCapabilities(it) }
+            when {
+                capabilities == null -> "unknown"
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "other"
+            }
+        } catch (_: Exception) {
+            "unknown"
+        }
+    }
 
     /** TTL is checked on read, so entries never left the map on their own — sweep
      *  expired ones (and cap size) whenever a new URL is cached. */
     private fun cacheStreamUrl(videoId: String, url: String) {
-        streamUrlCache[videoId] = Pair(System.currentTimeMillis(), url)
+        streamUrlCache[videoId] = CachedStreamUrl(
+            fetchedAt = System.currentTimeMillis(),
+            url = url,
+            networkKey = currentNetworkKey()
+        )
         if (streamUrlCache.size > MAX_STREAM_URL_CACHE_ENTRIES) {
             val cutoff = System.currentTimeMillis() - STREAM_URL_CACHE_TTL_MS
-            streamUrlCache.entries.removeIf { it.value.first < cutoff }
+            streamUrlCache.entries.removeIf { it.value.fetchedAt < cutoff }
         }
         // Still oversized (e.g. many URLs cached within one TTL window)? Drop oldest.
         if (streamUrlCache.size > MAX_STREAM_URL_CACHE_ENTRIES) {
             streamUrlCache.entries
-                .sortedBy { it.value.first }
+                .sortedBy { it.value.fetchedAt }
                 .take(streamUrlCache.size - MAX_STREAM_URL_CACHE_ENTRIES)
                 .forEach { streamUrlCache.remove(it.key, it.value) }
         }
     }
-    private const val STREAM_URL_CACHE_TTL_MS = 3 * 3600 * 1000L // 3 hours
+    private const val STREAM_URL_CACHE_TTL_MS = 20 * 60 * 1000L // 20 minutes (prevents stale IP/session tokens)
     private const val MAX_STREAM_URL_CACHE_ENTRIES = 200
 
+    fun invalidateStreamUrl(videoId: String) {
+        if (videoId.isNotBlank()) {
+            streamUrlCache.remove(videoId)
+            android.util.Log.d("DEBUG_TOKEN", "invalidateStreamUrl: removed videoId=$videoId from streamUrlCache")
+        }
+    }
+
     // ── Main entry ────────────────────────────────────────────────────────────
-    fun getStreamUrl(videoId: String, quality: String? = null): String? {
-        android.util.Log.d("DEBUG_TOKEN", "getStreamUrl START videoId=$videoId")
-        log("getStreamUrl videoId=$videoId quality=$quality")
+    fun getStreamUrl(videoId: String, quality: String? = null, forceFresh: Boolean = false): String? {
+        android.util.Log.d("DEBUG_TOKEN", "getStreamUrl START videoId=$videoId forceFresh=$forceFresh")
+        log("getStreamUrl videoId=$videoId quality=$quality forceFresh=$forceFresh")
         if (videoId.isBlank()) { log("ERROR: blank videoId!"); return null }
 
         // Fast In-Memory Cache Check (0ms instantaneous return for duplicate/recent requests)
-        val cachedEntry = streamUrlCache[videoId]
-        if (cachedEntry != null) {
-            val (fetchedAt, cachedUrl) = cachedEntry
-            if (System.currentTimeMillis() - fetchedAt < STREAM_URL_CACHE_TTL_MS && cachedUrl.isNotBlank()) {
-                android.util.Log.d("DEBUG_TOKEN", "getStreamUrl IN-MEMORY CACHE HIT: videoId=$videoId (0ms)")
-                return cachedUrl
+        if (!forceFresh) {
+            val cachedEntry = streamUrlCache[videoId]
+            if (cachedEntry != null) {
+                val networkKey = currentNetworkKey()
+                if (System.currentTimeMillis() - cachedEntry.fetchedAt < STREAM_URL_CACHE_TTL_MS &&
+                    cachedEntry.url.isNotBlank() &&
+                    cachedEntry.networkKey == networkKey
+                ) {
+                    android.util.Log.d("DEBUG_TOKEN", "getStreamUrl IN-MEMORY CACHE HIT: videoId=$videoId network=$networkKey (0ms)")
+                    return cachedEntry.url
+                }
             }
         }
 
@@ -418,7 +487,8 @@ object InnerTube {
                         if (!res.isNullOrEmpty()) {
                             channel.trySend(res)
                         }
-                    } catch (_: Throwable) {
+                    } catch (e: Throwable) {
+                        log("${client.name} retry race failed: ${e.javaClass.simpleName}: ${e.message?.take(100)}")
                     } finally {
                         if (remaining.decrementAndGet() == 0) {
                             channel.close()
@@ -500,6 +570,13 @@ object InnerTube {
             .header("X-YouTube-Client-Version", client.version)
             .header("Origin",                   "https://www.youtube.com")
             .header("Referer",                  "https://www.youtube.com/")
+            .apply {
+                if (client.name == "WEB_REMIX") {
+                    header("X-YouTube-Client-Name", client.clientId)
+                    header("X-YouTube-Client-Version", client.version)
+                    header("Accept-Language", "en-IN,en;q=0.9,hi;q=0.8")
+                }
+            }
         if (visitorData.isNotEmpty())
             reqBuilder.header("X-Goog-Visitor-Id", visitorData)
 
@@ -1157,7 +1234,14 @@ object InnerTube {
                                 val views = ytText(renderer["viewCountText"])
                                     .ifBlank { ytText(renderer["shortViewCountText"]) }
                                 if (id.isNotBlank() && title.isNotBlank()) {
-                                    result += VideoItem(id, title, author, duration) to viewCount(views)
+                                    val parsedViews = viewCount(views)
+                                    result += VideoItem(
+                                        videoId = id,
+                                        title = title,
+                                        author = author,
+                                        durationText = duration,
+                                        viewCount = parsedViews.takeIf { it > 0L }
+                                    ) to parsedViews
                                 }
                             }
                             node.values.forEach { scan(it) }
@@ -3027,7 +3111,9 @@ data class VideoItem(
     val author: String,
     val durationText: String = "",
     val customThumbnailUrl: String? = null,
-    val localUriString: String? = null
+    val localUriString: String? = null,
+    /** Present only when the source response exposes a trustworthy view count. */
+    val viewCount: Long? = null
 ) {
     val thumbnail:   String get() = customThumbnailUrl ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
     val thumbnailHd: String get() = customThumbnailUrl ?: "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"

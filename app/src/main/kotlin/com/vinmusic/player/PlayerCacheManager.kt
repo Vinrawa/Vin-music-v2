@@ -74,12 +74,12 @@ object PlayerCacheManager {
         val onlineState = isOnline(ctx)
 
         // If content length is known, verify >= 95% is cached.
-        // If content length is -1L (common in YouTube chunked streams), consider complete if pCacheBytes >= 1.2MB.
-        // When device is offline, allow playing from cache if pCacheBytes > 500KB so user can listen offline seamlessly!
+        // When device is online: do NOT falsely treat partial ~1.2MB as 100% complete if content length is unknown.
+        // When device is offline: allow playing from cache if pCacheBytes > 500KB so user can listen offline seamlessly.
         val isPlayerCacheComplete = when {
             playerContentLength > 0L -> pCacheBytes >= (playerContentLength * 0.95).toLong()
             !onlineState -> pCacheBytes > 500_000L
-            else -> pCacheBytes >= 1_200_000L
+            else -> false
         }
         val isCachedComplete = isDownloadCacheValid || isPlayerCacheComplete
         val totalCachedBytes = if (isDownloadCacheValid) dlCacheBytes else if (isPlayerCacheComplete) pCacheBytes else 0L
@@ -216,7 +216,10 @@ object PlayerCacheManager {
                             lastError = e
                             val status = (e as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)?.responseCode
                             ReliabilityDiagnostics.record("prefetch", "cache", nextSong.videoId, attempt = attempt, status = "failed", httpCode = status, error = e.javaClass.simpleName, details = e.message)
-                            if (status == 401 || status == 403) runCatching { cache.removeResource(nextSong.videoId) }
+                            if (status == 401 || status == 403) {
+                                runCatching { cache.removeResource(nextSong.videoId) }
+                                com.vinmusic.innertube.InnerTube.invalidateStreamUrl(nextSong.videoId)
+                            }
                             if (attempt < 2) delay(350)
                         }
                     }

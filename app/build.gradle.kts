@@ -26,8 +26,8 @@ android {
         applicationId   = "com.vinmusic"
         minSdk          = 26
         targetSdk       = 35
-        versionCode     = 21
-        versionName     = "2.3.1"
+        versionCode     = 23
+        versionName     = "2.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,7 +47,10 @@ android {
         release {
             isMinifyEnabled = true
             isCrunchPngs = false
-            signingConfig = signingConfigs.findByName("release")?.takeIf { it.storeFile?.exists() == true } ?: signingConfigs.getByName("debug")
+            // Publishing a debug-signed release breaks upgrade paths. Fail the
+            // release build when signing is not configured instead of silently
+            // producing an installable-but-unpublishable APK.
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

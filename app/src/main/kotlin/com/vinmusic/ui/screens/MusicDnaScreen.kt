@@ -23,10 +23,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vinmusic.data.db.HistoryEntry
+import com.vinmusic.data.db.InteractionSignal
 import com.vinmusic.data.db.VinDatabase
 import com.vinmusic.player.PlayerViewModel
-import com.vinmusic.recommendation.AudioFeatureProfile
+import com.vinmusic.recommendation.MusicDnaComparison
+import com.vinmusic.recommendation.MusicDnaInsights
+import com.vinmusic.recommendation.RecommendationManager
 import com.vinmusic.ui.theme.VinColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,74 +47,38 @@ fun MusicDnaScreen(
 
     var isLoading by remember { mutableStateOf(true) }
     
-    // TasteDNA profile state
-    var profile by remember { mutableStateOf<AudioFeatureProfile?>(null) }
+    // Core taste and the recent listening window are intentionally kept
+    // separate: a short-lived mood should not rewrite someone's full DNA.
+    var comparison by remember { mutableStateOf<MusicDnaComparison?>(null) }
     
     // Additional metrics
-    var totalPlays by remember { mutableIntStateOf(0) }
-    var smartRadioAccuracy by remember { mutableIntStateOf(0) }
-    var topSongs by remember { mutableStateOf<List<Pair<HistoryEntry, Int>>>(emptyList()) }
+    var topSongs by remember { mutableStateOf<List<InteractionSignal>>(emptyList()) }
     var favoriteGenres by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                // 1. Fetch the exact mathematical TasteDNA Profile!
-                // A large history can make the feature-enrichment pass slow
-                // (it may inspect the bundled Spotify catalogue per signal).
-                // Never leave the DNA screen in an endless spinner: use the
-                // neutral profile while the rest of the local stats load.
-                val fetchedProfile = withTimeoutOrNull(8_000L) {
-                    vm.tasteProfileManager.calculateTasteProfile()
-                } ?: AudioFeatureProfile(60, 50, 60, 20, 120)
-                
-                // 2. Fetch history and stats
-                val allHistory = db.historyDao().getAllHistory()
-                totalPlays = allHistory.size
-                
-                if (allHistory.isNotEmpty()) {
-                    // Top Songs (Songs that shaped your taste)
-                    val songGroups = allHistory.groupBy { it.videoId }
-                    topSongs = songGroups.map { it.value.first() to it.value.size }
-                        .sortedByDescending { it.second }
-                        .take(5)
-                        
-                    // Top Genres (inferred from top 100 most-played songs for performance)
-                    val genreMap = HashMap<String, Int>()
-                    val topForGenres = songGroups.map { it.value.first() to it.value.size }
-                        .sortedByDescending { it.second }
-                        .take(40)
-                    topForGenres.forEach { (song, playCount) ->
-                        try {
-                            val genre = com.vinmusic.recommendation.RecommendationManager.inferMetadata(
-                                com.vinmusic.innertube.VideoItem(song.videoId, song.title, song.author)
-                            ).genre
-                            genreMap[genre] = (genreMap[genre] ?: 0) + playCount
-                        } catch (_: Exception) { /* skip on error */ }
-                    }
-                    favoriteGenres = genreMap.entries.map { it.key to it.value }.sortedByDescending { it.second }.take(4)
-                }
-
-                // 3. Smart Radio Accuracy (Skip rate inverted)
-                val signals = db.interactionSignalDao().getAll()
-                val totalRecommended = signals.sumOf { it.playCount + it.skip20sCount }
-                val skips = signals.sumOf { it.skip20sCount }
-                if (totalRecommended > 0) {
-                    smartRadioAccuracy = 100 - ((skips * 100) / totalRecommended)
-                } else {
-                    smartRadioAccuracy = 100
-                }
-                
-                withContext(Dispatchers.Main) {
-                    profile = fetchedProfile
-                    isLoading = false
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MusicDnaScreen", "Failed to compile DNA stats: ${e.message}")
-                withContext(Dispatchers.Main) {
-                    isLoading = false
-                }
+        // Open the screen from existing local signals first. Feature enrichment
+        // can be expensive for a large library and must never block navigation.
+        try {
+            val signals = withContext(Dispatchers.IO) { db.interactionSignalDao().getAll() }
+            val tasteProfile = withTimeoutOrNull(3_000L) {
+                withContext(Dispatchers.IO) { RecommendationManager.buildTasteProfile(db) }
             }
+            comparison = MusicDnaInsights.build(signals)
+            favoriteGenres = tasteProfile?.topGenres?.take(4)?.map { it.first to it.second.toInt() }.orEmpty()
+            topSongs = signals
+                .filter { it.playCount > 0 || it.completeCount > 0 || it.repeatCount > 0 }
+                .sortedByDescending { it.playCount + it.completeCount + it.repeatCount * 2 + if (it.isLiked) 3 else 0 }
+                .take(5)
+        } catch (e: Exception) {
+            android.util.Log.e("MusicDnaScreen", "Failed to load DNA stats: ${e.message}")
+        } finally {
+            isLoading = false
+        }
+
+        // Enrich in the background for a future visit; the screen is already
+        // usable even if this takes time or is cancelled.
+        scope.launch(Dispatchers.IO) {
+            runCatching { withTimeoutOrNull(8_000L) { vm.tasteProfileManager.calculateTasteProfile() } }
         }
     }
 
@@ -135,12 +101,14 @@ fun MusicDnaScreen(
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = VinColors.Accent)
             }
-        } else if (profile == null) {
+        } else if (comparison == null) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Not enough listening data yet.\nKeep discovering music!", color = VinColors.Secondary, textAlign = TextAlign.Center)
+                Text("Your Music DNA is still learning.\nPlay and rate a few more songs to unlock it.", color = VinColors.Secondary, textAlign = TextAlign.Center)
             }
         } else {
-            val dna = profile ?: return@Scaffold Unit
+            val dnaComparison = comparison ?: return@Scaffold Unit
+            val dna = dnaComparison.core.profile
+            val currentEra = dnaComparison.currentEra
             // Infinite gradient mesh background
             val infiniteTransition = rememberInfiniteTransition(label = "dna_bg")
             val blob1X by infiniteTransition.animateFloat(
@@ -190,7 +158,7 @@ fun MusicDnaScreen(
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
                             Text(
-                                "YOUR UNIQUE SIGNATURE",
+                                "YOUR CORE TASTE",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = VinColors.AccentLight,
@@ -217,6 +185,13 @@ fun MusicDnaScreen(
                                     Text(moodText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
                                 }
                             }
+
+                            Text(
+                                text = "${dnaComparison.confidence.label} confidence · based on ${dnaComparison.core.trackCount} tracked songs and ${dnaComparison.core.interactionCount} listening signals",
+                                fontSize = 12.sp,
+                                color = VinColors.Secondary,
+                                lineHeight = 16.sp
+                            )
                             
                             Spacer(modifier = Modifier.height(8.dp))
                             
@@ -256,7 +231,59 @@ fun MusicDnaScreen(
                         }
                     }
                     
-                    // SECTION 3: RECENTLY EVOLVING TASTE & SMART RADIO ACCURACY
+                    // SECTION 3: THE CURRENT ERA
+                    currentEra?.let { recent ->
+                        val recentMood = when {
+                            recent.profile.valence > 65 -> "Bright & Upbeat"
+                            recent.profile.valence < 35 -> "Dark & Reflective"
+                            else -> "Chill & Balanced"
+                        }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(20.dp)),
+                            colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    "YOUR CURRENT ERA",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = VinColors.AccentLight,
+                                    letterSpacing = 1.5.sp
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(recentMood, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
+                                        Text("Last 14 days · ${recent.trackCount} recent tracks", fontSize = 12.sp, color = VinColors.Secondary)
+                                    }
+                                    Icon(Icons.Default.AutoAwesome, null, tint = VinColors.Accent, modifier = Modifier.size(26.dp))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    DnaDeltaChip("Energy", recent.profile.energy - dna.energy)
+                                    DnaDeltaChip("Tempo", recent.profile.tempo - dna.tempo, " BPM")
+                                    DnaDeltaChip("Acoustic", recent.profile.acousticness - dna.acousticness)
+                                }
+                            }
+                        }
+
+                        DnaComparisonChart(core = dna, recent = recent.profile)
+                    }
+
+                    // SECTION 4: EVIDENCE-BACKED TASTE TREND
+                    val shift = dnaComparison.strongestShift()
+                    val trendCopy = when {
+                        shift == null -> "Your recent listens are close to your core taste."
+                        shift.amount > 0 -> "You are leaning into more ${shift.dimension} lately."
+                        else -> "You are leaning into less ${shift.dimension} lately."
+                    }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Card(
                             modifier = Modifier.weight(1f).border(1.dp, VinColors.White10, RoundedCornerShape(20.dp)),
@@ -265,7 +292,7 @@ fun MusicDnaScreen(
                             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Icon(Icons.Default.TrendingUp, null, tint = VinColors.Accent)
                                 Text("Taste Trend", fontSize = 12.sp, color = VinColors.Secondary)
-                                Text("Exploring more ${if (dna.energy > 60) "Energetic" else "Acoustic"} vibes recently.", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = VinColors.Primary, lineHeight = 18.sp)
+                                Text(trendCopy, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = VinColors.Primary, lineHeight = 18.sp)
                             }
                         }
                         
@@ -274,24 +301,22 @@ fun MusicDnaScreen(
                             colors = CardDefaults.cardColors(containerColor = VinColors.White10)
                         ) {
                             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Icon(Icons.Default.CheckCircle, null, tint = VinColors.AccentLight)
-                                Text("Radio Accuracy", fontSize = 12.sp, color = VinColors.Secondary)
+                                Icon(Icons.Default.VerifiedUser, null, tint = VinColors.AccentLight)
+                                Text("Listening confidence", fontSize = 12.sp, color = VinColors.Secondary)
                                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text("$smartRadioAccuracy%", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
+                                    Text(dnaComparison.confidence.label, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = VinColors.Primary)
                                 }
-                                Text("Matches your taste", fontSize = 11.sp, color = VinColors.Secondary)
+                                Text("${dnaComparison.core.interactionCount} local signals", fontSize = 11.sp, color = VinColors.Secondary)
                             }
                         }
                     }
 
-                    // SECTION 4: SONGS THAT SHAPED YOUR TASTE
+                    // SECTION 5: SONGS THAT SHAPED YOUR TASTE
                     if (topSongs.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("Songs That Shaped Your Taste", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
 
-                            topSongs.forEachIndexed { index, pair ->
-                                val song = pair.first
-                                val playCount = pair.second
+                            topSongs.forEachIndexed { index, song ->
 
                                 Row(
                                     modifier = Modifier
@@ -346,7 +371,7 @@ fun MusicDnaScreen(
                                     }
 
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text("$playCount plays", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = VinColors.AccentLight)
+                                    Text("${song.playCount} plays", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = VinColors.AccentLight)
                                 }
                             }
                         }
@@ -401,6 +426,140 @@ fun DnaStatBar(
                     .fillMaxWidth(animatedPercent.value)
                     .clip(RoundedCornerShape(4.dp))
                     .background(barColor)
+            )
+        }
+    }
+}
+
+@Composable
+private fun DnaDeltaChip(label: String, delta: Int, suffix: String = "%") {
+    val isUp = delta > 0
+    val isNeutral = delta == 0
+    val color = when {
+        isNeutral -> VinColors.Secondary
+        isUp -> VinColors.AccentLight
+        else -> Color(0xFF8C7355)
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(color.copy(alpha = 0.14f))
+            .border(1.dp, color.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 10.sp, color = VinColors.Secondary)
+        Text(
+            text = if (isNeutral) "Same" else "${if (isUp) "+" else ""}$delta$suffix",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = color
+        )
+    }
+}
+
+/** Compact, directly-labelled comparison instead of a vague overall score. */
+@Composable
+private fun DnaComparisonChart(
+    core: com.vinmusic.recommendation.AudioFeatureProfile,
+    recent: com.vinmusic.recommendation.AudioFeatureProfile
+) {
+    val coreColor = VinColors.Accent
+    val recentColor = VinColors.AccentLight
+    val metrics = listOf(
+        Triple("Energy", core.energy, recent.energy),
+        Triple("Dance", core.danceability, recent.danceability),
+        Triple("Acoustic", core.acousticness, recent.acousticness),
+        Triple("Tempo", ((core.tempo - 40) * 100 / 180).coerceIn(0, 100), ((recent.tempo - 40) * 100 / 180).coerceIn(0, 100))
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(20.dp)),
+        colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("CORE VS CURRENT", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VinColors.AccentLight, letterSpacing = 1.5.sp)
+                Text("How your recent listening is shifting", fontSize = 13.sp, color = VinColors.Secondary)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                DnaChartLegend("Core Taste", coreColor)
+                DnaChartLegend("Current Era", recentColor)
+            }
+
+            metrics.forEach { (label, coreValue, recentValue) ->
+                val coreProgress by animateFloatAsState(
+                    targetValue = coreValue / 100f,
+                    animationSpec = tween(700, easing = FastOutSlowInEasing),
+                    label = "core_$label"
+                )
+                val recentProgress by animateFloatAsState(
+                    targetValue = recentValue / 100f,
+                    animationSpec = tween(950, easing = FastOutSlowInEasing),
+                    label = "recent_$label"
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = VinColors.Primary)
+                        Text(
+                            text = if (label == "Tempo") "${core.tempo} → ${recent.tempo} BPM" else "$coreValue → $recentValue%",
+                            fontSize = 12.sp,
+                            color = VinColors.Secondary
+                        )
+                    }
+                    DnaComparisonBar(coreProgress, recentProgress, coreColor, recentColor)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DnaChartLegend(label: String, color: Color) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Text(label, fontSize = 11.sp, color = VinColors.Secondary)
+    }
+}
+
+@Composable
+private fun DnaComparisonBar(coreProgress: Float, recentProgress: Float, coreColor: Color, recentColor: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(7.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(VinColors.White10)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(coreProgress.coerceIn(0f, 1f))
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(coreColor.copy(alpha = 0.72f))
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(7.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(VinColors.White10)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(recentProgress.coerceIn(0f, 1f))
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(recentColor)
             )
         }
     }

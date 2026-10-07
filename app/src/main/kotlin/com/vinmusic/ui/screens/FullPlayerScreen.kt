@@ -777,6 +777,30 @@ fun FullPlayerScreen(
                         )
                 )
                 val primaryArtist = remember(song.author) { parseContributors(song.author).firstOrNull() ?: song.author }
+                var subscriberCount by remember(primaryArtist) {
+                    mutableStateOf(
+                        com.vinmusic.data.ArtistDataCache.get(primaryArtist)?.subscriberCount
+                            ?.let(::formatMonthlyListenersText)
+                            .orEmpty()
+                    )
+                }
+                LaunchedEffect(primaryArtist) {
+                    val cached = com.vinmusic.data.ArtistDataCache.get(primaryArtist)
+                    if (!cached?.subscriberCount.isNullOrBlank()) {
+                        subscriberCount = formatMonthlyListenersText(cached!!.subscriberCount)
+                    } else {
+                        val resolved = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val artist = InnerTube.searchAll(primaryArtist).artists
+                                    .maxByOrNull { artistSearchScore(primaryArtist, it.name, it.subscriberCount) }
+                                artist?.subscriberCount
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: InnerTube.fetchChannelData("", primaryArtist).subscriberCount
+                            }.getOrDefault("")
+                        }
+                        subscriberCount = formatMonthlyListenersText(resolved)
+                    }
+                }
                 Text(
                     text = primaryArtist,
                     maxLines = 1,
@@ -793,6 +817,15 @@ fun FullPlayerScreen(
                             initialDelayMillis = 2000
                         )
                 )
+                if (subscriberCount.isNotBlank()) {
+                    Text(
+                        text = subscriberCount,
+                        maxLines = 1,
+                        fontSize = 11.sp,
+                        color = VinColors.Secondary,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -1872,7 +1905,8 @@ fun QueuePanel(vm: PlayerViewModel, onSaveAsPlaylist: (() -> Unit)? = null) {
                 }
             }
         }
-        itemsIndexed(vm.queue, key = { _, song -> song.videoId }) { i, song ->
+        // Queues intentionally allow a track to be added more than once.
+        itemsIndexed(vm.queue, key = { index, song -> "queue_${song.videoId}_$index" }) { i, song ->
             Row(modifier = Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (i == vm.queueIndex) VinColors.White10 else Color.Transparent)
@@ -3111,7 +3145,7 @@ private fun formatMonthlyListenersText(sourceText: String): String {
         .replace(Regex("""\s+"""), " ")
         .trim()
     if (compact.isBlank()) return ""
-    return "$compact Monthly Listeners"
+    return "$compact Subscribers"
 }
 
 private fun officialAudienceNumber(text: String): Double {
@@ -3425,4 +3459,3 @@ fun SmartEQPresetChip(
         }
     }
 }
-

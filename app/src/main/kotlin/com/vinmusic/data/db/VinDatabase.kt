@@ -19,7 +19,8 @@ data class LikedSong(
 
 @Entity(tableName = "history", indices = [Index(value = ["playedAt"])])
 data class HistoryEntry(
-    @PrimaryKey val videoId: String,
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val videoId: String,
     val title:   String,
     val author:  String,
     val genre: String? = null,
@@ -443,7 +444,7 @@ interface SongFeatureCacheDao {
                  InteractionSignal::class, CachedLyricsEntity::class, UserAccount::class,
                  RelatedSongMap::class, SongCacheMeta::class, FollowedArtist::class,
                  SongFeatureCache::class],
-    version   = 15,
+    version   = 16,
     exportSchema = false
 )
 abstract class VinDatabase : RoomDatabase() {
@@ -594,10 +595,36 @@ abstract class VinDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // History used videoId as its primary key, so every repeat listen
+                // overwrote the prior event. Rebuild it with an event id while
+                // retaining every existing entry.
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `history_new` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `videoId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `author` TEXT NOT NULL,
+                        `genre` TEXT,
+                        `durationText` TEXT NOT NULL,
+                        `playedAt` INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                database.execSQL("""
+                    INSERT INTO `history_new` (`videoId`, `title`, `author`, `genre`, `durationText`, `playedAt`)
+                    SELECT `videoId`, `title`, `author`, `genre`, `durationText`, `playedAt` FROM `history`
+                """.trimIndent())
+                database.execSQL("DROP TABLE `history`")
+                database.execSQL("ALTER TABLE `history_new` RENAME TO `history`")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_history_playedAt` ON `history` (`playedAt`)")
+            }
+        }
+
         fun getInstance(ctx: Context): VinDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(ctx, VinDatabase::class.java, "vin_music.db")
-                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                     .build().also { INSTANCE = it }
             }
     }

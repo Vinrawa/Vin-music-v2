@@ -1,8 +1,8 @@
 {
-  "latestVersionCode": 21,
-  "latestVersionName": "2.3.1",
-  "apkUrl": "https://vinrawa.github.io/Vin-music-v2/vinmusic.apk",
-  "sha256": "590dcd449f784582cc1574b02a0831a00532bdca45cb4a243d4e0ed9e5e1e759",
+  "latestVersionCode": 23,
+  "latestVersionName": "2.3.0",
+  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/download/v2.3.0/VinMusic-v2.3.0.apk",
+  "sha256": "c4b62885412949eaefeb1907b84bdcfa6a6ccff6399feb0f3b7003b41072fd52",
   "forceUpdate": false,
-  "releaseNotes": "Dedicated Downloads & Cache tab in bottom navigation, 10 deep codebase audit fixes (queue skipToIndex, 2nd song media prefetch, online cache streaming), strict network security, and UI polish."
+  "releaseNotes": "Downloads item layout fixes (sanitized multi-line strings, aligned song rows), VisionOS stream resolver botguard bypass, background playback stabilization with low-latency WiFi and transition wakelocks."
 }

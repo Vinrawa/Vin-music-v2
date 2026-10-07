@@ -127,10 +127,10 @@ object GenreContentFilter {
     fun isExcessiveViewCount(item: VideoItem, maxViewCount: Long?): Boolean {
         if (maxViewCount == null) return false
         
-        // VideoItem doesn't have view count - this is a placeholder
-        // In practice, you'd need to fetch this from API or add to VideoItem model
-        // For now, return false to allow all content through
-        return false
+        // Not every YouTube response exposes views. Treat missing metadata as
+        // unknown rather than pretending it is a low-view "hidden gem"; when a
+        // count is available, enforce the configured cap.
+        return item.viewCount?.let { it > maxViewCount } ?: false
     }
     
     /**
