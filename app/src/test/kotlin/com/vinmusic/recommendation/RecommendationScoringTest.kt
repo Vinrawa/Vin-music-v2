@@ -840,4 +840,62 @@ class RecommendationScoringTest {
         assertTrue("Kendrick should score well (similar artist): $kendrickScore", kendrickScore > 0.35)
         assertTrue("Drake should score lower (no artist similarity): $drakeScore", drakeScore < kendrickScore)
     }
+
+    @Test
+    fun `tiered skip penalty dampener preserves favorite tracks while penalizing unknown bounces`() {
+        // Track A: Unknown track, 1 play, 1 skip under 20s
+        val unknownSignal = com.vinmusic.data.db.InteractionSignal(
+            videoId = "unk1", title = "Unknown Song", author = "Unknown Artist", durationText = "3:30",
+            playCount = 1, completeCount = 0, repeatCount = 0, skip20sCount = 1, isLiked = false
+        )
+        // Track B: User favorite track, 5 plays, 4 completions, 2 repeats, liked, but skipped once today
+        val favoriteSignal = com.vinmusic.data.db.InteractionSignal(
+            videoId = "fav1", title = "Favorite Song", author = "Favorite Artist", durationText = "3:30",
+            playCount = 5, completeCount = 4, repeatCount = 2, skip20sCount = 1, isLiked = true
+        )
+
+        // Evaluate skip penalty dampener behavior
+        val unknownSkipDampener = if (unknownSignal.completeCount >= 2 || unknownSignal.isLiked) 0.4 else 1.0
+        val favoriteSkipDampener = if (favoriteSignal.completeCount >= 2 || favoriteSignal.isLiked) 0.4 else 1.0
+
+        val unknownPenalty = (unknownSignal.skip20sCount * 2.2) * unknownSkipDampener
+        val favoritePenalty = (favoriteSignal.skip20sCount * 2.2) * favoriteSkipDampener
+
+        assertEquals("Unknown bounce gets full 2.2 penalty", 2.2, unknownPenalty, 0.001)
+        assertEquals("Favorite track skip penalty is dampened to 40%", 0.88, favoritePenalty, 0.001)
+
+        val unknownWeight = (unknownSignal.playCount * 0.4) + (unknownSignal.completeCount * 1.2) - unknownPenalty
+        val favoriteWeight = (favoriteSignal.playCount * 0.4) + (favoriteSignal.completeCount * 1.2) +
+            (favoriteSignal.repeatCount * 1.5) + (if (favoriteSignal.isLiked) 3.5 else 0.0) - favoritePenalty
+
+        assertTrue("Unknown track should have negative net weight", unknownWeight < 0.0)
+        assertTrue("Favorite track should retain strong positive weight despite skip", favoriteWeight > 5.0)
+    }
+
+    @Test
+    fun `calculateCosineSimilarity accurately computes vector angles`() {
+        // Identical vectors -> cos = 1.0
+        val v1 = doubleArrayOf(0.8, 0.6, 0.4, 0.2)
+        val v2 = doubleArrayOf(0.8, 0.6, 0.4, 0.2)
+        val simIdentical = RecommendationManager.calculateCosineSimilarity(v1, v2)
+        assertEquals("Identical vectors should have cosine similarity 1.0", 1.0, simIdentical, 0.001)
+
+        // Orthogonal vectors -> cos = 0.0
+        val vA = doubleArrayOf(1.0, 0.0, 0.0)
+        val vB = doubleArrayOf(0.0, 1.0, 0.0)
+        val simOrthogonal = RecommendationManager.calculateCosineSimilarity(vA, vB)
+        assertEquals("Orthogonal vectors should have cosine similarity 0.0", 0.0, simOrthogonal, 0.001)
+
+        // Similar vs dissimilar vectors
+        val base = doubleArrayOf(0.9, 0.8, 0.7, 0.2)
+        val similar = doubleArrayOf(0.85, 0.75, 0.65, 0.25)
+        val dissimilar = doubleArrayOf(0.1, 0.2, 0.3, 0.9)
+        val simHigh = RecommendationManager.calculateCosineSimilarity(base, similar)
+        val simLow = RecommendationManager.calculateCosineSimilarity(base, dissimilar)
+
+        assertTrue("Similar vector should have high cosine similarity: $simHigh", simHigh > 0.95)
+        assertTrue("Dissimilar vector should have significantly lower cosine similarity: $simLow", simLow < 0.70)
+        assertTrue("Similar should score higher than dissimilar", simHigh > simLow)
+    }
 }
+

@@ -129,12 +129,18 @@ class TasteProfileManager @Inject constructor(
                 } else 30.0
                 val recency = kotlin.math.exp(-ageDays / 21.0)
 
-                // Calculate weight based on interactions
-                var weight = (features.playCount * 0.5) + features.completeCount +
-                    features.repeatCount * 1.2
-                if (features.isLiked) weight += 3.0
-                if (features.isDownloaded) weight += 2.0
-                weight -= (features.skip20sCount * 2.0)
+                // Calculate weight based on interactions (Spotify-inspired implicit feedback & dwell-time skip mitigation)
+                val completionAffinity = (features.completeCount * 1.2) + (features.repeatCount * 1.5)
+                val explicitAffinity = (if (features.isLiked) 3.5 else 0.0) + (if (features.isDownloaded) 2.0 else 0.0)
+
+                // Tiered skip penalty:
+                // If a song has demonstrated positive affinity (completed >= 2 times or liked),
+                // soften the skip penalty because skipping a known favorite is often context/mood dependent.
+                // Otherwise, an early skip on unfamiliar tracks is a strong negative filter.
+                val skipDampener = if (features.completeCount >= 2 || features.isLiked) 0.4 else 1.0
+                val skipPenalty = (features.skip20sCount * 2.2) * skipDampener
+
+                var weight = (features.playCount * 0.4) + completionAffinity + explicitAffinity - skipPenalty
                 weight *= (0.25 + 0.75 * recency)
 
                 if (weight > 0) {

@@ -262,6 +262,7 @@ class PlayerViewModel @Inject constructor(
     var audioNormalizationEnabled by mutableStateOf(false)
     var crossfadeEnabled by mutableStateOf(false)
     var crossfadeSecs by mutableIntStateOf(3)
+    private var isCrossfadeAdvancing = false
     var concertHallEnabled by mutableStateOf(false)
     var smartAutoplayEnabled: Boolean
         get() = PlayerSingleton.smartAutoplayEnabled
@@ -678,6 +679,7 @@ class PlayerViewModel @Inject constructor(
 
 
     fun playNext() {
+        isCrossfadeAdvancing = false
         resetLyricsState(null)
         progress          = 0f
         currentTimeMs     = 0L
@@ -746,19 +748,25 @@ class PlayerViewModel @Inject constructor(
 
                     if (crossfadeEnabled && durationMs > 0) {
                         val remainingMs = durationMs - currentTimeMs
-                        if (remainingMs <= crossfadeSecs * 1000) {
-                            val ratio = (remainingMs.toFloat() / (crossfadeSecs * 1000)).coerceIn(0f, 1f)
-                            exoPlayer.volume = Math.sqrt(ratio.toDouble()).toFloat()
+                        val crossfadeMs = crossfadeSecs * 1000f
+                        if (remainingMs <= crossfadeMs) {
+                            val ratio = (remainingMs / crossfadeMs).coerceIn(0f, 1f)
+                            // Spotify Equal-Power Cosine Fade-Out: sin(ratio * PI / 2)
+                            exoPlayer.volume = Math.sin(ratio.toDouble() * Math.PI / 2.0).toFloat()
                             // Repeat-one must not advance the queue — the track loops
                             // and the fade-in branch below restores volume instead.
-                            if (remainingMs <= 500 && exoPlayer.repeatMode != Player.REPEAT_MODE_ONE) {
+                            if (remainingMs <= 500 && exoPlayer.repeatMode != Player.REPEAT_MODE_ONE && !isCrossfadeAdvancing) {
+                                isCrossfadeAdvancing = true
                                 playNext()
                             }
-                        } else if (currentTimeMs <= crossfadeSecs * 1000) {
-                            val ratio = (currentTimeMs.toFloat() / (crossfadeSecs * 1000)).coerceIn(0f, 1f)
-                            exoPlayer.volume = Math.sqrt(ratio.toDouble()).toFloat()
+                        } else if (currentTimeMs <= crossfadeMs) {
+                            val ratio = (currentTimeMs / crossfadeMs).coerceIn(0f, 1f)
+                            // Spotify Equal-Power Sine Fade-In: sin(ratio * PI / 2)
+                            exoPlayer.volume = Math.sin(ratio.toDouble() * Math.PI / 2.0).toFloat()
+                            isCrossfadeAdvancing = false
                         } else {
                             exoPlayer.volume = 1f
+                            isCrossfadeAdvancing = false
                         }
                     } else if (sleepTimerMode != SleepTimerMode.MINUTES) { // don't override sleep fade
                         exoPlayer.volume = 1f

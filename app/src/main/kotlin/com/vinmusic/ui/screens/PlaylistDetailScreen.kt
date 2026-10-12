@@ -171,6 +171,12 @@ fun PlaylistDetailScreen(
     var recommendedPlaylistSongs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoadingPlaylistSongs by remember { mutableStateOf(false) }
 
+    // Spotify Assisted Curation state
+    var assistedCurationSongs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var isAssistedCurationLoading by remember { mutableStateOf(false) }
+    var addedSongIds by remember { mutableStateOf(setOf<String>()) }
+    var curationRefreshTrigger by remember { mutableIntStateOf(0) }
+
     var showRenameDialog by remember { mutableStateOf(false) }
     var newNameText by remember { mutableStateOf("") }
 
@@ -182,6 +188,42 @@ fun PlaylistDetailScreen(
         playlist = withContext(Dispatchers.IO) { db.playlistDao().getPlaylist(playlistId) }
         db.playlistDao().getSongsFlow(playlistId).collect {
             songs = it.sortedBy { s -> s.position }
+        }
+    }
+
+    // Spotify Assisted Curation (fetch individual songs to enhance this playlist)
+    LaunchedEffect(playlist, songs.size, curationRefreshTrigger) {
+        val pl = playlist ?: return@LaunchedEffect
+        isAssistedCurationLoading = true
+        withContext(Dispatchers.IO) {
+            val existingIds = songs.map { it.videoId }.toSet()
+            val candidates = mutableListOf<VideoItem>()
+            try {
+                if (songs.isNotEmpty()) {
+                    val seeds = songs.shuffled().take(2)
+                    for (seed in seeds) {
+                        val recs = vm.recommendationRepository.getSongRadio(
+                            seed.videoId,
+                            seed.title,
+                            seed.author
+                        )
+                        val fresh = recs.filter { it.videoId !in existingIds && candidates.none { c -> c.videoId == it.videoId } }
+                        candidates.addAll(fresh)
+                        if (candidates.size >= 10) break
+                    }
+                }
+                if (candidates.size < 5) {
+                    val quickPicks = vm.recommendationRepository.getQuickPicks()
+                    val freshPicks = quickPicks.filter { it.videoId !in existingIds && candidates.none { c -> c.videoId == it.videoId } }
+                    candidates.addAll(freshPicks)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("VIN_ASSISTED_CURATION", "Failed to load curation suggestions", e)
+            }
+            withContext(Dispatchers.Main) {
+                assistedCurationSongs = candidates.take(8)
+                isAssistedCurationLoading = false
+            }
         }
     }
 
@@ -850,6 +892,154 @@ fun PlaylistDetailScreen(
                                                 val videoItem = VideoItem(s.videoId, s.title, s.author, s.durationText)
                                                 onSongMore(videoItem)
                                             }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Spotify Assisted Curation (Recommended Songs Shelf)
+                    if (playlist != null) {
+                        item {
+                            Spacer(Modifier.height(28.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 24.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Recommended songs",
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                    Text(
+                                        text = if (songs.isNotEmpty()) "Based on what's in this playlist" else "Songs you might like to start with",
+                                        fontSize = 12.sp,
+                                        color = VinColors.Secondary
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { curationRefreshTrigger++ },
+                                    enabled = !isAssistedCurationLoading,
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = "Refresh",
+                                        tint = if (isAssistedCurationLoading) VinColors.Secondary else VinColors.Accent,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (isAssistedCurationLoading && assistedCurationSongs.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(100.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(28.dp))
+                                }
+                            }
+                        } else if (assistedCurationSongs.isNotEmpty()) {
+                            items(assistedCurationSongs, key = { "curation_${it.videoId}" }) { recSong ->
+                                val isAdded = recSong.videoId in addedSongIds || songs.any { it.videoId == recSong.videoId }
+                                val isPlaying = vm.currentSong?.videoId == recSong.videoId
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 18.dp, vertical = 4.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isPlaying) VinColors.Accent.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.03f))
+                                        .clickable {
+                                            vm.playSong(recSong)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(VinColors.White10)
+                                    ) {
+                                        AsyncImage(
+                                            model = "https://i.ytimg.com/vi/${recSong.videoId}/hqdefault.jpg",
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize().scale(1.3f),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        if (isPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(Icons.Default.VolumeUp, null, tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = recSong.title,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isPlaying) VinColors.AccentLight else Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = listOf(recSong.author, recSong.durationText).filter { it.isNotBlank() }.joinToString(" - "),
+                                            fontSize = 12.sp,
+                                            color = VinColors.Secondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            if (!isAdded) {
+                                                addedSongIds = addedSongIds + recSong.videoId
+                                                scope.launch(Dispatchers.IO) {
+                                                    val nextPos = (songs.maxOfOrNull { it.position } ?: -1) + 1
+                                                    db.playlistDao().insertSong(
+                                                        PlaylistSongEntity(
+                                                            playlistId = playlistId,
+                                                            videoId = recSong.videoId,
+                                                            title = recSong.title,
+                                                            author = recSong.author,
+                                                            durationText = recSong.durationText,
+                                                            position = nextPos
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        enabled = !isAdded,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(CircleShape)
+                                            .background(if (isAdded) Color.Transparent else VinColors.Accent.copy(alpha = 0.15f))
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isAdded) Icons.Default.Check else Icons.Default.Add,
+                                            contentDescription = if (isAdded) "Added" else "Add to playlist",
+                                            tint = if (isAdded) VinColors.Accent else Color.White,
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }

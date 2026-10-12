@@ -980,12 +980,14 @@ class RecommendationRepository @Inject constructor(
             val ageMs = (now - (signal?.lastPlayedAt ?: 0L)).coerceAtLeast(0L)
             val decay = if (signal == null || signal.lastPlayedAt <= 0L) 0.0
             else Math.exp(-ageMs.toDouble() / (14.0 * 24.0 * 60.0 * 60.0 * 1000.0))
-            val positive = (signal?.completeCount ?: 0) * 0.20 +
-                (signal?.repeatCount ?: 0) * 0.35 +
-                (if (signal?.isLiked == true) 0.55 else 0.0) +
-                (if (signal?.isDownloaded == true) 0.10 else 0.0)
-            val negative = (signal?.skip20sCount ?: 0) * 0.55 +
-                (signal?.skipCount ?: 0) * 0.20
+            // Spotify-inspired tiered dwell-time & implicit feedback weights
+            val positive = (signal?.completeCount ?: 0) * 0.25 +
+                (signal?.repeatCount ?: 0) * 0.40 +
+                (if (signal?.isLiked == true) 0.60 else 0.0) +
+                (if (signal?.isDownloaded == true) 0.15 else 0.0)
+            val skipDampener = if ((signal?.completeCount ?: 0) >= 2 || signal?.isLiked == true) 0.4 else 1.0
+            val negative = ((signal?.skip20sCount ?: 0) * 0.55 +
+                (signal?.skipCount ?: 0) * 0.20) * skipDampener
             val recentArtistAffinity = (recentArtistCounts[normalizeQueueArtist(item.author)] ?: 0) * 0.04
             return ((positive - negative) * decay + recentArtistAffinity).coerceIn(-1.0, 1.0)
         }
@@ -1058,9 +1060,13 @@ class RecommendationRepository @Inject constructor(
                 candidate.baseScore * 0.08 + discoveryBonus
         }
 
-        // Pass 1: Strict spacing and artist caps
+        // Pass 1: Strict spacing, artist caps, and Multi-Armed Bandit (80/20 Explore vs Exploit)
         while (remaining.isNotEmpty() && sequenced.size < 20) {
             val position = sequenced.size
+            // Multi-Armed Bandit: Every 5th position (slot 5, 10, 15... i.e. position % 5 == 4) is an exploration slot.
+            // 80% Exploit (core taste & seed match) / 20% Explore (fresh artist/subgenre with acoustic compatibility)
+            val isExplorationSlot = (position % 5 == 4) && position >= 4
+
             val eligible = remaining.filter { candidate ->
                 val artist = normalizeQueueArtist(candidate.item.author)
                 val count = artistCount[artist] ?: 0
@@ -1075,12 +1081,40 @@ class RecommendationRepository @Inject constructor(
                 break
             }
 
-            val next = eligible.sortedWith(
-                compareByDescending<SmartQueueCandidate> { positionScore(it, position) }
-                    .thenBy { RecommendationManager.normalizeTitle(it.item.title) }
-                    .thenBy { normalizeQueueArtist(it.item.author) }
-                    .thenBy { it.item.videoId }
-            ).first()
+            // In exploration slots, pick a fresh unfamiliar artist with solid taste & energy alignment
+            val next = if (isExplorationSlot) {
+                val exploreCandidates = eligible.filter { cand ->
+                    val candArtist = normalizeQueueArtist(cand.item.author)
+                    candArtist != seedAuthorLower &&
+                        !RecommendationManager.isSimilarArtist(seedAuthor, cand.item.author) &&
+                        (artistCount[candArtist] ?: 0) == 0
+                }
+                if (exploreCandidates.isNotEmpty()) {
+                    exploreCandidates.sortedWith(
+                        compareByDescending<SmartQueueCandidate> {
+                            // Focus on taste alignment + acoustic energy rather than strict seed artist similarity
+                            it.tasteScore * 0.45 + (1.0 - Math.abs(it.meta.energy - (seedMeta?.energy ?: 0.5))) * 0.25 +
+                                it.behaviorScore * 0.15 + it.baseScore * 0.15
+                        }.thenBy { RecommendationManager.normalizeTitle(it.item.title) }
+                            .thenBy { normalizeQueueArtist(it.item.author) }
+                            .thenBy { it.item.videoId }
+                    ).first()
+                } else {
+                    eligible.sortedWith(
+                        compareByDescending<SmartQueueCandidate> { positionScore(it, position) }
+                            .thenBy { RecommendationManager.normalizeTitle(it.item.title) }
+                            .thenBy { normalizeQueueArtist(it.item.author) }
+                            .thenBy { it.item.videoId }
+                    ).first()
+                }
+            } else {
+                eligible.sortedWith(
+                    compareByDescending<SmartQueueCandidate> { positionScore(it, position) }
+                        .thenBy { RecommendationManager.normalizeTitle(it.item.title) }
+                        .thenBy { normalizeQueueArtist(it.item.author) }
+                        .thenBy { it.item.videoId }
+                ).first()
+            }
 
             Log.d(
                 TAG,

@@ -1150,6 +1150,26 @@ object RecommendationManager {
     }
 
     /**
+     * Spotify-inspired Normalized Cosine Vector Similarity:
+     * Computes the cosine angle between two high-dimensional audio/taste feature vectors:
+     * cos(theta) = (A · B) / (||A|| * ||B||)
+     * Range: [0.0, 1.0] for non-negative feature spaces.
+     */
+    fun calculateCosineSimilarity(vecA: DoubleArray, vecB: DoubleArray): Double {
+        if (vecA.size != vecB.size || vecA.isEmpty()) return 0.0
+        var dot = 0.0
+        var normA = 0.0
+        var normB = 0.0
+        for (i in vecA.indices) {
+            dot += vecA[i] * vecB[i]
+            normA += vecA[i] * vecA[i]
+            normB += vecB[i] * vecB[i]
+        }
+        val denom = Math.sqrt(normA) * Math.sqrt(normB)
+        return if (denom > 1e-9) (dot / denom).coerceIn(0.0, 1.0) else 0.0
+    }
+
+    /**
      * Builds 3 distinct parallel search queries for a seed track's radio queue.
      */
     fun buildQueriesForSeed(seedMeta: SongMetadata, similarArtists: List<String>): List<String> {
@@ -2753,6 +2773,42 @@ object RecommendationManager {
             }
             .distinctBy { it.artist.lowercase(Locale.ROOT) }
             .take(limit)
+    }
+
+    /**
+     * Spotify-inspired BridgeTracks Algorithm (from AssistedCuration):
+     * Finds an intermediary transition track that bridges acoustic energy and tempo
+     * between two contrasting songs or genres to ensure a smooth sonic journey without jarring jumps.
+     */
+    suspend fun findBridgeTrack(
+        recDb: RecommendationDatabase,
+        sourceEnergy: Double,
+        sourceTempo: Int,
+        targetEnergy: Double,
+        targetTempo: Int,
+        excludeArtists: Set<String> = emptySet()
+    ): SpotifyTrack? = withContext(Dispatchers.IO) {
+        val midEnergy = (((sourceEnergy + targetEnergy) / 2.0) * 100).toInt().coerceIn(10, 95)
+        val midTempo = ((sourceTempo + targetTempo) / 2).coerceIn(40, 220)
+        val midValence = 50
+
+        val neighbors = try {
+            recDb.trackDao().getClusterNeighborsCushioned(
+                targetCluster = 0,
+                targetEnergy = midEnergy,
+                targetValence = midValence,
+                targetDance = 55,
+                targetAcoustic = 35,
+                targetTempo = midTempo,
+                limit = 20
+            )
+        } catch (_: Exception) { emptyList() }
+
+        val normExcl = excludeArtists.map { cleanArtistForMatching(it) }.toSet()
+        neighbors.firstOrNull { trk ->
+            val artNorm = cleanArtistForMatching(trk.artist)
+            artNorm.isNotEmpty() && artNorm !in normExcl
+        }
     }
 
     /**

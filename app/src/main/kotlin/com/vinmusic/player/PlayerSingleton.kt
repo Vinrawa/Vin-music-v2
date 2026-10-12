@@ -69,6 +69,7 @@ object PlayerSingleton {
     var shuffle        by mutableStateOf(false)
     private var _smartShuffle by mutableStateOf(false)
     val smartShuffle get() = _smartShuffle
+    private var smartShufflePlaysSinceInject = 0
     var smartAutoplayEnabled by mutableStateOf(true)
     var isAutoplayLoading by mutableStateOf(false)
     private var isExtendingQueue = false
@@ -1087,6 +1088,7 @@ object PlayerSingleton {
 
     fun setQueue(songs: List<VideoItem>, startIndex: Int = 0) {
         clearAutoplayTail()
+        smartShufflePlaysSinceInject = 0
         nextStreamUrlDeferred = null
         queue      = songs
         queueIndex = startIndex.coerceIn(0, (songs.size - 1).coerceAtLeast(0))
@@ -1218,6 +1220,42 @@ object PlayerSingleton {
 
         if (shuffle && smartShuffle) {
             scope.launch {
+                smartShufflePlaysSinceInject++
+                // Spotify True Smart Shuffle: Inject an external discovery recommendation every 3 tracks
+                if (smartShufflePlaysSinceInject >= 3 && recommendationRepository != null) {
+                    val currentTrack = currentSong ?: (if (queueIndex in queue.indices) queue[queueIndex] else null)
+                    if (currentTrack != null) {
+                        try {
+                            val currentQueueCopy = queue.toList()
+                            val recs = withContext(Dispatchers.IO) {
+                                recommendationRepository?.getSongRadio(
+                                    currentTrack.videoId,
+                                    currentTrack.title,
+                                    currentTrack.author,
+                                    currentQueueCopy
+                                )
+                            }
+                            val existingIds = queue.map { it.videoId }.toSet()
+                            val discoveryCandidate = recs?.firstOrNull { it.videoId !in existingIds }
+                            if (discoveryCandidate != null) {
+                                withContext(Dispatchers.Main) {
+                                    val newQueue = queue.toMutableList()
+                                    val insertIdx = (queueIndex + 1).coerceAtMost(newQueue.size)
+                                    newQueue.add(insertIdx, discoveryCandidate)
+                                    queue = newQueue
+                                    queueIndex = insertIdx
+                                    smartShufflePlaysSinceInject = 0
+                                    Log.d(TAG, "Smart Shuffle injected discovery candidate: '${discoveryCandidate.title}' by ${discoveryCandidate.author}")
+                                    playSong(discoveryCandidate)
+                                }
+                                return@launch
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Smart Shuffle discovery injection failed: ${e.message}")
+                        }
+                    }
+                }
+
                 val next = getSmartShuffleNextIndex()
                 if (next < 0 || next >= queue.size) return@launch
                 withContext(Dispatchers.Main) {
@@ -1278,6 +1316,7 @@ object PlayerSingleton {
 
     fun setSmartShuffle(enabled: Boolean) {
         _smartShuffle = enabled
+        smartShufflePlaysSinceInject = 0
         prefs?.edit()?.putBoolean("smart_shuffle", enabled)?.apply()
     }
 
