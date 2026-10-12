@@ -28,17 +28,17 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /users/{userId}/interactions/{songId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-
-    match /users/{userId}/profile/{doc} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-
+    // User private data and cloud backups:
+    // Grants the authenticated owner full access (read, write, create, update, delete)
+    // to their user document and all nested subcollections (likedSongs, followedArtists,
+    // playlists, playlists/{id}/songs, interactions, profile, etc.),
+    // while preventing access from other users or unauthenticated clients.
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
   }
 }
