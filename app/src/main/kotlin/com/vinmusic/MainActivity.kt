@@ -68,6 +68,16 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { }
 
+    override fun onStart() {
+        super.onStart()
+        playerVm.isUiForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        playerVm.isUiForeground = false
+    }
+
     override fun onDestroy() {
         // Release the MediaController connection acquired in onCreate.
         mediaControllerFuture?.let { future ->
@@ -333,9 +343,11 @@ fun VinMusicApp(vm: PlayerViewModel, authVm: AuthViewModel) {
                     HomeScreen(
                         vm = vm,
                         onSongClick = { song, songs ->
-                            // Home playback must replace the queue with the current
-                            // Home shelf, just like Search and Downloads do.
-                            vm.setQueue(songs, songs.indexOf(song).coerceAtLeast(0))
+                            if (songs.size <= 1) {
+                                vm.playSongWithRadio(song)
+                            } else {
+                                vm.setQueue(songs, songs.indexOf(song).coerceAtLeast(0))
+                            }
                             showFullPlayer = true
                         },
                         onPlayQueue = { song, songs ->

@@ -42,6 +42,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.interaction.*
+import androidx.compose.ui.platform.LocalContext
+import com.vinmusic.ui.utils.HapticHelper
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import android.util.Log
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -124,17 +128,7 @@ private val RAP_SUB_CATEGORIES = listOf(
 )
 
 // SIMILAR_ARTISTS_MAP is now fetched dynamically from Last.fm
-// Fallback map used only when Last.fm is unavailable
-private val SIMILAR_ARTISTS_FALLBACK = mapOf(
-    "j. cole" to listOf("Kendrick Lamar", "Drake", "JID", "Cordae"),
-    "kendrick lamar" to listOf("J. Cole", "Drake", "Travis Scott", "21 Savage"),
-    "drake" to listOf("J. Cole", "Kendrick Lamar", "The Weeknd", "Future"),
-    "arijit singh" to listOf("Atif Aslam", "Jubin Nautiyal", "Shreya Ghoshal"),
-    "sidhu moose wala" to listOf("Karan Aujla", "Diljit Dosanjh", "Shubh"),
-    "the weeknd" to listOf("Post Malone", "Khalid", "Frank Ocean", "SZA"),
-    "eminem" to listOf("Dr. Dre", "50 Cent", "Snoop Dogg", "J. Cole"),
-    "badshah" to listOf("Raftaar", "Yo Yo Honey Singh", "King", "MC Stan")
-)
+private val SIMILAR_ARTISTS_FALLBACK = com.vinmusic.recommendation.RecommendationManager.SIMILAR_ARTISTS_MAP
 
 fun normalizeArtistName(name: String): String {
     var clean = name.lowercase(java.util.Locale.ROOT).trim()
@@ -538,10 +532,13 @@ fun HomeScreen(
         }
     }
 
-    suspend fun loadAutoHomeRecommendationSections(): List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>> {
+    suspend fun loadAutoHomeRecommendationSections(
+        cachedSignals: List<com.vinmusic.data.db.InteractionSignal>? = null,
+        cachedHistory: List<com.vinmusic.data.db.HistoryEntry>? = null
+    ): List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>> {
         val sections = mutableListOf<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>()
-        val signals = try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
-        val history = try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
+        val signals = cachedSignals ?: try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
+        val history = cachedHistory ?: try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
 
         val repeatPool = (signals
             .sortedWith(
@@ -567,9 +564,12 @@ fun HomeScreen(
         return sections
     }
 
-    suspend fun loadRepeatRewindMix(): com.vinmusic.recommendation.SpotifyMix? {
-        val signals = try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
-        val history = try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
+    suspend fun loadRepeatRewindMix(
+        cachedSignals: List<com.vinmusic.data.db.InteractionSignal>? = null,
+        cachedHistory: List<com.vinmusic.data.db.HistoryEntry>? = null
+    ): com.vinmusic.recommendation.SpotifyMix? {
+        val signals = cachedSignals ?: try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
+        val history = cachedHistory ?: try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
         val songs = (signals
             .sortedWith(
                 compareByDescending<com.vinmusic.data.db.InteractionSignal> { it.repeatCount * 4 + it.playCount + if (it.isLiked) 8 else 0 }
@@ -656,10 +656,18 @@ fun HomeScreen(
     }
 
     LaunchedEffect(Unit) {
+        val cachedSignalsDeferred = async(Dispatchers.IO) {
+            try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
+        }
+        val cachedHistoryDeferred = async(Dispatchers.IO) {
+            try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 isRecommendationsLoading = true
-                val fastRecs = loadAutoHomeRecommendationSections()
+                val signals = cachedSignalsDeferred.await()
+                val history = cachedHistoryDeferred.await()
+                val fastRecs = loadAutoHomeRecommendationSections(signals, history)
                 withContext(Dispatchers.Main) {
                     recommendationSections = fastRecs
                 }
@@ -687,7 +695,9 @@ fun HomeScreen(
         scope.launch(Dispatchers.IO) {
             try {
                 isLoadingMixes = true
-                val rewindMix = loadRepeatRewindMix()
+                val signals = cachedSignalsDeferred.await()
+                val history = cachedHistoryDeferred.await()
+                val rewindMix = loadRepeatRewindMix(signals, history)
                 val genreMixes = try { vm.recommendationRepository.getGenreMixes() } catch (_: Exception) { emptyList() }
                 val combined = listOfNotNull(rewindMix) + genreMixes
                 withContext(Dispatchers.Main) {
@@ -1953,7 +1963,7 @@ fun HomeScreen(
                             // must include the position, not just videoId.
                             itemsIndexed(historySongs.take(8), key = { index, song -> "history_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
-                                    onSongClick(song, historySongs)
+                                    onSongClick(song, emptyList())
                                 }
                             }
                         }
@@ -2047,7 +2057,7 @@ fun HomeScreen(
                         ) {
                             itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
-                                    onSongClick(song, onRepeatTracks)
+                                    onSongClick(song, emptyList())
                                 }
                             }
                         }
@@ -2085,31 +2095,19 @@ fun HomeScreen(
                     }
                 }
 
-                // 1.6. Artists you may like (right after Quick Picks)
+                // 1.6. Artists you may like (right after Quick Picks) - sleek single horizontal row
                 if (suggestedArtists.isNotEmpty()) {
                     item {
                         SectionTitle("Artists you may like")
                         Spacer(Modifier.height(10.dp))
-                        val topRow = suggestedArtists.take(8)
-                        val bottomRow = suggestedArtists.drop(8).take(8)
-                        val colCount = maxOf(topRow.size, bottomRow.size)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.padding(bottom = 24.dp)
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.padding(bottom = 20.dp)
                         ) {
-                            items(colCount, key = { it }) { index ->
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (index < topRow.size) {
-                                        ArtistCircleCard(artist = topRow[index]) {
-                                            selectedArtist = topRow[index]
-                                        }
-                                    }
-                                    if (index < bottomRow.size) {
-                                        ArtistCircleCard(artist = bottomRow[index]) {
-                                            selectedArtist = bottomRow[index]
-                                        }
-                                    }
+                            items(suggestedArtists.take(16), key = { it.name.ifBlank { it.channelId } }) { artist ->
+                                ArtistCircleCard(artist = artist) {
+                                    selectedArtist = artist
                                 }
                             }
                         }
@@ -2415,7 +2413,7 @@ fun HomeScreen(
                         ) {
                             itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
-                                    onSongClick(song, onRepeatTracks)
+                                    onSongClick(song, emptyList())
                                 }
                             }
                         }
@@ -2453,31 +2451,19 @@ fun HomeScreen(
                     }
                 }
 
-                // Artists you may like (right after Quick Picks)
+                // Artists you may like (right after Quick Picks) - sleek single horizontal row
                 if (suggestedArtists.isNotEmpty()) {
                     item {
                         SectionTitle("Artists you may like")
                         Spacer(Modifier.height(10.dp))
-                        val topRow = suggestedArtists.take(8)
-                        val bottomRow = suggestedArtists.drop(8).take(8)
-                        val colCount = maxOf(topRow.size, bottomRow.size)
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.padding(bottom = 24.dp)
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.padding(bottom = 20.dp)
                         ) {
-                            items(colCount, key = { it }) { index ->
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (index < topRow.size) {
-                                        ArtistCircleCard(artist = topRow[index]) {
-                                            selectedArtist = topRow[index]
-                                        }
-                                    }
-                                    if (index < bottomRow.size) {
-                                        ArtistCircleCard(artist = bottomRow[index]) {
-                                            selectedArtist = bottomRow[index]
-                                        }
-                                    }
+                            items(suggestedArtists.take(16), key = { it.name.ifBlank { it.channelId } }) { artist ->
+                                ArtistCircleCard(artist = artist) {
+                                    selectedArtist = artist
                                 }
                             }
                         }
@@ -2741,7 +2727,7 @@ fun HomeScreen(
                             SongListItem(
                                 song = song,
                                 isPlaying = vm.currentSong?.videoId == song.videoId,
-                                onClick = { onSongClick(song, longListens) },
+                                onClick = { onSongClick(song, emptyList()) },
                                 onMore = { onSongMore(song) }
                             )
                         }
@@ -3813,13 +3799,32 @@ private fun SectionTitle(text: String) {
  */
 @Composable
 private fun SideAHeroCard(rec: com.vinmusic.recommendation.RecommendedSong, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.97f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "hero_card_scale"
+    )
+    val context = LocalContext.current
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .height(190.dp)
-            .clip(RoundedCornerShape(Vin.Radius.xxl))
-            .clickable { onClick() }
+            .height(156.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clip(RoundedCornerShape(Vin.Radius.xl))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
     ) {
         AsyncImage(
             model = rec.videoItem.thumbnailHd,
@@ -3881,10 +3886,10 @@ private fun SideAHeroCard(rec: com.vinmusic.recommendation.RecommendedSong, onCl
 
 /** Shimmering placeholder row shown while a shelf loads — replaces spinners. */
 @Composable
-private fun ShelfSkeleton(cardHeight: Dp = 190.dp, cardWidth: Dp = 150.dp) {
+private fun ShelfSkeleton(cardHeight: Dp = 190.dp, cardWidth: Dp = 140.dp) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.padding(bottom = 24.dp)
     ) {
         items(4, key = { it }) { index ->
@@ -3892,7 +3897,7 @@ private fun ShelfSkeleton(cardHeight: Dp = 190.dp, cardWidth: Dp = 150.dp) {
                 modifier = Modifier
                     .width(cardWidth)
                     .height(cardHeight)
-                    .clip(RoundedCornerShape(Vin.Radius.lg))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(VinColors.Surface)
                     .shimmerEffect()
             )
@@ -3909,21 +3914,26 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "recent_card_press"
     )
+    val context = LocalContext.current
 
     Row(
         modifier = Modifier
-            .width(210.dp)
+            .width(220.dp)
+            .height(68.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .glassCard(cornerRadius = 18.dp)
-            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
-            .padding(12.dp),
+            .glassCard(cornerRadius = 14.dp)
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
+            .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(VinColors.Surface)
                 .shimmerEffect()
         ) {
@@ -3953,18 +3963,20 @@ fun QuickPlaylistCard(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "quick_playlist_scale"
     )
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
-            .width(120.dp)
-            .height(120.dp)
+            .width(140.dp)
+            .height(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .graphicsLayer(shadowElevation = 8.dp.value, shape = RoundedCornerShape(18.dp), clip = false)
-            .clip(RoundedCornerShape(18.dp))
+            .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+            .clip(RoundedCornerShape(14.dp))
             .background(Brush.linearGradient(
                 colors = listOf(pl.gradStart, pl.gradEnd)
             ))
             .clickable(interactionSource = interactionSource, indication = LocalIndication.current) {
+                HapticHelper.click(context)
                 scope.launch(Dispatchers.IO) {
                     val results = InnerTube.search(pl.query)
                     if (results.isNotEmpty()) {
@@ -3974,15 +3986,15 @@ fun QuickPlaylistCard(
             }
     ) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
+            modifier = Modifier.fillMaxSize().padding(14.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Box(
-                modifier = Modifier.size(36.dp).clip(CircleShape)
+                modifier = Modifier.size(38.dp).clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(pl.icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                Icon(pl.icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
             }
             Text(
                 pl.name, style = Vin.Text.cardTitleSmall.copy(color = Color.White),
@@ -4030,46 +4042,57 @@ fun RecommendedTrackCard(song: com.vinmusic.innertube.VideoItem, reason: String,
         ),
         label = "rec_card_scale"
     )
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
-            .width(160.dp)
+            .width(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .glassCard(cornerRadius = 20.dp)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null
-            ) { onClick() }
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
     ) {
         Box(
             modifier = Modifier
-                .size(144.dp)
+                .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
                 .shimmerEffect()
         ) {
             AsyncImage(
-                model = song.thumbnail, contentDescription = null,
-                modifier = Modifier.fillMaxSize().scale(1.35f), contentScale = ContentScale.Crop
+                model = song.thumbnail,
+                contentDescription = null,
+                placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                modifier = Modifier.fillMaxSize().scale(1.35f),
+                contentScale = ContentScale.Crop
+            )
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f)))
+                )
             )
         }
-        
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                text = song.title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = Vin.Text.cardTitle
-            )
-            Text(
-                text = song.author,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = Vin.Text.cardSubtitle
-            )
-        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = song.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardTitleSmall
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = song.author,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardSubtitle
+        )
     }
 }
 
@@ -4085,24 +4108,28 @@ fun ArtistCircleCard(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "artist_scale"
     )
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
-            .width(140.dp)
+            .width(104.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .clickable(interactionSource = interactionSource, indication = null) { onClick() },
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(130.dp)
-                .graphicsLayer(shadowElevation = 12.dp.value, shape = CircleShape, clip = false)
+                .size(88.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = CircleShape, clip = false)
                 .background(
                     brush = Brush.linearGradient(listOf(VinColors.Accent, VinColors.AccentLight)),
                     shape = CircleShape
                 )
-                .padding(2.dp),
+                .padding(1.5.dp),
             contentAlignment = Alignment.Center
         ) {
             Box(
@@ -4122,15 +4149,20 @@ fun ArtistCircleCard(
         }
         Text(
             text = artist.name,
-            style = Vin.Text.cardTitle,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = VinColors.Primary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            lineHeight = 18.sp
+            lineHeight = 15.sp
         )
         Text(
             text = if (artist.subscriberCount.isNotEmpty()) homeMonthlyListenersText(artist.subscriberCount) else "Artist",
-            style = Vin.Text.cardSubtitle,
+            fontSize = 10.sp,
+            color = VinColors.Secondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
     }
@@ -4160,6 +4192,7 @@ fun SpotifyMixCard(
         animationSpec = androidx.compose.animation.core.spring(dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy),
         label = "mix_card_scale"
     )
+    val context = LocalContext.current
 
     val startColor = remember(mix.gradientStartHex) {
         runCatching { Color(android.graphics.Color.parseColor(mix.gradientStartHex.replace("0x", "#"))) }.getOrElse { Color(0xFFC5A880) }
@@ -4170,18 +4203,21 @@ fun SpotifyMixCard(
 
     Column(
         modifier = Modifier
-            .width(148.dp)
+            .width(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
             .padding(bottom = 8.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(148.dp)
-                .graphicsLayer(shadowElevation = 10.dp.value, shape = RoundedCornerShape(18.dp), clip = false)
-                .clip(RoundedCornerShape(18.dp))
+                .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+                .clip(RoundedCornerShape(14.dp))
                 .background(Brush.verticalGradient(colors = listOf(startColor, endColor)))
-                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(18.dp))
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
         ) {
             val coverUrl = mix.songs.firstOrNull()?.videoItem?.thumbnail
             if (coverUrl != null) {
@@ -4238,8 +4274,7 @@ fun SpotifyMixCard(
             text = mix.title,
             style = Vin.Text.cardTitleSmall,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 4.dp)
+            overflow = TextOverflow.Ellipsis
         )
         Spacer(Modifier.height(2.dp))
         Text(
@@ -4247,8 +4282,7 @@ fun SpotifyMixCard(
             style = Vin.Text.cardSubtitle,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            lineHeight = 14.sp,
-            modifier = Modifier.padding(horizontal = 4.dp)
+            lineHeight = 14.sp
         )
     }
 }
@@ -4260,18 +4294,23 @@ fun SpotifyMixCompactCard(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
+    val context = LocalContext.current
     val coverUrl = mix.songs.firstOrNull()?.videoItem?.thumbnail
 
     Row(
         modifier = Modifier
-            .width(210.dp)
+            .width(220.dp)
+            .height(68.dp)
             .graphicsLayer(
                 scaleX = if (isPressed) 0.96f else 1f,
                 scaleY = if (isPressed) 0.96f else 1f
             )
-            .glassCard(cornerRadius = 18.dp)
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
-            .padding(12.dp),
+            .glassCard(cornerRadius = 14.dp)
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
+            .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -4404,26 +4443,29 @@ fun RecommendedRadioCard(song: VideoItem, onClick: () -> Unit) {
         targetValue = if (isPressed) 0.95f else 1f,
         label = "radio_card_scale"
     )
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
             .width(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .glassCard(cornerRadius = 20.dp)
-            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
+            .padding(bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
             modifier = Modifier
-                .size(124.dp)
-                .align(Alignment.CenterHorizontally)
+                .size(136.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = CircleShape, clip = false)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.3f))
+                    .background(Color.Black.copy(alpha = 0.35f))
             )
             AsyncImage(
                 model = song.thumbnail,
@@ -4431,7 +4473,7 @@ fun RecommendedRadioCard(song: VideoItem, onClick: () -> Unit) {
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .border(2.dp, VinColors.GlassBorder, CircleShape),
+                    .border(1.5.dp, Color.White.copy(alpha = 0.15f), CircleShape),
                 contentScale = ContentScale.Crop
             )
             Box(
@@ -4439,7 +4481,7 @@ fun RecommendedRadioCard(song: VideoItem, onClick: () -> Unit) {
                     .size(24.dp)
                     .clip(CircleShape)
                     .background(VinColors.BgColor)
-                    .border(1.5.dp, VinColors.GlassBorder, CircleShape)
+                    .border(1.5.dp, Color.White.copy(alpha = 0.2f), CircleShape)
                     .align(Alignment.Center),
                 contentAlignment = Alignment.Center
             ) {
@@ -4452,9 +4494,11 @@ fun RecommendedRadioCard(song: VideoItem, onClick: () -> Unit) {
             }
         }
         
+        Spacer(Modifier.height(8.dp))
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp)
         ) {
             Text(
                 text = song.title,
@@ -4464,6 +4508,7 @@ fun RecommendedRadioCard(song: VideoItem, onClick: () -> Unit) {
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = song.author,
                 maxLines = 1,
@@ -4485,19 +4530,24 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "rec_playlist_scale"
     )
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
             .width(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
     ) {
         Box(
             modifier = Modifier
                 .size(140.dp)
-                .graphicsLayer(shadowElevation = 8.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
                 .shimmerEffect()
         ) {
             AsyncImage(
@@ -4514,6 +4564,7 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        Spacer(Modifier.height(2.dp))
         Text(
             text = playlist.author.orEmpty(),
             style = Vin.Text.cardSubtitle,

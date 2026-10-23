@@ -200,24 +200,15 @@ fun PlaylistDetailScreen(
             val candidates = mutableListOf<VideoItem>()
             try {
                 if (songs.isNotEmpty()) {
-                    val seeds = songs.shuffled().take(2)
-                    for (seed in seeds) {
-                        val recs = vm.recommendationRepository.getSongRadio(
-                            seed.videoId,
-                            seed.title,
-                            seed.author
-                        )
-                        val fresh = recs.filter { it.videoId !in existingIds && candidates.none { c -> c.videoId == it.videoId } }
-                        candidates.addAll(fresh)
-                        if (candidates.size >= 10) break
+                    val songVideoItems = songs.map { 
+                        VideoItem(it.videoId, it.title, it.author, it.durationText) 
                     }
-                }
-                if (candidates.size < 5) {
-                    val quickPicks = vm.recommendationRepository.getQuickPicks()
-                    val freshPicks = quickPicks.filter { it.videoId !in existingIds && candidates.none { c -> c.videoId == it.videoId } }
-                    candidates.addAll(freshPicks)
+                    val curated = vm.recommendationRepository.getCurationRecommendationsForPlaylist(pl.name, songVideoItems)
+                    val fresh = curated.filter { it.videoId !in existingIds }
+                    candidates.addAll(fresh)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 android.util.Log.e("VIN_ASSISTED_CURATION", "Failed to load curation suggestions", e)
             }
             withContext(Dispatchers.Main) {

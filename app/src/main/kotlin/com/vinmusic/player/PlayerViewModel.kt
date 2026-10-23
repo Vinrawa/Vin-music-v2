@@ -252,6 +252,7 @@ class PlayerViewModel @Inject constructor(
     var eqTreble     by mutableFloatStateOf(0f)  // 8kHz
     var eqAir        by mutableFloatStateOf(0f)  // 16kHz
     var bassBoostStr by mutableFloatStateOf(0f)  // 0–1000
+    var clarityStr   by mutableFloatStateOf(0f)  // 0–1000
     var loudnessGain by mutableFloatStateOf(0f)  // 0–1000 mB
     var eqPreset     by mutableStateOf("Flat")
 
@@ -264,6 +265,16 @@ class PlayerViewModel @Inject constructor(
     var crossfadeSecs by mutableIntStateOf(3)
     private var isCrossfadeAdvancing = false
     var concertHallEnabled by mutableStateOf(false)
+
+    var isUiForeground by mutableStateOf(true)
+
+    fun setAudioNormalization(enabled: Boolean) {
+        audioNormalizationEnabled = enabled
+        prefs.edit().putBoolean("audio_normalization", enabled).apply()
+        PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = enabled
+        applyEQInternal()
+    }
+
     var smartAutoplayEnabled: Boolean
         get() = PlayerSingleton.smartAutoplayEnabled
         set(value) { PlayerSingleton.smartAutoplayEnabled = value }
@@ -349,6 +360,7 @@ class PlayerViewModel @Inject constructor(
         when (key) {
             "audio_normalization" -> {
                 audioNormalizationEnabled = sharedPreferences.getBoolean(key, false)
+                PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
                 applyEQInternal()
             }
             "crossfade" -> crossfadeEnabled = sharedPreferences.getBoolean(key, false)
@@ -396,6 +408,7 @@ class PlayerViewModel @Inject constructor(
         loadLikedSongs()
 
         audioNormalizationEnabled = prefs.getBoolean("audio_normalization", false)
+        PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
         crossfadeEnabled = prefs.getBoolean("crossfade", false)
         crossfadeSecs = prefs.getInt("crossfade_secs", 3)
         concertHallEnabled = prefs.getBoolean(PREF_CONCERT_HALL, false)
@@ -526,6 +539,10 @@ class PlayerViewModel @Inject constructor(
         PlayerSingleton.moveQueueItem(from, to)
     }
 
+    fun removeFromQueue(index: Int) {
+        PlayerSingleton.removeQueueItem(index)
+    }
+
     private var radioJob: Job? = null
 
     fun playSongWithRadio(song: VideoItem) {
@@ -583,10 +600,25 @@ class PlayerViewModel @Inject constructor(
                     val genreTerm = seedMeta.genre.lowercase(java.util.Locale.ROOT).replace("rap/hip-hop", "rap hip hop")
                     val searchResults = mutableListOf<VideoItem>()
                     if (song.author.isNotBlank()) {
-                        val queries = listOf(
-                            "${song.author} $genreTerm songs official",
-                            "${song.author} popular tracks"
-                        )
+                        val isRegional = seedMeta.language in listOf("Regional Indian", "Garhwali/Pahari") || seedMeta.genre == "Regional Folk"
+                        val queries = when {
+                            isRegional -> listOf(
+                                "${song.author} garhwali pahadi songs official",
+                                "${song.author} official video audio"
+                            )
+                            seedMeta.language == "Hindi" || seedMeta.genre == "Bollywood" -> listOf(
+                                "${song.author} official hindi songs",
+                                "${song.author} hits audio"
+                            )
+                            seedMeta.language == "Punjabi" || seedMeta.genre == "Punjabi Folk" -> listOf(
+                                "${song.author} official punjabi songs",
+                                "${song.author} hits audio"
+                            )
+                            else -> listOf(
+                                "${song.author} $genreTerm songs official",
+                                "${song.author} popular tracks"
+                            )
+                        }
                         for (query in queries) {
                             try {
                                 for (item in InnerTube.search(query)) {
@@ -630,7 +662,7 @@ class PlayerViewModel @Inject constructor(
                 // fast-path tail so similar songs play first. Manual user additions survive.
                 if (!isActive) return@launch
                 try {
-                    val smartRecs = recommendationRepository.getSongRadio(song.videoId, song.title, song.author)
+                    val smartRecs = recommendationRepository.getSongRadio(song.videoId, song.title, song.author, listOf(song))
                     if (!isActive) return@launch
                     if (!smartRecs.isNullOrEmpty()) {
                         withContext(Dispatchers.Main) {
@@ -735,13 +767,17 @@ class PlayerViewModel @Inject constructor(
                     delay(500)
                     continue
                 }
-                delay(180)
+                val inCrossfade = crossfadeEnabled && durationMs > 0 &&
+                    (durationMs - currentTimeMs <= (crossfadeSecs + 1) * 1000L || currentTimeMs <= (crossfadeSecs + 1) * 1000L)
+                val tickerDelay = if (isUiForeground || inCrossfade) 180L else 1000L
+                delay(tickerDelay)
                 if (durationMs > 0) {
                     val pos = exoPlayer.currentPosition
                     val prog = (pos.toFloat() / durationMs).coerceIn(0f, 1f)
                     
                     // Only write state if the change is significant (to avoid unnecessary recompositions)
-                    if (Math.abs(pos - currentTimeMs) >= 140 || Math.abs(prog - progress) >= 0.001f || pos == 0L) {
+                    val threshold = if (isUiForeground || inCrossfade) 140L else 900L
+                    if (Math.abs(pos - currentTimeMs) >= threshold || Math.abs(prog - progress) >= 0.001f || pos == 0L) {
                         currentTimeMs = pos
                         progress = prog
                     }
@@ -751,17 +787,17 @@ class PlayerViewModel @Inject constructor(
                         val crossfadeMs = crossfadeSecs * 1000f
                         if (remainingMs <= crossfadeMs) {
                             val ratio = (remainingMs / crossfadeMs).coerceIn(0f, 1f)
-                            // Spotify Equal-Power Cosine Fade-Out: sin(ratio * PI / 2)
+                            // DJ Beat-Matched Cosine S-Curve Fade-Out: smoothly maintains energy before track swap
                             exoPlayer.volume = Math.sin(ratio.toDouble() * Math.PI / 2.0).toFloat()
                             // Repeat-one must not advance the queue — the track loops
                             // and the fade-in branch below restores volume instead.
-                            if (remainingMs <= 500 && exoPlayer.repeatMode != Player.REPEAT_MODE_ONE && !isCrossfadeAdvancing) {
+                            if (remainingMs <= 380 && exoPlayer.repeatMode != Player.REPEAT_MODE_ONE && !isCrossfadeAdvancing) {
                                 isCrossfadeAdvancing = true
                                 playNext()
                             }
                         } else if (currentTimeMs <= crossfadeMs) {
                             val ratio = (currentTimeMs / crossfadeMs).coerceIn(0f, 1f)
-                            // Spotify Equal-Power Sine Fade-In: sin(ratio * PI / 2)
+                            // DJ Equal-Power Sine Fade-In: energetic ramp
                             exoPlayer.volume = Math.sin(ratio.toDouble() * Math.PI / 2.0).toFloat()
                             isCrossfadeAdvancing = false
                         } else {
@@ -1302,6 +1338,9 @@ class PlayerViewModel @Inject constructor(
                 setBandLevel(band.toShort(), targetLevel)
             }
         }
+        PlayerSingleton.audiophileDspAudioProcessor.bassStrength = (bassBoostStr / 1000f).coerceIn(0f, 1f)
+        PlayerSingleton.audiophileDspAudioProcessor.clarityStrength = (clarityStr / 1000f).coerceIn(0f, 1f)
+        PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
         bassBoostFx?.runCatching { setStrength(bassBoostStr.toInt().toShort()) }
         loudnessFx?.runCatching  { 
             if (audioNormalizationEnabled) {
@@ -1328,7 +1367,7 @@ class PlayerViewModel @Inject constructor(
     fun resetEQ() {
         eqSubBass = 0f; eqBass = 0f; eqLowMid = 0f
         eqMid = 0f; eqTreble = 0f; eqAir = 0f
-        bassBoostStr = 0f; loudnessGain = 0f
+        bassBoostStr = 0f; clarityStr = 0f; loudnessGain = 0f
         eqPreset = "Flat"
         updateConcertHallEnabled(false)
         applyEQ()
@@ -1459,6 +1498,17 @@ class PlayerViewModel @Inject constructor(
             Log.d(TAG, "LoudnessEnhancer bound to session $sessionId")
         }.onFailure { Log.e(TAG, "LoudnessEnhancer build failed: ${it.message}") }
 
+        runCatching {
+            val context = getApplication<Application>()
+            val intent = android.content.Intent(android.media.audiofx.AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+                putExtra(android.media.audiofx.AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+                putExtra(android.media.audiofx.AudioEffect.EXTRA_CONTENT_TYPE, android.media.audiofx.AudioEffect.CONTENT_TYPE_MUSIC)
+            }
+            context.sendBroadcast(intent)
+            Log.d(TAG, "Broadcasted ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION for session $sessionId")
+        }
+
         applyEQInternal()
         applyConcertHallInternal()
     }
@@ -1515,6 +1565,16 @@ class PlayerViewModel @Inject constructor(
         eqHandler.removeCallbacks(eqApplyRunnable)
         pbHandler.removeCallbacks(pbApplyRunnable)
         prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
+        if (currentSessionId > 0) {
+            runCatching {
+                val context = getApplication<Application>()
+                val intent = android.content.Intent(android.media.audiofx.AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, currentSessionId)
+                    putExtra(android.media.audiofx.AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+                }
+                context.sendBroadcast(intent)
+            }
+        }
         // Detach from the immortal PlayerSingleton so this ViewModel (and its whole
         // DB/handler graph) doesn't leak for the life of the process.
         playerListener?.let { listener ->
@@ -1568,6 +1628,7 @@ data class EQPreset(
 )
 
 val EQ_PRESETS = listOf(
+    EQPreset("pTron Bass Clarity", 5.5f, 2.0f, -1.5f, 3.5f, 4.0f, 4.5f),
     EQPreset("Flat",       0f,   0f,   0f,   0f,   0f,   0f),
     EQPreset("Bass Boost", 6f,   8f,   2f,   0f,  -1f,  -1f),
     EQPreset("Treble+",   -1f,  -1f,   0f,   2f,   7f,   9f),

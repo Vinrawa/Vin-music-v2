@@ -14,6 +14,8 @@ import com.vinmusic.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
 
 import android.os.Bundle
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -43,6 +45,13 @@ class VinMusicService : MediaSessionService() {
                     .add(Player.COMMAND_SEEK_TO_PREVIOUS)
                     .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
                     .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .add(Player.COMMAND_GET_AUDIO_ATTRIBUTES)
+                    .build()
+            }
+            override fun getAudioAttributes(): AudioAttributes {
+                return AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .setUsage(C.USAGE_MEDIA)
                     .build()
             }
             override fun hasNextMediaItem() = true

@@ -53,38 +53,38 @@ import kotlin.random.Random
 
 private val DISCOVER_CURRENT_YEAR: Int get() = java.time.LocalDate.now().year
 
-// Diverse premium discovery query templates - focused on quality and variety
+// Diverse premium discovery query templates - focused on pure official releases
 private val DISCOVER_QUERIES = listOf(
-    "best rap hip hop songs $DISCOVER_CURRENT_YEAR",
-    "top r&b soul hits $DISCOVER_CURRENT_YEAR",
-    "new electronic dance music $DISCOVER_CURRENT_YEAR",
-    "best jazz fusion songs",
-    "top neo soul hits",
-    "new synthwave retrowave $DISCOVER_CURRENT_YEAR",
-    "best lo-fi hip hop beats",
-    "top funk disco classics",
-    "new ambient chill music",
-    "best dream pop shoegaze",
-    "top alternative rock $DISCOVER_CURRENT_YEAR",
-    "new bedroom pop indie",
-    "best trip hop downtempo",
-    "top progressive rock modern",
-    "new art pop experimental",
-    "best afrobeat songs $DISCOVER_CURRENT_YEAR",
-    "top reggae dancehall hits",
-    "new latin reggaeton $DISCOVER_CURRENT_YEAR",
-    "best punk rock songs",
-    "top country hits $DISCOVER_CURRENT_YEAR",
-    "new k-pop hits $DISCOVER_CURRENT_YEAR",
-    "best metal songs $DISCOVER_CURRENT_YEAR",
-    "top house techno music",
-    "new drum and bass $DISCOVER_CURRENT_YEAR",
-    "best acoustic folk songs",
-    "top grime uk rap",
-    "new vaporwave chill",
-    "best bossa nova songs",
-    "top blues rock classics",
-    "new hyperpop experimental"
+    "best rap hip hop songs official $DISCOVER_CURRENT_YEAR",
+    "top r&b soul official hits $DISCOVER_CURRENT_YEAR",
+    "new electronic dance music official $DISCOVER_CURRENT_YEAR",
+    "best jazz fusion official songs",
+    "top neo soul official hits",
+    "new synthwave retrowave official $DISCOVER_CURRENT_YEAR",
+    "top trending official songs $DISCOVER_CURRENT_YEAR",
+    "top funk disco classics official",
+    "best official music video hits $DISCOVER_CURRENT_YEAR",
+    "best dream pop official songs",
+    "top alternative rock official $DISCOVER_CURRENT_YEAR",
+    "new pop hits official $DISCOVER_CURRENT_YEAR",
+    "best trip hop official songs",
+    "top progressive rock official modern",
+    "new art pop official",
+    "best afrobeat official songs $DISCOVER_CURRENT_YEAR",
+    "top reggae dancehall official hits",
+    "new latin reggaeton official $DISCOVER_CURRENT_YEAR",
+    "best punk rock official songs",
+    "top country official hits $DISCOVER_CURRENT_YEAR",
+    "new k-pop official hits $DISCOVER_CURRENT_YEAR",
+    "best metal songs official $DISCOVER_CURRENT_YEAR",
+    "top house techno music official",
+    "new drum and bass official $DISCOVER_CURRENT_YEAR",
+    "best acoustic folk songs official",
+    "top grime uk rap official",
+    "new billboard hot 100 official $DISCOVER_CURRENT_YEAR",
+    "best bossa nova official songs",
+    "top blues rock classics official",
+    "new official hit songs $DISCOVER_CURRENT_YEAR"
 )
 
 // Data class to wrap song with dynamic recommendation metadata
@@ -172,20 +172,36 @@ private fun rememberShownDiscoverKeys(ctx: android.content.Context, keys: Collec
  * Excludes fan-made content, covers, karaokes, reaction videos, and loops.
  */
 fun isOfficialRelease(song: VideoItem): Boolean {
-    val titleLower = song.title.lowercase()
+    val titleLower = song.title.lowercase(java.util.Locale.ROOT)
+    val authorLower = song.author.lowercase(java.util.Locale.ROOT)
+    val fullText = "$titleLower $authorLower"
     
-    // Ignore common non-official/amateur patterns
+    // Strict block of amateur / fan / modification patterns
     val ignoreKeywords = listOf(
-        "cover", "karaoke", "instrumental", "tribute", "reaction", 
-        "mashup", "reverb", "slowed", "1 hour", "2 hour", "3 hour", "nonstop", 
-        "non-stop", "loop", "bgm", "clean audio", "lyrics video", "lyrics only",
-        "parody", "fanmade", "fan-made", "synthesia", "piano tutorial",
-        "remix", "sped up", "speed up", "speedup", "nightcore", "8d audio",
-        "lofi version", "lo-fi version", "slowed reverb", "edit audio",
-        "tiktok version", "tik tok version", "extended mix", "club mix"
+        "cover", "covers", "karaoke", "instrumental", "tribute", "reaction", "reacts to",
+        "mashup", "reverb", "slowed", "slow+reverb", "slow & reverb", "slowed reverb", "slowed down",
+        "1 hour", "2 hour", "3 hour", "10 hours", "10hours", "nonstop", "non-stop", "loop", "bgm",
+        "clean audio", "lyrics video", "lyrics only", "color coded lyrics",
+        "parody", "fanmade", "fan-made", "fan edit", "fan-edit", "fanedit", "fan version",
+        "synthesia", "piano tutorial", "guitar tutorial",
+        "remix", "sped up", "speed up", "speedup", "spedup", "fast version", "speed audio",
+        "nightcore", "daycore", "8d audio", "16d audio", "3d audio", "spatial audio",
+        "lofi", "lo-fi", "chillhop", "type beat", "typebeat", "bass boost", "bass boosted", "ultra bass",
+        "tiktok version", "tik tok version", "extended mix", "club mix",
+        "whatsapp status", "fullscreen status", "status video", "sad status", "fancam",
+        "concert", "live at", "live in", "live concert", "live performance", "crowd view"
     )
     
-    return ignoreKeywords.none { titleLower.contains(it) }
+    val leakTerms = listOf(
+        "leak", "leaked", "leaks", "unreleased", "snippet", "snippets",
+        "loosie", "demo", "vault", "rare", "cdq", "scrapped", "unheard", "throwaway"
+    )
+    
+    if (leakTerms.any { fullText.contains(it) }) return false
+    if (ignoreKeywords.any { fullText.contains(it) }) return false
+    
+    return RecommendationManager.isOfficialArtistChannel(song.title, song.author) &&
+        !RecommendationManager.isUnofficialContent(song.title, song.author)
 }
 
 private fun parseDiscoverDurationMs(durationText: String): Long? {
@@ -297,13 +313,24 @@ fun DiscoverScreen(
                 // A discovery deck must contain NEW music — never tracks the user
                 // just played or was already shown. These exclusions apply to every
                 // candidate source below.
-                val recentHistoryIds = history.take(40).map { it.videoId }.toSet()
+                val allHistoryIds = history.map { it.videoId }.toSet()
+                val likedIds = liked.map { it.videoId }.toSet()
+                val playlistIds = playlistSongs.map { it.videoId }.toSet()
+                val recentHistoryIds = allHistoryIds + likedIds + playlistIds
                 val shownKeys = loadShownDiscoverKeys(ctx)
+
+                val historyCentroid = try {
+                    val sampleSongs = (history.take(10).map { VideoItem(it.videoId, it.title, it.author, it.durationText) } +
+                        liked.take(5).map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
+                        .distinctBy { it.videoId }
+                    if (sampleSongs.isNotEmpty()) RecommendationManager.computeDnaCentroid(sampleSongs) else null
+                } catch (_: Exception) { null }
 
                 fun usableForDeck(songs: List<VideoItem>): List<VideoItem> = songs.filter {
                     it.videoId !in recentHistoryIds &&
                         !shownKeys.contains(discoverSongKey(it)) &&
-                        isDiscoverCandidate(it)
+                        isDiscoverCandidate(it) &&
+                        (historyCentroid == null || !RecommendationManager.isThematicallyContradictory(it.title, it.author, RecommendationManager.inferMetadata(it).genre, historyCentroid))
                 }
 
                 val tasteProfile = try {
@@ -323,7 +350,8 @@ fun DiscoverScreen(
                 fun addCandidate(song: VideoItem, reason: String, score: Int) {
                     if (song.videoId !in recentHistoryIds &&
                         !shownKeys.contains(discoverSongKey(song)) &&
-                        isDiscoverCandidate(song)
+                        isDiscoverCandidate(song) &&
+                        (historyCentroid == null || !RecommendationManager.isThematicallyContradictory(song.title, song.author, RecommendationManager.inferMetadata(song).genre, historyCentroid))
                     ) {
                         discoverPool.add(DiscoverSong(song, reason, score.coerceIn(55, 100)))
                     }
@@ -446,7 +474,7 @@ fun DiscoverScreen(
                     seedArtists.forEach { artist ->
                         deferreds.add(boundedFetch {
                             try {
-                                usableForDeck(InnerTube.search("$artist popular songs"))
+                                usableForDeck(InnerTube.search("$artist official audio"))
                                     .take(3)
                                     .map { song ->
                                         DiscoverSong(
@@ -460,7 +488,7 @@ fun DiscoverScreen(
 
                         deferreds.add(boundedFetch {
                             try {
-                                usableForDeck(InnerTube.search("$artist new song"))
+                                usableForDeck(InnerTube.search("$artist official music"))
                                     .take(2)
                                     .map { song ->
                                         DiscoverSong(
@@ -533,7 +561,14 @@ fun DiscoverScreen(
                     // Generic exploration is useful only for a true cold start.
                     // Never let it flood an established user's deck with music
                     // that has no connection to their listening behavior.
-                    val genreDiversityQueries = listOf(
+                    val genreDiversityQueries = tasteProfile?.topGenres?.take(3)?.map { (genre, _) ->
+                        "$genre official hits $DISCOVER_CURRENT_YEAR"
+                    }?.takeIf { it.isNotEmpty() } ?: listOf(
+                        "top hits trending $DISCOVER_CURRENT_YEAR",
+                        "viral official music releases $DISCOVER_CURRENT_YEAR",
+                        "popular official songs $DISCOVER_CURRENT_YEAR"
+                    )
+                    val unusedList = listOf(
                         "best jazz songs all time",
                         "top electronic music $DISCOVER_CURRENT_YEAR",
                         "best classical crossover",
@@ -1147,7 +1182,7 @@ fun DiscoverCard(
             )
         }
 
-        if (discoverSong.matchHighlights.isNotEmpty()) {
+        if (false) { // Match Mood tag row disabled (was hidden/truncated behind artwork)
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)

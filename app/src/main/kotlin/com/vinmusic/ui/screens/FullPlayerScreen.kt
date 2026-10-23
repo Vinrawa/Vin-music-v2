@@ -20,6 +20,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import kotlinx.coroutines.*
@@ -50,6 +51,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalContext
+import com.vinmusic.ui.utils.HapticHelper
 
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
@@ -299,7 +301,10 @@ fun FullPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onClose) {
+                IconButton(onClick = {
+                    HapticHelper.click(ctx)
+                    onClose()
+                }) {
                     Icon(Icons.Default.ArrowBack, "Back", tint = VinColors.Primary, modifier = Modifier.size(24.dp))
                 }
                 Text(
@@ -314,6 +319,7 @@ fun FullPlayerScreen(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = {
+                        HapticHelper.click(ctx)
                         isDjMode = !isDjMode
                     }) {
                         Icon(
@@ -325,6 +331,7 @@ fun FullPlayerScreen(
                     }
                     val shareScope = rememberCoroutineScope()
                     IconButton(onClick = {
+                        HapticHelper.click(ctx)
                         shareScope.launch {
                             try {
                                 com.vinmusic.ui.utils.ShareCardGenerator.generateAndShare(
@@ -347,7 +354,10 @@ fun FullPlayerScreen(
                             modifier = Modifier.size(22.dp)
                         )
                     }
-                    IconButton(onClick = { vm.toggleLike(song) }) {
+                    IconButton(onClick = {
+                        HapticHelper.click(ctx)
+                        vm.toggleLike(song)
+                    }) {
                         Icon(
                             if (vm.isLiked(song.videoId)) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             "Like",
@@ -908,6 +918,7 @@ fun FullPlayerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = {
+                    HapticHelper.click(ctx)
                     when {
                         !vm.shuffle -> {
                             vm.shuffle = true
@@ -945,7 +956,10 @@ fun FullPlayerScreen(
                         }
                     }
                 }
-                IconButton(onClick = { vm.playPrev() }, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = {
+                    HapticHelper.click(ctx)
+                    vm.playPrev()
+                }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.SkipPrevious, "Previous", tint = VinColors.Primary, modifier = Modifier.size(36.dp))
                 }
                 Box(
@@ -961,7 +975,10 @@ fun FullPlayerScreen(
                             )
                         )
                         .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
-                        .clickable { if (!vm.isLoading) vm.togglePlay() },
+                        .clickable {
+                            HapticHelper.click(ctx)
+                            if (!vm.isLoading) vm.togglePlay()
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     if (vm.isLoading) {
@@ -975,10 +992,16 @@ fun FullPlayerScreen(
                         )
                     }
                 }
-                IconButton(onClick = { vm.playNext() }, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = {
+                    HapticHelper.click(ctx)
+                    vm.playNext()
+                }, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.SkipNext, "Next", tint = VinColors.Primary, modifier = Modifier.size(36.dp))
                 }
-                IconButton(onClick = { vm.repeat = !vm.repeat }) {
+                IconButton(onClick = {
+                    HapticHelper.click(ctx)
+                    vm.repeat = !vm.repeat
+                }) {
                     Icon(Icons.Default.Repeat, "Repeat",
                         tint = if (vm.repeat) VinColors.AccentLight else VinColors.Secondary, modifier = Modifier.size(22.dp))
                 }
@@ -1125,6 +1148,7 @@ fun FullPlayerScreen(
                                     )
                                     "Equaliser"  -> RemixPanel(vm)
                                     "Credits" -> FullCreditsPanel(
+                                        title = song.title,
                                         author = song.author,
                                         description = creditsDescription
                                     )
@@ -1185,20 +1209,55 @@ fun GlassActionButton(
     active: Boolean,
     onClick: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.94f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "pill_press_scale"
+    )
+    val context = LocalContext.current
+
     Box(
         modifier = Modifier
+            .graphicsLayer(scaleX = scale, scaleY = scale)
             .clip(RoundedCornerShape(20.dp))
-            .background(if (active) VinColors.Accent else VinColors.White10)
-            .border(1.dp, if (active) Color.Transparent else VinColors.GlassBorder, RoundedCornerShape(20.dp))
-            .clickable { onClick() }
+            .background(if (active) Color.White.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.08f))
+            .border(
+                1.dp,
+                if (active) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                RoundedCornerShape(20.dp)
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Icon(icon, null, tint = if (active) Color.White else VinColors.Secondary, modifier = Modifier.size(16.dp))
-            Text(label, fontSize = 12.sp, color = if (active) Color.White else VinColors.Primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+            Icon(
+                icon,
+                null,
+                tint = if (active) Color.White else Color.White.copy(alpha = 0.70f),
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                label,
+                fontSize = 12.sp,
+                color = if (active) Color.White else Color.White.copy(alpha = 0.85f),
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false
+            )
         }
     }
 }
@@ -1821,6 +1880,77 @@ fun LyricsPanel(vm: PlayerViewModel) {
     }
 }
 
+// ── Minimalist Equalizer Bars (Apple Music style) ─────────────────────────────
+
+@Composable
+fun MinimalistEqualizerBars(
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+    barColor: Color = VinColors.AccentLight
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "equalizer_bars")
+
+    val h1 by infiniteTransition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "h1"
+    )
+    val h2 by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 0.30f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 550, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "h2"
+    )
+    val h3 by infiniteTransition.animateFloat(
+        initialValue = 0.40f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "h3"
+    )
+
+    Row(
+        modifier = modifier.size(width = 16.dp, height = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        val bar1Height = if (isPlaying) h1 else 0.35f
+        val bar2Height = if (isPlaying) h2 else 0.60f
+        val bar3Height = if (isPlaying) h3 else 0.25f
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(bar1Height)
+                .clip(RoundedCornerShape(1.dp))
+                .background(barColor)
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(bar2Height)
+                .clip(RoundedCornerShape(1.dp))
+                .background(barColor)
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(bar3Height)
+                .clip(RoundedCornerShape(1.dp))
+                .background(barColor)
+        )
+    }
+}
+
 // ── Queue Panel ───────────────────────────────────────────────────────────────
 
 @OptIn(UnstableApi::class, ExperimentalFoundationApi::class)
@@ -1828,7 +1958,7 @@ fun LyricsPanel(vm: PlayerViewModel) {
 fun QueuePanel(vm: PlayerViewModel, onSaveAsPlaylist: (() -> Unit)? = null) {
     var showMoveDialog by remember { mutableStateOf(false) }
     var selectedMoveIndex by remember { mutableIntStateOf(-1) }
-    val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
 
     // Move-to-position dialog
     if (showMoveDialog && selectedMoveIndex in vm.queue.indices) {
@@ -1907,13 +2037,31 @@ fun QueuePanel(vm: PlayerViewModel, onSaveAsPlaylist: (() -> Unit)? = null) {
         }
         // Queues intentionally allow a track to be added more than once.
         itemsIndexed(vm.queue, key = { index, song -> "queue_${song.videoId}_$index" }) { i, song ->
+            val isCurrent = i == vm.queueIndex
+            val itemInteractionSource = remember { MutableInteractionSource() }
+            val isItemPressed by itemInteractionSource.collectIsPressedAsState()
+            val itemScale by animateFloatAsState(
+                targetValue = if (isItemPressed) 0.97f else 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                ),
+                label = "queue_item_press"
+            )
+
             Row(modifier = Modifier.fillMaxWidth()
+                .graphicsLayer(scaleX = itemScale, scaleY = itemScale)
                 .clip(RoundedCornerShape(8.dp))
-                .background(if (i == vm.queueIndex) VinColors.White10 else Color.Transparent)
+                .background(if (isCurrent) VinColors.White10 else Color.Transparent)
                 .combinedClickable(
-                    onClick = { vm.skipToIndex(i) },
+                    interactionSource = itemInteractionSource,
+                    indication = null,
+                    onClick = {
+                        HapticHelper.click(context)
+                        vm.skipToIndex(i)
+                    },
                     onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        HapticHelper.heavy(context)
                         selectedMoveIndex = i
                         showMoveDialog = true
                     }
@@ -1926,12 +2074,27 @@ fun QueuePanel(vm: PlayerViewModel, onSaveAsPlaylist: (() -> Unit)? = null) {
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop)
                 Column(Modifier.weight(1f)) {
                     Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp,
-                        color = if (i == vm.queueIndex) VinColors.AccentLight else VinColors.Primary,
-                        fontWeight = if (i == vm.queueIndex) FontWeight.Bold else FontWeight.Normal)
+                        color = if (isCurrent) VinColors.AccentLight else VinColors.Primary,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal)
                     Text(song.author, maxLines = 1, fontSize = 11.sp, color = VinColors.Secondary)
                 }
-                if (i == vm.queueIndex) Icon(Icons.AutoMirrored.Filled.VolumeUp, null,
-                    tint = VinColors.AccentLight, modifier = Modifier.size(14.dp))
+                if (isCurrent) {
+                    MinimalistEqualizerBars(
+                        isPlaying = vm.isPlaying && !vm.isLoading,
+                        barColor = VinColors.AccentLight
+                    )
+                }
+                IconButton(
+                    onClick = { vm.removeFromQueue(i) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Remove from queue",
+                        tint = VinColors.Secondary.copy(alpha = 0.5f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
         }
     }
@@ -2028,172 +2191,421 @@ fun MoveToPositionDialog(
 @OptIn(UnstableApi::class)
 @Composable
 fun RemixPanel(vm: PlayerViewModel) {
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        
-        Text("Smart Presets", fontSize = 12.sp, color = VinColors.Secondary)
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-        ) {
-            item {
-                SmartEQPresetChip(
-                    name = "Bass Booster",
-                    icon = "",
-                    active = vm.eqPreset == "Bass Boost",
-                    onClick = {
-                        val preset = EQ_PRESETS.find { it.name == "Bass Boost" }
-                        if (preset != null) vm.applyPreset(preset)
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "Lo-Fi Lounge",
-                    icon = "",
-                    active = vm.eqPreset == "Lofi",
-                    onClick = {
-                        val preset = EQ_PRESETS.find { it.name == "Lofi" }
-                        if (preset != null) vm.applyPreset(preset)
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "Vocal Focus",
-                    icon = "",
-                    active = vm.eqPreset == "Vocal",
-                    onClick = {
-                        val preset = EQ_PRESETS.find { it.name == "Vocal" }
-                        if (preset != null) vm.applyPreset(preset)
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "Acoustic Clarity",
-                    icon = "",
-                    active = vm.eqPreset == "Treble+",
-                    onClick = {
-                        val preset = EQ_PRESETS.find { it.name == "Treble+" }
-                        if (preset != null) vm.applyPreset(preset)
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "Slowed + Reverb",
-                    icon = "",
-                    active = vm.isSlowedReverb,
-                    onClick = {
-                        vm.toggleSlowedReverb()
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "Concert Hall",
-                    icon = "",
-                    active = vm.concertHallEnabled,
-                    onClick = {
-                        val preset = EQ_PRESETS.find { it.name == "Concert Hall" }
-                        if (preset != null) vm.applyPreset(preset) else vm.updateConcertHallEnabled(!vm.concertHallEnabled)
-                    }
-                )
-            }
-            item {
-                SmartEQPresetChip(
-                    name = "8D Audio Mode",
-                    icon = "",
-                    active = vm.is8dEnabled,
-                    onClick = {
-                        vm.toggle8dAudio()
-                    }
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
+    val context = LocalContext.current
 
-        Text("All Presets", fontSize = 12.sp, color = VinColors.Secondary)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(EQ_PRESETS) { preset ->
-                val active = vm.eqPreset == preset.name
-                Box(modifier = Modifier.clip(RoundedCornerShape(16.dp))
-                    .background(if (active) VinColors.Accent else VinColors.White10)
-                    .clickable { vm.applyPreset(preset) }
-                    .padding(horizontal = 14.dp, vertical = 7.dp)) {
-                    Text(preset.name, fontSize = 12.sp, color = if (active) Color.White else VinColors.Secondary)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // ── Card 1: Presets ──
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "SOUND PRESETS",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.2.sp,
+                color = Color.White.copy(alpha = 0.45f)
+            )
+
+            // Smart Profiles
+            Text(
+                text = "Smart Profiles",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color.White.copy(alpha = 0.75f)
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                item {
+                    SmartEQPresetChip(
+                        name = "pTron Clarity",
+                        icon = "",
+                        active = vm.eqPreset == "pTron Bass Clarity",
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "pTron Bass Clarity" }
+                            if (preset != null) vm.applyPreset(preset)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Bass Booster",
+                        icon = "",
+                        active = vm.eqPreset == "Bass Boost",
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "Bass Boost" }
+                            if (preset != null) vm.applyPreset(preset)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Lo-Fi Lounge",
+                        icon = "",
+                        active = vm.eqPreset == "Lofi",
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "Lofi" }
+                            if (preset != null) vm.applyPreset(preset)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Vocal Focus",
+                        icon = "",
+                        active = vm.eqPreset == "Vocal",
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "Vocal" }
+                            if (preset != null) vm.applyPreset(preset)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Acoustic",
+                        icon = "",
+                        active = vm.eqPreset == "Treble+",
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "Treble+" }
+                            if (preset != null) vm.applyPreset(preset)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Slowed + Reverb",
+                        icon = "",
+                        active = vm.isSlowedReverb,
+                        onClick = { vm.toggleSlowedReverb() }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "Concert Hall",
+                        icon = "",
+                        active = vm.concertHallEnabled,
+                        onClick = {
+                            val preset = EQ_PRESETS.find { it.name == "Concert Hall" }
+                            if (preset != null) vm.applyPreset(preset) else vm.updateConcertHallEnabled(!vm.concertHallEnabled)
+                        }
+                    )
+                }
+                item {
+                    SmartEQPresetChip(
+                        name = "8D Audio",
+                        icon = "",
+                        active = vm.is8dEnabled,
+                        onClick = { vm.toggle8dAudio() }
+                    )
+                }
+            }
+
+            // Genre Profiles
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = "Standard Genres",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color.White.copy(alpha = 0.75f)
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(EQ_PRESETS) { preset ->
+                    val active = vm.eqPreset == preset.name
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(if (active) VinColors.Accent else Color.White.copy(alpha = 0.08f))
+                            .border(
+                                0.5.dp,
+                                if (active) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .clickable {
+                                HapticHelper.click(context)
+                                vm.applyPreset(preset)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = preset.name,
+                            fontSize = 12.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                            color = if (active) Color.White else Color.White.copy(alpha = 0.75f)
+                        )
+                    }
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        
-        EQGraph(
-            subBass = vm.eqSubBass,
-            bass = vm.eqBass,
-            lowMid = vm.eqLowMid,
-            mid = vm.eqMid,
-            treble = vm.eqTreble,
-            air = vm.eqAir,
-            onSubBassChange = { vm.eqSubBass = it; vm.applyEQ() },
-            onBassChange = { vm.eqBass = it; vm.applyEQ() },
-            onLowMidChange = { vm.eqLowMid = it; vm.applyEQ() },
-            onMidChange = { vm.eqMid = it; vm.applyEQ() },
-            onTrebleChange = { vm.eqTreble = it; vm.applyEQ() },
-            onAirChange = { vm.eqAir = it; vm.applyEQ() }
-        )
 
-        Spacer(Modifier.height(4.dp))
-        HorizontalDivider(color = VinColors.GlassBorder)
-        Text("EQ Bands", fontSize = 12.sp, color = VinColors.Secondary)
-        EQSlider("Sub Bass 60Hz",  vm.eqSubBass, -15f, 15f) { vm.eqSubBass = it; vm.applyEQ() }
-        EQSlider("Bass 250Hz",     vm.eqBass,    -15f, 15f) { vm.eqBass    = it; vm.applyEQ() }
-        EQSlider("Low Mid 1kHz",   vm.eqLowMid,  -15f, 15f) { vm.eqLowMid  = it; vm.applyEQ() }
-        EQSlider("Mid 4kHz",       vm.eqMid,     -15f, 15f) { vm.eqMid     = it; vm.applyEQ() }
-        EQSlider("Treble 8kHz",    vm.eqTreble,  -15f, 15f) { vm.eqTreble  = it; vm.applyEQ() }
-        EQSlider("Air 16kHz",      vm.eqAir,     -15f, 15f) { vm.eqAir     = it; vm.applyEQ() }
-        HorizontalDivider(color = VinColors.GlassBorder)
-        Text("Effects", fontSize = 12.sp, color = VinColors.Secondary)
-        EQSlider("Bass Boost", vm.bassBoostStr, 0f, 1000f) { vm.bassBoostStr = it; vm.applyEQ() }
-        EQSlider("Loudness",   vm.loudnessGain, 0f, 1000f) { vm.loudnessGain = it; vm.applyEQ() }
+        // ── Card 2: Graphic EQ & Bands ──
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "GRAPHIC EQUALIZER",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp,
+                    color = Color.White.copy(alpha = 0.45f)
+                )
+                Text(
+                    text = vm.eqPreset ?: "Custom",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = VinColors.AccentLight
+                )
+            }
 
-        HorizontalDivider(color = VinColors.GlassBorder)
-        Text("Speed & Pitch Controls (DSP)", fontSize = 12.sp, color = VinColors.Secondary)
-        RemixSlider("Playback Speed", vm.playbackSpeed, 0.5f, 2.0f, "x") { vm.updatePlaybackSpeed(it) }
-        RemixSlider("Playback Pitch", vm.playbackPitch, 0.5f, 2.0f, "x") { vm.updatePlaybackPitch(it) }
+            EQGraph(
+                subBass = vm.eqSubBass,
+                bass = vm.eqBass,
+                lowMid = vm.eqLowMid,
+                mid = vm.eqMid,
+                treble = vm.eqTreble,
+                air = vm.eqAir,
+                onSubBassChange = { vm.eqSubBass = it; vm.applyEQ() },
+                onBassChange = { vm.eqBass = it; vm.applyEQ() },
+                onLowMidChange = { vm.eqLowMid = it; vm.applyEQ() },
+                onMidChange = { vm.eqMid = it; vm.applyEQ() },
+                onTrebleChange = { vm.eqTreble = it; vm.applyEQ() },
+                onAirChange = { vm.eqAir = it; vm.applyEQ() }
+            )
 
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.06f), thickness = 0.5.dp)
 
+            EQSlider("Sub Bass (60 Hz)",   vm.eqSubBass, -15f, 15f) { vm.eqSubBass = it; vm.applyEQ() }
+            EQSlider("Bass (250 Hz)",      vm.eqBass,    -15f, 15f) { vm.eqBass    = it; vm.applyEQ() }
+            EQSlider("Low Mid (1 kHz)",    vm.eqLowMid,  -15f, 15f) { vm.eqLowMid  = it; vm.applyEQ() }
+            EQSlider("Mid (4 kHz)",        vm.eqMid,     -15f, 15f) { vm.eqMid     = it; vm.applyEQ() }
+            EQSlider("Treble (8 kHz)",     vm.eqTreble,  -15f, 15f) { vm.eqTreble  = it; vm.applyEQ() }
+            EQSlider("Air (16 kHz)",       vm.eqAir,     -15f, 15f) { vm.eqAir     = it; vm.applyEQ() }
+        }
 
-        TextButton(onClick = { vm.resetEQ() }) { Text("Reset All", color = VinColors.Secondary) }
+        // ── Card 3: DSP Audio Effects ──
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "AUDIO ENHANCEMENT (DSP)",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.2.sp,
+                color = Color.White.copy(alpha = 0.45f)
+            )
+
+            EQSlider("Punchy Bass Boost", vm.bassBoostStr, 0f, 1000f) { vm.bassBoostStr = it; vm.applyEQ() }
+            EQSlider("Vocal & Clarity Exciter", vm.clarityStr, 0f, 1000f) { vm.clarityStr = it; vm.applyEQ() }
+            EQSlider("Loudness Gain", vm.loudnessGain, 0f, 1000f) { vm.loudnessGain = it; vm.applyEQ() }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.06f), thickness = 0.5.dp)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Smart Volume Normalization",
+                        fontSize = 13.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "Equalise volume across tracks (-14 LUFS)",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
+                }
+                Switch(
+                    checked = vm.audioNormalizationEnabled,
+                    onCheckedChange = {
+                        HapticHelper.click(context)
+                        vm.setAudioNormalization(it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = VinColors.Accent,
+                        uncheckedThumbColor = Color.White.copy(alpha = 0.6f),
+                        uncheckedTrackColor = Color.White.copy(alpha = 0.12f)
+                    )
+                )
+            }
+        }
+
+        // ── Card 4: Speed & Pitch ──
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "TEMPO & PITCH (DSP)",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 1.2.sp,
+                color = Color.White.copy(alpha = 0.45f)
+            )
+
+            RemixSlider("Playback Speed", vm.playbackSpeed, 0.5f, 2.0f, "x") { vm.updatePlaybackSpeed(it) }
+            RemixSlider("Playback Pitch", vm.playbackPitch, 0.5f, 2.0f, "x") { vm.updatePlaybackPitch(it) }
+        }
+
+        // ── Reset Button ──
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+                    .clickable {
+                        HapticHelper.click(context)
+                        vm.resetEQ()
+                    }
+                    .padding(horizontal = 24.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "Reset Equalizer & Effects",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+            }
+        }
     }
 }
 
 @Composable
 fun EQSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
-    Column {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-            Text(label, fontSize = 12.sp, color = VinColors.Secondary)
-            Text(if (max > 100) "${value.toInt()}" else "${"%.1f".format(value)} dB",
-                fontSize = 12.sp, color = VinColors.AccentLight)
+    val context = LocalContext.current
+    val isGain = max <= 20f
+    val formattedValue = if (isGain) {
+        if (value > 0.05f) "+%.1f dB".format(value)
+        else if (value < -0.05f) "%.1f dB".format(value)
+        else "0.0 dB"
+    } else {
+        "${(value / 10).toInt()}%"
+    }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.85f),
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = formattedValue,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (value != 0f) VinColors.AccentLight else Color.White.copy(alpha = 0.45f)
+            )
         }
-        Slider(value = value, onValueChange = onChange, valueRange = min..max,
-            modifier = Modifier.fillMaxWidth().height(32.dp),
-            colors = SliderDefaults.colors(thumbColor = VinColors.AccentLight,
-                activeTrackColor = VinColors.Accent, inactiveTrackColor = VinColors.White10))
+        Slider(
+            value = value,
+            onValueChange = {
+                HapticHelper.tick(context)
+                onChange(it)
+            },
+            valueRange = min..max,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(26.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = VinColors.Accent,
+                inactiveTrackColor = Color.White.copy(alpha = 0.12f)
+            )
+        )
     }
 }
 
 @Composable
 fun RemixSlider(label: String, value: Float, min: Float, max: Float, formatSuffix: String, onChange: (Float) -> Unit) {
-    Column {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-            Text(label, fontSize = 12.sp, color = VinColors.Secondary)
-            Text("${"%.2f".format(value)}$formatSuffix", fontSize = 12.sp, color = VinColors.AccentLight)
+    val context = LocalContext.current
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                color = Color.White.copy(alpha = 0.85f),
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = "${"%.2f".format(value)}$formatSuffix",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (value != 1.0f) VinColors.AccentLight else Color.White.copy(alpha = 0.45f)
+            )
         }
-        Slider(value = value, onValueChange = onChange, valueRange = min..max,
-            modifier = Modifier.fillMaxWidth().height(32.dp),
-            colors = SliderDefaults.colors(thumbColor = VinColors.AccentLight,
-                activeTrackColor = VinColors.Accent, inactiveTrackColor = VinColors.White10))
+        Slider(
+            value = value,
+            onValueChange = {
+                HapticHelper.tick(context)
+                onChange(it)
+            },
+            valueRange = min..max,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(26.dp),
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = VinColors.Accent,
+                inactiveTrackColor = Color.White.copy(alpha = 0.12f)
+            )
+        )
     }
 }
 
@@ -3161,46 +3573,132 @@ private fun officialAudienceNumber(text: String): Double {
 }
 
 @Composable
-fun FullCreditsPanel(author: String, description: String?) {
+fun FullCreditsPanel(title: String? = null, author: String, description: String?) {
     val credits = remember(author, description) { buildFullSongCredits(author, description) }
 
     if (credits.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No credits found.", color = VinColors.Secondary, fontSize = 14.sp)
+            Text("No credits found for this song.", color = VinColors.Secondary, fontSize = 14.sp)
         }
         return
     }
 
+    val performerKeywords = listOf("artist", "performer", "vocal", "singer", "featuring", "feat", "guitar", "bass", "drum", "keyboard", "piano", "synth", "brass", "flute", "string", "harp", "percussion")
+    val writingKeywords = listOf("composer", "lyricist", "lyric", "writer", "music", "author", "songwriting")
+    val productionKeywords = listOf("producer", "mixer", "mixing", "mastering", "engineer", "recording", "studio", "programmer", "arranger")
+
+    val performers = credits.filter { (role, _) ->
+        performerKeywords.any { role.contains(it, ignoreCase = true) }
+    }
+    val writing = credits.filter { item ->
+        !performers.contains(item) && writingKeywords.any { item.first.contains(it, ignoreCase = true) }
+    }
+    val production = credits.filter { item ->
+        !performers.contains(item) && !writing.contains(item) && productionKeywords.any { item.first.contains(it, ignoreCase = true) }
+    }
+    val metadata = credits.filter { item ->
+        !performers.contains(item) && !writing.contains(item) && !production.contains(item)
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 24.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(bottom = 32.dp)
     ) {
-        items(credits, key = { "${it.first}|${it.second}" }) { (role, name) ->
+        item {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(VinColors.White10)
-                    .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(14.dp))
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.05f))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = role,
-                    fontSize = 12.sp,
-                    color = VinColors.AccentLight,
-                    fontWeight = FontWeight.ExtraBold,
+                    text = "SONG CREDITS",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.2.sp,
+                    color = VinColors.AccentLight
+                )
+                if (!title.isNullOrBlank()) {
+                    Text(
+                        text = title,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = author,
+                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.7f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+        }
+
+        if (performers.isNotEmpty()) {
+            item {
+                CreditsSectionCard(title = "PERFORMERS", items = performers)
+            }
+        }
+        if (writing.isNotEmpty()) {
+            item {
+                CreditsSectionCard(title = "WRITING & COMPOSITION", items = writing)
+            }
+        }
+        if (production.isNotEmpty()) {
+            item {
+                CreditsSectionCard(title = "PRODUCTION & ENGINEERING", items = production)
+            }
+        }
+        if (metadata.isNotEmpty()) {
+            item {
+                CreditsSectionCard(title = "ADDITIONAL DETAILS", items = metadata)
+            }
+        }
+    }
+}
+
+@Composable
+fun CreditsSectionCard(title: String, items: List<Pair<String, String>>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White.copy(alpha = 0.05f))
+            .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = title,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+            color = Color.White.copy(alpha = 0.45f)
+        )
+        items.forEachIndexed { index, (role, name) ->
+            if (index > 0) {
+                HorizontalDivider(color = Color.White.copy(alpha = 0.06f), thickness = 0.5.dp)
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = role,
+                    fontSize = 12.sp,
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontWeight = FontWeight.Medium
+                )
                 Text(
                     text = name,
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
@@ -3427,21 +3925,27 @@ fun SmartEQPresetChip(
 ) {
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(1.0f) }
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
             .graphicsLayer(scaleX = scale.value, scaleY = scale.value)
             .clip(RoundedCornerShape(20.dp))
-            .background(if (active) VinColors.Accent else VinColors.White10)
-            .border(1.dp, if (active) Color.White.copy(alpha = 0.3f) else VinColors.GlassBorder, RoundedCornerShape(20.dp))
+            .background(if (active) VinColors.Accent else Color.White.copy(alpha = 0.08f))
+            .border(
+                0.5.dp,
+                if (active) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                RoundedCornerShape(20.dp)
+            )
             .clickable {
+                HapticHelper.click(context)
                 scope.launch {
-                    scale.animateTo(0.9f, animationSpec = tween(100, easing = FastOutSlowInEasing))
+                    scale.animateTo(0.92f, animationSpec = tween(100, easing = FastOutSlowInEasing))
                     scale.animateTo(1.0f, animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy, stiffness = Spring.StiffnessMediumLow))
                 }
                 onClick()
             }
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -3452,9 +3956,9 @@ fun SmartEQPresetChip(
             }
             Text(
                 text = name,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (active) Color.White else VinColors.Secondary
+                fontSize = 12.sp,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                color = if (active) Color.White else Color.White.copy(alpha = 0.75f)
             )
         }
     }

@@ -23,8 +23,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vinmusic.data.db.HistoryEntry
 import com.vinmusic.data.db.InteractionSignal
 import com.vinmusic.data.db.VinDatabase
+import com.vinmusic.innertube.VideoItem
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.recommendation.MusicDnaComparison
 import com.vinmusic.recommendation.MusicDnaInsights
@@ -34,6 +36,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+
+data class RecentTrackInfo(
+    val videoId: String,
+    val title: String,
+    val author: String,
+    val durationText: String,
+    val recentPlayCount: Int,
+    val isLiked: Boolean = false
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,6 +63,7 @@ fun MusicDnaScreen(
     var comparison by remember { mutableStateOf<MusicDnaComparison?>(null) }
     
     // Additional metrics
+    var recentTopSongs by remember { mutableStateOf<List<RecentTrackInfo>>(emptyList()) }
     var topSongs by remember { mutableStateOf<List<InteractionSignal>>(emptyList()) }
     var favoriteGenres by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
 
@@ -60,14 +72,76 @@ fun MusicDnaScreen(
         // can be expensive for a large library and must never block navigation.
         try {
             val signals = withContext(Dispatchers.IO) { db.interactionSignalDao().getAll() }
+            val history = withContext(Dispatchers.IO) { db.historyDao().getAllHistory() }
+            val comp = withContext(Dispatchers.IO) { MusicDnaInsights.build(signals, recentHistory = history) }
+            comparison = comp
+
+            // Persist inferred values so signals table gets populated permanently
+            withContext(Dispatchers.IO) {
+                signals.filter { it.energy > 0 }.forEach { runCatching { db.interactionSignalDao().insert(it) } }
+            }
+
             val tasteProfile = withTimeoutOrNull(3_000L) {
                 withContext(Dispatchers.IO) { RecommendationManager.buildTasteProfile(db) }
             }
-            comparison = MusicDnaInsights.build(signals)
             favoriteGenres = tasteProfile?.topGenres?.take(4)?.map { it.first to it.second.toInt() }.orEmpty()
+
+            // 1. Calculate Currently On Repeat (Recent Listening in last 14 days)
+            val nowMs = System.currentTimeMillis()
+            val recent14dCutoff = nowMs - 14L * 24L * 60L * 60L * 1000L
+            val recentEntries = history.filter { it.playedAt >= recent14dCutoff && it.videoId.isNotBlank() }
+            val effectiveEntries = if (recentEntries.size >= 3) recentEntries else history.take(30)
+            val signalMap = signals.associateBy { it.videoId }
+
+            val recentCalculated = effectiveEntries
+                .groupBy { it.videoId }
+                .map { (vId, entries) ->
+                    val first = entries.first()
+                    val sig = signalMap[vId]
+                    RecentTrackInfo(
+                        videoId = vId,
+                        title = first.title.ifBlank { sig?.title ?: "Unknown Title" },
+                        author = first.author.ifBlank { sig?.author ?: "Unknown Artist" },
+                        durationText = first.durationText.ifBlank { sig?.durationText ?: "" },
+                        recentPlayCount = entries.size,
+                        isLiked = sig?.isLiked ?: false
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<RecentTrackInfo> { it.recentPlayCount }
+                        .thenByDescending { if (it.isLiked) 1 else 0 }
+                )
+                .take(5)
+
+            recentTopSongs = if (recentCalculated.isNotEmpty()) {
+                recentCalculated
+            } else {
+                signals
+                    .filter { it.playCount > 0 }
+                    .sortedByDescending { it.lastPlayedAt }
+                    .take(5)
+                    .map {
+                        RecentTrackInfo(
+                            videoId = it.videoId,
+                            title = it.title,
+                            author = it.author,
+                            durationText = it.durationText,
+                            recentPlayCount = it.playCount,
+                            isLiked = it.isLiked
+                        )
+                    }
+            }
+
+            // 2. Calculate Songs That Shaped Your Taste (All-time foundational anchor tracks)
             topSongs = signals
-                .filter { it.playCount > 0 || it.completeCount > 0 || it.repeatCount > 0 }
-                .sortedByDescending { it.playCount + it.completeCount + it.repeatCount * 2 + if (it.isLiked) 3 else 0 }
+                .filter { it.playCount > 0 || it.completeCount > 0 || it.repeatCount > 0 || it.isLiked }
+                .sortedByDescending {
+                    (if (it.isLiked) 15 else 0) +
+                    (it.repeatCount * 5) +
+                    (it.completeCount * 3) +
+                    (it.playCount * 2) -
+                    (it.skipCount * 2)
+                }
                 .take(5)
         } catch (e: Exception) {
             android.util.Log.e("MusicDnaScreen", "Failed to load DNA stats: ${e.message}")
@@ -75,10 +149,19 @@ fun MusicDnaScreen(
             isLoading = false
         }
 
-        // Enrich in the background for a future visit; the screen is already
-        // usable even if this takes time or is cancelled.
-        scope.launch(Dispatchers.IO) {
-            runCatching { withTimeoutOrNull(8_000L) { vm.tasteProfileManager.calculateTasteProfile() } }
+        // Background accurate Spotify enrichment: once calculated, silently re-query and update UI
+        withContext(Dispatchers.IO) {
+            runCatching {
+                vm.tasteProfileManager.calculateTasteProfile()
+                val updatedSignals = db.interactionSignalDao().getAll()
+                val updatedHistory = db.historyDao().getAllHistory()
+                val updatedComparison = MusicDnaInsights.build(updatedSignals, recentHistory = updatedHistory)
+                if (updatedComparison != null) {
+                    withContext(Dispatchers.Main) {
+                        comparison = updatedComparison
+                    }
+                }
+            }
         }
     }
 
@@ -311,30 +394,63 @@ fun MusicDnaScreen(
                         }
                     }
 
-                    // SECTION 5: SONGS THAT SHAPED YOUR TASTE
-                    if (topSongs.isNotEmpty()) {
+                    // SECTION 5: CURRENTLY ON REPEAT (RECENT LISTENING)
+                    if (recentTopSongs.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Songs That Shaped Your Taste", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        "Currently On Repeat",
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.Primary
+                                    )
+                                    Text(
+                                        "What you've been playing most in the last 14 days",
+                                        fontSize = 12.sp,
+                                        color = VinColors.Secondary
+                                    )
+                                }
+                                Icon(
+                                    Icons.Default.Repeat,
+                                    contentDescription = null,
+                                    tint = VinColors.Accent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
 
-                            topSongs.forEachIndexed { index, song ->
-
+                            recentTopSongs.forEachIndexed { index, song ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(16.dp))
                                         .background(VinColors.White10)
+                                        .clickable {
+                                            vm.playSong(
+                                                VideoItem(
+                                                    videoId = song.videoId,
+                                                    title = song.title,
+                                                    author = song.author,
+                                                    durationText = song.durationText
+                                                )
+                                            )
+                                        }
                                         .padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Box(
                                         modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(
-                                                when (index) {
-                                                    0 -> VinColors.Accent.copy(alpha = 0.25f)
-                                                    1 -> VinColors.AccentLight.copy(alpha = 0.25f)
-                                                    2 -> Color(0xFF8C7355).copy(alpha = 0.25f)
-                                                    else -> VinColors.White20
-                                                }
-                                            ),
+                                            when (index) {
+                                                0 -> VinColors.Accent.copy(alpha = 0.25f)
+                                                1 -> VinColors.AccentLight.copy(alpha = 0.25f)
+                                                2 -> Color(0xFF8C7355).copy(alpha = 0.25f)
+                                                else -> VinColors.White20
+                                            }
+                                        ),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
@@ -371,7 +487,106 @@ fun MusicDnaScreen(
                                     }
 
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text("${song.playCount} plays", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = VinColors.AccentLight)
+                                    val countText = if (song.recentPlayCount == 1) "1 recent play" else "${song.recentPlayCount} recent plays"
+                                    Text(
+                                        countText,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.AccentLight
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // SECTION 6: SONGS THAT SHAPED YOUR TASTE
+                    if (topSongs.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Column {
+                                Text(
+                                    "Songs That Shaped Your Taste",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = VinColors.Primary
+                                )
+                                Text(
+                                    "All-time anchor tracks defining your core DNA",
+                                    fontSize = 12.sp,
+                                    color = VinColors.Secondary
+                                )
+                            }
+
+                            topSongs.forEachIndexed { index, song ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(VinColors.White10)
+                                        .clickable {
+                                            vm.playSong(
+                                                VideoItem(
+                                                    videoId = song.videoId,
+                                                    title = song.title,
+                                                    author = song.author,
+                                                    durationText = song.durationText
+                                                )
+                                            )
+                                        }
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(
+                                            when (index) {
+                                                0 -> VinColors.Accent.copy(alpha = 0.25f)
+                                                1 -> VinColors.AccentLight.copy(alpha = 0.25f)
+                                                2 -> Color(0xFF8C7355).copy(alpha = 0.25f)
+                                                else -> VinColors.White20
+                                            }
+                                        ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = (index + 1).toString(),
+                                            fontWeight = FontWeight.Bold,
+                                            color = when (index) {
+                                                0 -> VinColors.Accent
+                                                1 -> VinColors.AccentLight
+                                                2 -> Color(0xFF8C7355)
+                                                else -> VinColors.Primary
+                                            },
+                                            fontSize = 14.sp
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(16.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = song.title,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = VinColors.Primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = song.author,
+                                            fontSize = 12.sp,
+                                            color = VinColors.Secondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    val countText = if (song.playCount == 1) "1 play" else "${song.playCount} plays"
+                                    Text(
+                                        countText,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.AccentLight
+                                    )
                                 }
                             }
                         }

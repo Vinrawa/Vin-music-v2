@@ -143,6 +143,7 @@ object PlayerSingleton {
     var storedSpeed by mutableFloatStateOf(1.0f)
     var storedPitch by mutableFloatStateOf(1.0f)
 
+    val audiophileDspAudioProcessor = AudiophileDspAudioProcessor()
     val eightDAudioProcessor = EightDAudioProcessor()
     val audioFeatureProcessor = AudioFeatureProcessor()
     var is8dEnabled by mutableStateOf(false)
@@ -414,10 +415,10 @@ object PlayerSingleton {
                 var nextSong = queue[nextIndex]
                 
                 // Lazy Queue Extension: When user is within 5 songs of queue end, dynamically fetch and append 10 more recommendations
-                if (queue.size - queueIndex <= 5 && !repeat && smartAutoplayEnabled && !isExtendingQueue) {
+                if (queue.size > 1 && queue.size - queueIndex <= 5 && !repeat && smartAutoplayEnabled && !isExtendingQueue && !isAutoplayLoading) {
                     isExtendingQueue = true
                     try {
-                        val seedSong = currentSong ?: queue[queueIndex]
+                        val seedSong = queue.lastOrNull() ?: currentSong ?: queue[queueIndex]
                         Log.d(TAG, "Lazy queue expansion triggered (queue size=${queue.size}, index=$queueIndex) for seed=${seedSong.videoId}")
                         val currentQueueCopy = queue.toList()
                         val recommended = withContext(Dispatchers.IO) {
@@ -634,13 +635,24 @@ object PlayerSingleton {
                 enableAudioTrackPlaybackParams: Boolean
             ): androidx.media3.exoplayer.audio.AudioSink? {
                 return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                    .setAudioProcessors(arrayOf(eightDAudioProcessor, audioFeatureProcessor))
+                    .setAudioProcessors(arrayOf(audiophileDspAudioProcessor, eightDAudioProcessor, audioFeatureProcessor))
                     .build()
             }
         }
 
+        val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 45_000,
+                /* bufferForPlaybackMs = */ 800,
+                /* bufferForPlaybackAfterRebufferMs = */ 1_500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
         return ExoPlayer.Builder(ctx, renderersFactory)
             .setLooper(android.os.Looper.getMainLooper())
+            .setLoadControl(loadControl)
             .setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(dataSourceFactory))
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -1140,6 +1152,36 @@ object PlayerSingleton {
         Log.d(TAG, "Queue reorder: moved '${movedItem.title}' from ${fromIndex + 1} to ${toIndex + 1}")
     }
 
+    fun removeQueueItem(index: Int) {
+        if (index !in queue.indices) return
+        val currentQueue = queue.toMutableList()
+        val removed = currentQueue.removeAt(index)
+        
+        // If removing the currently playing song:
+        if (index == queueIndex) {
+            queue = currentQueue
+            if (currentQueue.isEmpty()) {
+                currentSong = null
+                _player?.stop()
+                queueIndex = 0
+            } else {
+                queueIndex = index.coerceIn(0, currentQueue.size - 1)
+                playSong(currentQueue[queueIndex])
+            }
+        } else {
+            // Adjust queueIndex if the item was before the current playing song
+            val currentVideoId = currentSong?.videoId
+            queue = currentQueue
+            if (currentVideoId != null) {
+                val newIdx = currentQueue.indexOfFirst { it.videoId == currentVideoId }
+                if (newIdx >= 0) queueIndex = newIdx
+            } else if (index < queueIndex) {
+                queueIndex = (queueIndex - 1).coerceAtLeast(0)
+            }
+        }
+        Log.d(TAG, "Queue item removed: '${removed.title}' at index $index, new queue size=${queue.size}")
+    }
+
     fun playNext() {
         if (queue.isEmpty()) return
         
@@ -1388,6 +1430,8 @@ object PlayerSingleton {
         val database = db ?: return@withContext emptyList()
         val existingIds = queue.map { it.videoId }.toSet()
         val fallback = mutableListOf<VideoItem>()
+        val seedSong = currentSong ?: queue.getOrNull(queueIndex)
+        val seedMeta = seedSong?.let { com.vinmusic.recommendation.RecommendationManager.inferMetadata(it) }
 
         // 1. Most played songs from interaction signals
         try {
@@ -1395,8 +1439,12 @@ object PlayerSingleton {
                 .sortedByDescending { it.playCount }
             for (sig in signals) {
                 if (sig.videoId !in existingIds && fallback.none { it.videoId == sig.videoId }) {
-                    fallback.add(buildFallbackItem(sig.videoId, sig.title, sig.author, sig.durationText))
-                    if (fallback.size >= 20) break
+                    val item = buildFallbackItem(sig.videoId, sig.title, sig.author, sig.durationText)
+                    val meta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(item)
+                    if (meta.isOfficial && (seedMeta == null || com.vinmusic.recommendation.RecommendationManager.isCompatibleQueueLanguage(meta.language, seedMeta.language, allowUnknown = false))) {
+                        fallback.add(item)
+                        if (fallback.size >= 20) break
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -1410,8 +1458,12 @@ object PlayerSingleton {
                 val history = database.historyDao().getAllHistory()
                 for (entry in history) {
                     if (entry.videoId !in seenIds && fallback.none { it.videoId == entry.videoId }) {
-                        fallback.add(buildFallbackItem(entry.videoId, entry.title, entry.author, entry.durationText))
-                        if (fallback.size >= 20) break
+                        val item = buildFallbackItem(entry.videoId, entry.title, entry.author, entry.durationText)
+                        val meta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(item)
+                        if (meta.isOfficial && (seedMeta == null || com.vinmusic.recommendation.RecommendationManager.isCompatibleQueueLanguage(meta.language, seedMeta.language, allowUnknown = false))) {
+                            fallback.add(item)
+                            if (fallback.size >= 20) break
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1419,7 +1471,16 @@ object PlayerSingleton {
             }
         }
 
-        fallback.shuffled()
+        if (seedMeta != null) {
+            fallback.sortedWith(compareByDescending<VideoItem> { item ->
+                val meta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(item)
+                val sameGenre = if (meta.genre == seedMeta.genre) 0.5f else 0.0f
+                val energyDist = 1.0f - Math.abs(meta.energy - seedMeta.energy).toFloat()
+                sameGenre + energyDist * 0.5f
+            })
+        } else {
+            fallback
+        }
     }
 
     /** Rebuild playable items for queue fallbacks — history/signals store bare
@@ -1466,17 +1527,20 @@ object PlayerSingleton {
             val sig = database.interactionSignalDao().get(song.videoId)
             if (sig != null) {
                 sig.isLiked = nextLiked
+                if (sig.energy <= 0) {
+                    com.vinmusic.recommendation.MusicDnaInsights.enrichSignalIfNeeded(sig)
+                }
                 database.interactionSignalDao().insert(sig)
             } else {
-                database.interactionSignalDao().insert(
-                    InteractionSignal(
-                        videoId = song.videoId,
-                        title = song.title,
-                        author = song.author,
-                        durationText = song.durationText,
-                        isLiked = nextLiked
-                    )
+                val newSig = InteractionSignal(
+                    videoId = song.videoId,
+                    title = song.title,
+                    author = song.author,
+                    durationText = song.durationText,
+                    isLiked = nextLiked
                 )
+                com.vinmusic.recommendation.MusicDnaInsights.enrichSignalIfNeeded(newSig)
+                database.interactionSignalDao().insert(newSig)
             }
             val songKey = com.vinmusic.recommendation.RecommendationManager.generateSongKey(song.author, song.title)
             val realCache = database.songFeatureCacheDao().get(songKey)
@@ -1522,6 +1586,9 @@ object PlayerSingleton {
                 author = song.author,
                 durationText = song.durationText
             )
+            if (signal.energy <= 0) {
+                com.vinmusic.recommendation.MusicDnaInsights.enrichSignalIfNeeded(signal)
+            }
             signal.playCount += 1
             signal.lastPlayedAt = System.currentTimeMillis()
             if (previousSongId == song.videoId) {

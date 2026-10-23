@@ -916,7 +916,7 @@ fun SettingsScreen(
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
             SettingsToggle(
                 title = "Crossfade", 
-                subtitle = "Smooth transition between songs", 
+                subtitle = "DJ beat-matched & equal-power transition between songs", 
                 checked = crossfade, 
                 onChanged = { 
                     crossfade = it 

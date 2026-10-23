@@ -1,8 +1,8 @@
 {
-  "latestVersionCode": 23,
-  "latestVersionName": "2.3.0",
+  "latestVersionCode": 24,
+  "latestVersionName": "2.3.1",
   "apkUrl": "https://vinrawa.github.io/Vin-music-v2/vinmusic.apk",
-  "sha256": "c4b62885412949eaefeb1907b84bdcfa6a6ccff6399feb0f3b7003b41072fd52",
+  "sha256": "4afefd824150930f918aff8a4eb61253656b86f34b61d9bc2e8e72b941b66754",
   "forceUpdate": false,
-  "releaseNotes": "Downloads item layout fixes (sanitized multi-line strings, aligned song rows), VisionOS stream resolver botguard bypass, background playback stabilization with low-latency WiFi and transition wakelocks."
+  "releaseNotes": "Tactile hardware haptics engine, redesigned grouped Apple-style credits panel, redesigned professional equalizer with live dB readouts & DSP sliders, standardized home shelf card dimensions, and deduplicated recommendations."
 }

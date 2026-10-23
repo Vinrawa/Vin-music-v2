@@ -21,6 +21,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.*
 import coil3.compose.AsyncImage
 import com.vinmusic.innertube.VideoItem
@@ -37,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalContext
 import com.vinmusic.ui.utils.ColorExtractor
+import com.vinmusic.ui.utils.HapticHelper
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
 
@@ -422,6 +425,8 @@ fun SongListItem(
         authorLower.contains("vevo")
     }
 
+    val context = LocalContext.current
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -441,7 +446,10 @@ fun SongListItem(
             .clickable(
                 interactionSource = interactionSource,
                 indication = LocalIndication.current
-            ) { onClick() }
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
     ) {
         Row(
             modifier = Modifier
@@ -544,40 +552,57 @@ fun TrackCard(song: VideoItem, onClick: () -> Unit) {
         ),
         label = "track_card_scale"
     )
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
-            .width(160.dp)
+            .width(140.dp)
             .graphicsLayer(scaleX = scale, scaleY = scale)
-            .glassCard(cornerRadius = 20.dp)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null
-            ) { onClick() }
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
     ) {
         Box(
             modifier = Modifier
                 .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
                 .shimmerEffect()
         ) {
             AsyncImage(
-                model = song.thumbnail, contentDescription = null,
+                model = song.thumbnail,
+                contentDescription = null,
                 placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
                 error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
-                modifier = Modifier.fillMaxSize().scale(1.35f), contentScale = ContentScale.Crop
+                modifier = Modifier.fillMaxSize().scale(1.35f),
+                contentScale = ContentScale.Crop
             )
-            Box(modifier = Modifier.fillMaxSize().background(
-                Brush.verticalGradient(listOf(Color.Transparent, Color(0x60000000)))
-            ))
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f)))
+                )
+            )
         }
-        Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            style = Vin.Text.cardTitle)
-        Text(song.author, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            style = Vin.Text.cardSubtitle)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            song.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardTitleSmall
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            song.author,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardSubtitle
+        )
     }
 }
 
