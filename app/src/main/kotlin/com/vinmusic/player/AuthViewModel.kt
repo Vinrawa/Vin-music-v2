@@ -181,14 +181,14 @@ class AuthViewModel @Inject constructor(
             return
         }
         syncState = SyncState.Syncing
-        lastSyncMessage = "Backing up liked songs and playlists..."
+        lastSyncMessage = "Backing up playlists, likes & downloads..."
         com.vinmusic.analytics.AnalyticsHelper.logCloudBackupInitiated(getApplication())
         
         viewModelScope.launch {
             val result = syncManager.backupLocalDataToCloud()
             if (result.isSuccess) {
                 syncState = SyncState.Success
-                lastSyncMessage = "Successfully backed up data!"
+                lastSyncMessage = "Successfully backed up data to cloud!"
                 com.vinmusic.analytics.AnalyticsHelper.logCloudBackupSuccess(getApplication())
             } else {
                 val errorMsg = result.exceptionOrNull()?.message ?: "Backup failed"
@@ -215,7 +215,7 @@ class AuthViewModel @Inject constructor(
             val result = syncManager.restoreDataFromCloud()
             if (result.isSuccess) {
                 syncState = SyncState.Success
-                lastSyncMessage = "Data successfully restored and merged!"
+                lastSyncMessage = "Successfully restored playlists, likes & downloads!"
                 com.vinmusic.analytics.AnalyticsHelper.logCloudRestoreSuccess(getApplication())
             } else {
                 val errorMsg = result.exceptionOrNull()?.message ?: "Restore failed"

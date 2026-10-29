@@ -372,6 +372,7 @@ class RecommendationRepository @Inject constructor(
 
     /** Cache related tracks after playback (feeds quick picks over time). */
     suspend fun cacheRelatedForSong(videoId: String) = withContext(Dispatchers.IO) {
+        if (videoId.startsWith("sc:")) return@withContext
         if (db.relatedSongDao().hasRelated(videoId)) return@withContext
         val related = fetchYtRelatedForSeed(videoId) ?: return@withContext
         if (related.isEmpty()) return@withContext
@@ -462,7 +463,7 @@ class RecommendationRepository @Inject constructor(
     }
 
     private suspend fun fetchYtRelatedForSeed(videoId: String): List<VideoItem>? {
-        val next = YTMusicApi.getNextRelated(videoId, playlistId = "RDAMVM$videoId")
+        val next = YTMusicApi.getNextRelated(videoId)
         val browse = next.relatedBrowse ?: return null
         val raw = YTMusicApi.getRelatedSongs(browse.browseId, browse.params)
         return if (raw.isNotEmpty()) raw else null
@@ -612,11 +613,8 @@ class RecommendationRepository @Inject constructor(
 
         Log.d(TAG, "Generating live related songs for $videoId...")
 
-        // 1. Metrolist: next → related browse (official YT Music related tab)
+        // 1. Metrolist: next → related browse (official YT Music related tab, no RDAMVM automix drift)
         var pool = fetchYtRelatedForSeed(videoId).orEmpty()
-
-        // 2. InnerTube watch-next radio
-        if (pool.isEmpty()) pool = InnerTube.getWatchNextRadio(videoId)
 
         // 3. TasteDNA query search fallback
         val historyEntry = db.historyDao().getAllHistory().firstOrNull { it.videoId == videoId }
@@ -820,16 +818,14 @@ class RecommendationRepository @Inject constructor(
             Log.d(TAG, "Device ONLINE. Executing 4-Angle Candidate Generation Pipeline in parallel.")
 
             coroutineScope {
-                // Angle 1: YouTube Music Related + Watch Next Radio (expanded candidate pool)
+                // Angle 1: YouTube Music Genuine Related (from MPTR endpoint, no RDAMVM automix drift)
                 val ytJob = async {
                     val list = mutableListOf<VideoItem>()
                     try {
                         val related = fetchYtRelatedForSeed(videoId).orEmpty()
                         list.addAll(related.take(25))
-                        val radioTracks = InnerTube.getWatchNextRadio(videoId)
-                        list.addAll(radioTracks.take(20))
                     } catch (e: Exception) {
-                        Log.w(TAG, "Angle 1 (YTM) error: ${e.message}")
+                        Log.w(TAG, "Angle 1 (YTM Related) error: ${e.message}")
                     }
                     list
                 }
@@ -1184,7 +1180,7 @@ class RecommendationRepository @Inject constructor(
             val peerBonus = if (sessionCentroid.peerArtists.any { normalizeQueueArtist(it) == normalizeQueueArtist(item.author) }) {
                 0.25
             } else 0.0
-            val baseScore = seedSimilarity * 0.45 + tasteScore * 0.25 + behavior * 0.10 + depthBonus + peerBonus +
+            val baseScore = seedSimilarity * 0.70 + tasteScore * 0.12 + behavior * 0.08 + depthBonus + peerBonus +
                 recentPenalty + currentQueuePenalty + fatiguePenalty + artistFatiguePenalty + officialBonus
             SmartQueueCandidate(item, meta, seedSimilarity, tasteScore, behavior, recentPenalty, baseScore)
         }
@@ -1197,25 +1193,25 @@ class RecommendationRepository @Inject constructor(
         var artistCapRemoved = 0
 
         fun positionScore(candidate: SmartQueueCandidate, position: Int): Double {
-            // Close continuity first, then gradually hand more weight to the
-            // user's taste and controlled discovery.
+            // Seed similarity strictly dominates throughout the entire queue
+            // so the seed song's acoustic vibe (tempo, energy, genre) is preserved.
             val seedWeight = when {
-                position < 3 -> 0.64
-                position < 7 -> 0.48
-                else -> 0.34
+                position < 4 -> 0.75
+                position < 9 -> 0.70
+                else -> 0.65
             }
             val tasteWeight = when {
-                position < 3 -> 0.20
-                position < 7 -> 0.32
-                else -> 0.44
+                position < 4 -> 0.10
+                position < 9 -> 0.14
+                else -> 0.16
             }
             val discoveryBonus = if (position >= 7 &&
                 !RecommendationManager.isSimilarArtist(seedAuthor, candidate.item.author) &&
                 normalizeQueueArtist(candidate.item.author) != seedAuthorLower) 0.035 else 0.0
             return candidate.seedSimilarity * seedWeight +
                 candidate.tasteScore * tasteWeight +
-                candidate.behaviorScore * 0.12 +
-                candidate.baseScore * 0.08 + discoveryBonus
+                candidate.behaviorScore * 0.08 +
+                candidate.baseScore * 0.07 + discoveryBonus
         }
 
         // Pass 1: Strict spacing, artist caps, and Multi-Armed Bandit (80/20 Explore vs Exploit)
@@ -1362,31 +1358,9 @@ class RecommendationRepository @Inject constructor(
             }
         }
 
-        // Fallback 1: if the online/offline pool is empty, use history/liked songs
-        if (sequenced.isEmpty()) {
-            Log.d(TAG, "Pool empty, falling back to history/liked songs.")
-            val fallback = mutableListOf<VideoItem>()
-            fallback.addAll(history.take(30).map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
-            fallback.addAll(db.likedSongDao().getAll().take(30).map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
-            val filtered = fallback
-                .filter { it.videoId != videoId }
-                .distinctBy { "${RecommendationManager.normalizeTitle(it.title)}|${normalizeQueueArtist(it.author)}" }
-                .map { it to RecommendationManager.getCachedOrInferredMetadata(db, it, context) }
-                .filter { (item, meta) ->
-                    meta.isOfficial &&
-                    RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = false) &&
-                    !RecommendationManager.isThematicallyContradictory(item.title, item.author, meta.genre, sessionCentroid)
-                }
-                .sortedWith(compareByDescending<Pair<VideoItem, SongMetadata>> {
-                    RecommendationManager.calculateTasteSimilarity(it.second, profile.tasteDNA)
-                }.thenBy { RecommendationManager.normalizeTitle(it.first.title) })
-                .map { it.first }
-            sequenced.addAll(filtered.take(15))
-        }
-
-        // Fallback 2 (Emergency): Direct search for seed artist / title with strict language and artist checks
-        if (sequenced.isEmpty()) {
-            Log.d(TAG, "SmartQueue: Still empty, executing emergency direct search...")
+        // Fallback 1: Direct search for seed artist / title with strict language and artist checks
+        if (sequenced.isEmpty() && online) {
+            Log.d(TAG, "SmartQueue: Candidate pool empty, executing seed-aware direct search fallback...")
             try {
                 val isRegional = queueLanguage in listOf("Regional Indian", "Garhwali/Pahari") || seedMeta?.genre == "Regional Folk"
                 val query = when {
@@ -1420,6 +1394,29 @@ class RecommendationRepository @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Emergency search failed: ${e.message}")
             }
+        }
+
+        // Fallback 2: If still empty (e.g. offline or search blocked), use history/liked songs matching seed genre
+        if (sequenced.isEmpty()) {
+            Log.d(TAG, "SmartQueue: Still empty, falling back to genre-matched history/liked songs.")
+            val fallback = mutableListOf<VideoItem>()
+            fallback.addAll(history.take(30).map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
+            fallback.addAll(db.likedSongDao().getAll().take(30).map { VideoItem(it.videoId, it.title, it.author, it.durationText) })
+            val filtered = fallback
+                .filter { it.videoId != videoId }
+                .distinctBy { "${RecommendationManager.normalizeTitle(it.title)}|${normalizeQueueArtist(it.author)}" }
+                .map { it to RecommendationManager.getCachedOrInferredMetadata(db, it, context) }
+                .filter { (item, meta) ->
+                    meta.isOfficial &&
+                    RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = false) &&
+                    !RecommendationManager.isThematicallyContradictory(item.title, item.author, meta.genre, sessionCentroid) &&
+                    (seedMeta == null || meta.genre.equals(seedMeta.genre, ignoreCase = true) || RecommendationManager.isSimilarArtist(seedAuthor, item.author))
+                }
+                .sortedWith(compareByDescending<Pair<VideoItem, SongMetadata>> {
+                    RecommendationManager.calculateTasteSimilarity(it.second, profile.tasteDNA)
+                }.thenBy { RecommendationManager.normalizeTitle(it.first.title) })
+                .map { it.first }
+            sequenced.addAll(filtered.take(15))
         }
 
         Log.d(

@@ -105,6 +105,20 @@ class FirebaseSyncManager @Inject constructor(
                 )
             }
 
+            // 4. Fetch local completed downloads
+            val localDownloads = db.downloadDao().getAll().filter { it.status == "completed" }
+            val downloadWrites = localDownloads.filter { it.videoId.isNotBlank() }.map { dl ->
+                userDocRef(uid).collection("downloadedTracks").document(dl.videoId) to mapOf(
+                    "videoId" to dl.videoId,
+                    "title" to dl.title,
+                    "author" to dl.author,
+                    "durationText" to dl.durationText,
+                    "thumbnailUrl" to (dl.thumbnailUrl ?: ""),
+                    "sizeBytes" to dl.sizeBytes,
+                    "downloadedAt" to dl.downloadedAt
+                )
+            }
+
             // Keep the user document tiny; each growing data type lives in its
             // own collection instead of eventually exceeding Firestore's 1 MiB
             // document limit.
@@ -113,6 +127,7 @@ class FirebaseSyncManager @Inject constructor(
             writeInBatches(likedWrites)
             writeInBatches(artistWrites)
             writeInBatches(playlistWrites)
+            writeInBatches(downloadWrites)
             deleteInBatches(
                 userDocRef.collection("likedSongs").get().await().documents
                     .filter { it.id !in likedWrites.map { write -> write.first.id }.toSet() }
@@ -121,6 +136,11 @@ class FirebaseSyncManager @Inject constructor(
             deleteInBatches(
                 userDocRef.collection("followedArtists").get().await().documents
                     .filter { it.id !in artistWrites.map { write -> write.first.id }.toSet() }
+                    .map { it.reference }
+            )
+            deleteInBatches(
+                userDocRef.collection("downloadedTracks").get().await().documents
+                    .filter { it.id !in downloadWrites.map { write -> write.first.id }.toSet() }
                     .map { it.reference }
             )
             val currentPlaylistIds = playlistWrites.map { it.first.id }.toSet()
@@ -257,6 +277,43 @@ class FirebaseSyncManager @Inject constructor(
                 }
                 if (songsToInsert.isNotEmpty()) {
                     db.playlistDao().insertSongs(songsToInsert)
+                }
+            }
+
+            // 4. Restore Downloaded Tracks list
+            val storedDownloads = userDocRef.collection("downloadedTracks").get().await()
+                .documents.mapNotNull { it.data }
+            val cloudDownloads = storedDownloads.ifEmpty {
+                @Suppress("UNCHECKED_CAST")
+                snapshot.get("downloadedTracks") as? List<Map<String, Any>> ?: emptyList()
+            }
+            cloudDownloads.forEach { map ->
+                val videoId = map["videoId"] as? String ?: return@forEach
+                val title = map["title"] as? String ?: ""
+                val author = map["author"] as? String ?: ""
+                val durationText = map["durationText"] as? String ?: ""
+                val thumbnailUrl = map["thumbnailUrl"] as? String ?: ""
+                val sizeBytes = (map["sizeBytes"] as? Number)?.toLong() ?: 0L
+                val downloadedAt = (map["downloadedAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
+
+                val existing = db.downloadDao().get(videoId)
+                val fileExists = existing?.filePath?.isNotBlank() == true && java.io.File(existing.filePath).exists()
+
+                if (existing == null || (!fileExists && existing.status != "downloading")) {
+                    db.downloadDao().insert(
+                        DownloadEntity(
+                            videoId = videoId,
+                            title = title,
+                            author = author,
+                            durationText = durationText,
+                            filePath = existing?.filePath ?: "",
+                            sizeBytes = sizeBytes,
+                            downloadedAt = downloadedAt,
+                            status = if (fileExists) "completed" else "queued",
+                            progress = 0,
+                            thumbnailUrl = thumbnailUrl
+                        )
+                    )
                 }
             }
 

@@ -765,7 +765,7 @@ fun SettingsScreen(
                         )
                         Text(
                             text = if (cloudConnected) "Backup linked to ${currentUser?.email ?: "Google account"}"
-                                   else "Tap Connect to backup your playlists & likes",
+                                   else "Tap Connect to backup your playlists, likes & downloads",
                             fontSize = 12.sp,
                             color = VinColors.Secondary,
                             lineHeight = 16.sp
@@ -948,7 +948,7 @@ fun SettingsScreen(
             SettingsDropdown(
                 title = "Streaming Quality", 
                 current = streamingQuality, 
-                options = listOf("Low (96kbps)", "Normal (160kbps)", "High (256kbps)", "Ultra (320kbps)")
+                options = listOf("Low (96kbps)", "Normal (160kbps)", "High (256kbps)", "Ultra (320kbps)", "Opus High (160kbps)")
             ) {
                 streamingQuality = it
                 prefs.edit().putString("streaming_quality", it).apply()

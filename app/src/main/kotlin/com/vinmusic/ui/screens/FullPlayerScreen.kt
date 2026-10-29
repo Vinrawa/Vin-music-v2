@@ -36,8 +36,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
-import androidx.compose.ui.unit.*
 import androidx.media3.common.util.UnstableApi
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.vinmusic.data.SampleFinder
+import com.vinmusic.data.SampleResult
+import com.vinmusic.data.SampleItem
 import coil3.compose.AsyncImage
 import com.vinmusic.innertube.VideoItem
 import com.vinmusic.innertube.InnerTube
@@ -91,6 +95,30 @@ fun FullPlayerScreen(
         }
     }
     
+    var highResCoverUrl by remember(song.videoId) {
+        mutableStateOf(com.vinmusic.data.HighResArtHelper.getArtwork(song.videoId))
+    }
+
+    LaunchedEffect(song.videoId) {
+        if (!song.videoId.startsWith("sc:")) {
+            val cached = com.vinmusic.data.HighResArtHelper.getArtwork(song.videoId)
+            if (cached != null) {
+                highResCoverUrl = cached
+            } else {
+                withContext(Dispatchers.IO) {
+                    val resolved = com.vinmusic.data.HighResArtHelper.fetchArtwork(song.videoId, song.title, song.author)
+                    if (resolved != null) {
+                        withContext(Dispatchers.Main) {
+                            highResCoverUrl = resolved
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val activeArtUrl = highResCoverUrl ?: song.thumbnailHd
+
     // Dynamic Color Harmonization Palette State
     var currentPalette by remember(song.videoId) {
         mutableStateOf(
@@ -103,9 +131,9 @@ fun FullPlayerScreen(
         )
     }
 
-    LaunchedEffect(song.thumbnailHd) {
+    LaunchedEffect(activeArtUrl) {
         try {
-            val extracted = ColorExtractor.extractColorsFromUrl(ctx, song.thumbnailHd)
+            val extracted = ColorExtractor.extractColorsFromUrl(ctx, activeArtUrl)
             currentPalette = extracted
         } catch (_: Exception) {
             try {
@@ -132,15 +160,11 @@ fun FullPlayerScreen(
         label = "animatedAccent"
     )
     
-    // DJ Scratching & Visualizer Customization States
+    // DJ Mode & Visualizer Customization States
     var isDjMode by remember { mutableStateOf(false) }
     var visualizerStyle by remember { mutableStateOf("Waveform Ripple") }
     var toastMessage by remember { mutableStateOf("") }
     var toastTrigger by remember { mutableStateOf(false) }
-    var scratchAngleOffset by remember { mutableFloatStateOf(0f) }
-    var isScratching by remember { mutableStateOf(false) }
-    var lastAngle by remember { mutableFloatStateOf(0f) }
-    var wasPlayingBeforeScratch by remember { mutableStateOf(false) }
 
 
     val particles = remember {
@@ -210,7 +234,10 @@ fun FullPlayerScreen(
     }
 
     var dragY by remember { mutableFloatStateOf(0f) }
-    var swipeX by remember { mutableFloatStateOf(0f) }
+    var discDragX by remember { mutableFloatStateOf(0f) }
+    val discAnimOffset = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
+    var isDiscDragging by remember { mutableStateOf(false) }
 
     // Pulsating animations only run when music is actually playing (saves CPU when paused/loading)
     val pulsatingAlpha = animateFloatAsState(
@@ -231,7 +258,7 @@ fun FullPlayerScreen(
     ) {
         // ── 1. Album Art as crisp background ──
         AsyncImage(
-            model = song.thumbnailHd,
+            model = activeArtUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
@@ -570,9 +597,9 @@ fun FullPlayerScreen(
                     } // end if(isActuallyPlaying) for visualizer Canvas
                 }
 
-                // Master Circular Disc with swipe-to-skip or DJ scratch support
-                val sizePx = with(density) { 280.dp.toPx() }
-                val discCenter = Offset(sizePx / 2, sizePx / 2)
+                // Master Circular Disc with smooth, glitch-free swipe gesture
+                val thresholdPx = with(density) { 65.dp.toPx() }
+
                 Box(
                     modifier = Modifier
                         .size(280.dp)
@@ -580,16 +607,59 @@ fun FullPlayerScreen(
                         .clip(CircleShape)
                         .border(1.5.dp, Color.White.copy(alpha = 0.15f), CircleShape)
                         .graphicsLayer {
-                            rotationZ = rotation.value + scratchAngleOffset
-                            translationX = swipeX * 0.08f
+                            val currentX = if (isDiscDragging) discDragX else discAnimOffset.value
+                            translationX = currentX
+                            rotationZ = rotation.value + (currentX / 22f).coerceIn(-10f, 10f)
+                            alpha = (1f - (kotlin.math.abs(currentX) / 360f)).coerceIn(0.65f, 1f)
                         }
                         .pointerInput(Unit) {
                             detectHorizontalDragGestures(
-                                onDragEnd = {
-                                    when { swipeX < -80f -> vm.playNext(); swipeX > 80f -> vm.playPrev() }
-                                    swipeX = 0f
+                                onDragStart = {
+                                    isDiscDragging = true
+                                    swipeScope.launch { discAnimOffset.stop() }
                                 },
-                                onHorizontalDrag = { c, amt -> c.consume(); swipeX += amt }
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    // Smoothly track finger with natural bound limits
+                                    discDragX = (discDragX + dragAmount * 0.85f).coerceIn(-150f, 150f)
+                                },
+                                onDragEnd = {
+                                    isDiscDragging = false
+                                    val finalX = discDragX
+                                    discDragX = 0f
+                                    swipeScope.launch {
+                                        discAnimOffset.snapTo(finalX)
+                                        if (finalX < -thresholdPx) {
+                                            HapticHelper.click(ctx)
+                                            vm.playNext()
+                                        } else if (finalX > thresholdPx) {
+                                            HapticHelper.click(ctx)
+                                            vm.playPrev()
+                                        }
+                                        discAnimOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                },
+                                onDragCancel = {
+                                    isDiscDragging = false
+                                    val finalX = discDragX
+                                    discDragX = 0f
+                                    swipeScope.launch {
+                                        discAnimOffset.snapTo(finalX)
+                                        discAnimOffset.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                }
                             )
                         }
                 ) {
@@ -607,7 +677,7 @@ fun FullPlayerScreen(
                             )
                             
                             // On top: load the HD thumbnail with shared element transition and error fallback
-                            var hdModel by remember(song.videoId) { mutableStateOf<Any>(song.thumbnailHd) }
+                            var hdModel by remember(song.videoId, activeArtUrl) { mutableStateOf<Any>(activeArtUrl) }
                             AsyncImage(
                                 model = hdModel,
                                 contentDescription = null,
@@ -620,7 +690,7 @@ fun FullPlayerScreen(
                                     .clip(CircleShape),
                                 contentScale = ContentScale.Crop,
                                 onError = {
-                                    if (hdModel == song.thumbnailHd) {
+                                    if (hdModel == activeArtUrl) {
                                         hdModel = song.thumbnail
                                     }
                                 }
@@ -1040,6 +1110,29 @@ fun FullPlayerScreen(
                 description = creditsDescription,
                 onArtistClick = onArtistNameClick,
                 onOpenCredits = { openCreditsPanel() }
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            // 5. Is There a Sample? Card
+            SampleCard(
+                song = song,
+                description = creditsDescription,
+                onPlaySample = { query ->
+                    panelScope.launch(Dispatchers.IO) {
+                        try {
+                            val results = com.vinmusic.innertube.InnerTube.search(query)
+                            val target = results.firstOrNull()
+                            if (target != null) {
+                                withContext(Dispatchers.Main) {
+                                    vm.playSong(target)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("FullPlayerScreen", "Failed to play sample: ${e.message}")
+                        }
+                    }
+                }
             )
 
             Spacer(Modifier.height(48.dp)) // Extra padding at bottom for beautiful scroll scroll space
@@ -3570,6 +3663,141 @@ private fun officialAudienceNumber(text: String): Double {
         else -> 1.0
     }
     return base * mult
+}
+
+@Composable
+fun SampleCard(
+    song: VideoItem,
+    description: String?,
+    onPlaySample: (String) -> Unit
+) {
+    var sampleResult by remember(song.videoId) { mutableStateOf<SampleResult?>(null) }
+    var isLoading by remember(song.videoId) { mutableStateOf(true) }
+
+    LaunchedEffect(song.videoId, description) {
+        isLoading = true
+        sampleResult = SampleFinder.findSamples(song, description)
+        isLoading = false
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        VinColors.Surface2,
+                        VinColors.Surface
+                    )
+                )
+            )
+            .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(24.dp))
+            .padding(20.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = VinColors.AccentLight,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = "IS THERE A SAMPLE?",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = VinColors.AccentLight,
+                    letterSpacing = 1.sp
+                )
+            }
+
+            when {
+                isLoading -> {
+                    Text(
+                        text = "Checking audio archives...",
+                        fontSize = 13.sp,
+                        color = VinColors.Secondary
+                    )
+                }
+                sampleResult is SampleResult.Found -> {
+                    val found = sampleResult as SampleResult.Found
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        found.items.forEach { sample ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(VinColors.Surface)
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = sample.type.uppercase(),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.AccentLight,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                    Spacer(Modifier.height(3.dp))
+                                    Text(
+                                        text = sample.originalTitle,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (sample.originalArtist.isNotBlank()) {
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            text = "by ${sample.originalArtist}",
+                                            fontSize = 12.sp,
+                                            color = VinColors.Secondary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.width(10.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .border(1.dp, VinColors.AccentLight.copy(alpha = 0.65f), RoundedCornerShape(20.dp))
+                                        .clickable { onPlaySample("${sample.originalTitle} ${sample.originalArtist}".trim()) }
+                                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                                ) {
+                                    Text(
+                                        text = "Play",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.AccentLight
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    Text(
+                        text = "No samples or interpolations detected for this song.",
+                        fontSize = 13.sp,
+                        color = VinColors.Secondary
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

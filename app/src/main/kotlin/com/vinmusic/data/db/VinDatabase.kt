@@ -25,6 +25,7 @@ data class HistoryEntry(
     val author:  String,
     val genre: String? = null,
     val durationText: String,
+    val thumbnailUrl: String? = null,
     val playedAt: Long = System.currentTimeMillis()
 )
 
@@ -199,6 +200,9 @@ interface HistoryDao {
 interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY downloadedAt DESC")
     fun getAllFlow(): Flow<List<DownloadEntity>>
+
+    @Query("SELECT * FROM downloads ORDER BY downloadedAt DESC")
+    suspend fun getAll(): List<DownloadEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(dl: DownloadEntity)
@@ -444,7 +448,7 @@ interface SongFeatureCacheDao {
                  InteractionSignal::class, CachedLyricsEntity::class, UserAccount::class,
                  RelatedSongMap::class, SongCacheMeta::class, FollowedArtist::class,
                  SongFeatureCache::class],
-    version   = 16,
+    version   = 17,
     exportSchema = false
 )
 abstract class VinDatabase : RoomDatabase() {
@@ -621,10 +625,16 @@ abstract class VinDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `history` ADD COLUMN `thumbnailUrl` TEXT")
+            }
+        }
+
         fun getInstance(ctx: Context): VinDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(ctx, VinDatabase::class.java, "vin_music.db")
-                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
+                    .addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                     .build().also { INSTANCE = it }
             }
     }

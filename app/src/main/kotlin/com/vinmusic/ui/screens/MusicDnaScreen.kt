@@ -43,7 +43,8 @@ data class RecentTrackInfo(
     val author: String,
     val durationText: String,
     val recentPlayCount: Int,
-    val isLiked: Boolean = false
+    val isLiked: Boolean = false,
+    val lastPlayedAt: Long = 0L
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -98,17 +99,20 @@ fun MusicDnaScreen(
                 .map { (vId, entries) ->
                     val first = entries.first()
                     val sig = signalMap[vId]
+                    val maxPlayedAt = entries.maxOfOrNull { it.playedAt } ?: (sig?.lastPlayedAt ?: 0L)
                     RecentTrackInfo(
                         videoId = vId,
                         title = first.title.ifBlank { sig?.title ?: "Unknown Title" },
                         author = first.author.ifBlank { sig?.author ?: "Unknown Artist" },
                         durationText = first.durationText.ifBlank { sig?.durationText ?: "" },
                         recentPlayCount = entries.size,
-                        isLiked = sig?.isLiked ?: false
+                        isLiked = sig?.isLiked ?: false,
+                        lastPlayedAt = maxPlayedAt
                     )
                 }
                 .sortedWith(
                     compareByDescending<RecentTrackInfo> { it.recentPlayCount }
+                        .thenByDescending { it.lastPlayedAt }
                         .thenByDescending { if (it.isLiked) 1 else 0 }
                 )
                 .take(5)
@@ -127,7 +131,8 @@ fun MusicDnaScreen(
                             author = it.author,
                             durationText = it.durationText,
                             recentPlayCount = it.playCount,
-                            isLiked = it.isLiked
+                            isLiked = it.isLiked,
+                            lastPlayedAt = it.lastPlayedAt
                         )
                     }
             }

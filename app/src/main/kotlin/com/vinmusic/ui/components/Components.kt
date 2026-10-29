@@ -43,6 +43,77 @@ import com.vinmusic.ui.utils.HapticHelper
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeEffect
 
+// ── Live Equalizer Indicator ──────────────────────────────────────────────────
+
+@Composable
+fun LiveEqualizerIndicator(
+    isPlaying: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "EqualizerAnim")
+
+    val bar1Height by transition.animateFloat(
+        initialValue = 4f,
+        targetValue = 13f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(420, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar1"
+    )
+    val bar2Height by transition.animateFloat(
+        initialValue = 13f,
+        targetValue = 5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(520, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar2"
+    )
+    val bar3Height by transition.animateFloat(
+        initialValue = 5f,
+        targetValue = 15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(380, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar3"
+    )
+
+    Row(
+        modifier = modifier.height(18.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.5.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        val h1 = if (isPlaying) bar1Height.dp else 4.dp
+        val h2 = if (isPlaying) bar2Height.dp else 4.dp
+        val h3 = if (isPlaying) bar3Height.dp else 4.dp
+
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(h1)
+                .clip(RoundedCornerShape(1.5.dp))
+                .background(color)
+        )
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(h2)
+                .clip(RoundedCornerShape(1.5.dp))
+                .background(color)
+        )
+        Box(
+            modifier = Modifier
+                .width(2.5.dp)
+                .height(h3)
+                .clip(RoundedCornerShape(1.5.dp))
+                .background(color)
+        )
+    }
+}
+
 // ── Mini Player ───────────────────────────────────────────────────────────────
 
 @OptIn(UnstableApi::class, ExperimentalSharedTransitionApi::class)
@@ -205,21 +276,36 @@ fun MiniPlayer(
                 drawPath(path3, color = dominantColor.copy(alpha = 0.5f))
             }
 
-            // Progress bar at bottom
-            LinearProgressIndicator(
-                progress = { vm.progress },
-                modifier = Modifier.fillMaxWidth().height(2.dp).align(Alignment.BottomStart),
-                color    = dominantColor,
-                trackColor = VinColors.Surface
-            )
+            // Glowing Razor-thin Progress Wire at bottom
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .align(Alignment.BottomStart)
+                    .background(Color.White.copy(alpha = 0.06f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(vm.progress.coerceIn(0f, 1f))
+                        .fillMaxHeight()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(dominantColor.copy(alpha = 0.7f), dominantColor, Color.White.copy(alpha = 0.95f))
+                            )
+                        )
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Album art with ambient glow
+                // Album art with ambient glow and subtle glass border
                 Box(
-                    modifier = Modifier.size(46.dp).clip(RoundedCornerShape(10.dp))
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
                 ) {
                     with(sharedTransitionScope) {
                         AsyncImage(
@@ -232,13 +318,13 @@ fun MiniPlayer(
                                     animatedVisibilityScope = animatedVisibilityScope
                                 )
                                 .fillMaxSize()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .scale(1.35f), 
                             contentScale = ContentScale.Crop
                         )
                     }
                     if (vm.isLoading) {
-                        Box(Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)).background(Color(0x80000000)),
+                        Box(Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).background(Color(0x80000000)),
                             contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(color = dominantColor,
                                 modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -248,57 +334,91 @@ fun MiniPlayer(
 
                 Spacer(Modifier.width(12.dp))
 
-            // Song info
-            Column(Modifier.weight(1f)) {
-                Text(
-                    song.title,
-                    maxLines = 1,
-                    style = Vin.Text.cardTitleSmall,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .basicMarquee(
-                            iterations = Int.MAX_VALUE,
-                            initialDelayMillis = 1500
+                // Song info + Live Equalizer
+                Column(Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            song.title,
+                            maxLines = 1,
+                            style = Vin.Text.cardTitleSmall,
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 1500
+                                )
                         )
-                )
-                Text(
-                    song.author,
-                    maxLines = 1,
-                    style = Vin.Text.cardSubtitle,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .basicMarquee(
-                            iterations = Int.MAX_VALUE,
-                            initialDelayMillis = 2000
+                        Spacer(Modifier.width(6.dp))
+                        LiveEqualizerIndicator(
+                            isPlaying = isPlaying,
+                            color = dominantColor
                         )
-                )
-            }
-
-            Spacer(Modifier.width(4.dp))
-
-            // Controls
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { vm.playPrev() }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.SkipPrevious, null, tint = VinColors.Secondary, modifier = Modifier.size(22.dp))
-                }
-                Box(
-                    modifier = Modifier.size(40.dp).clip(CircleShape)
-                        .background(VinColors.Accent)
-                        .clickable { vm.togglePlay() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        if (vm.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        null, tint = Color.White, modifier = Modifier.size(22.dp)
+                    }
+                    Text(
+                        song.author,
+                        maxLines = 1,
+                        style = Vin.Text.cardSubtitle,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .basicMarquee(
+                                iterations = Int.MAX_VALUE,
+                                initialDelayMillis = 2000
+                            )
                     )
                 }
-                IconButton(onClick = { vm.playNext() }, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Default.SkipNext, null, tint = VinColors.Secondary, modifier = Modifier.size(22.dp))
+
+                Spacer(Modifier.width(6.dp))
+
+                // Luxury Tactile Controls
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            HapticHelper.click(ctx)
+                            vm.playPrev()
+                        },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Default.SkipPrevious, null, tint = VinColors.Secondary, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(2.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(dominantColor, dominantColor.copy(alpha = 0.82f))
+                                )
+                            )
+                            .border(0.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                            .clickable {
+                                HapticHelper.click(ctx)
+                                vm.togglePlay()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            if (vm.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            null, tint = Color.White, modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(2.dp))
+                    IconButton(
+                        onClick = {
+                            HapticHelper.click(ctx)
+                            vm.playNext()
+                        },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Default.SkipNext, null, tint = VinColors.Secondary, modifier = Modifier.size(20.dp))
+                    }
                 }
             }
         }
     }
-}
 }
 
 // ── Bottom Nav Bar ────────────────────────────────────────────────────────────

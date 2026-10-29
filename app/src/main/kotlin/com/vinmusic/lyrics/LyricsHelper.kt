@@ -138,6 +138,7 @@ object LyricsHelper {
         if (provider != "Auto") {
             try {
                 when (provider) {
+                    "LyricsPlus" -> { tryLyricsPlus(t, a, durationMs)?.let { return it } }
                     "Unison" -> { tryUnison(videoId, title, artist, durationMs)?.let { return it } }
                     "YouTube Music" -> { tryYouTubeMusic(videoId)?.let { return it } }
                     "LrcLib" -> {
@@ -155,13 +156,14 @@ object LyricsHelper {
         // Auto: quality-tier based provider waterfall.
         //
         // Quality tiers (higher = better):
-        //   Tier 3 — RichSync (word-level): Unison(richsync) → LrcLib(synced+words) → YTM
-        //   Tier 2 — LineSync (line-level): Unison(linesync) → LrcLib(synced) → YTM
-        //   Tier 1 — Plain:                 Unison(plain) → Genius
+        //   Tier 3 — RichSync (word-level): LyricsPlus(Apple/QQ) → Unison(richsync) → LrcLib(synced+words) → YTM
+        //   Tier 2 — LineSync (line-level): LyricsPlus(linesync) → Unison(linesync) → LrcLib(synced) → YTM
+        //   Tier 1 — Plain:                 LyricsPlus(plain) → Unison(plain) → Genius
         //
         // We run ALL providers and pick the best quality result.
         // Provider order is the tiebreaker within the same tier.
         val providers: List<Pair<String, () -> LyricsResult?>> = listOf(
+            "LyricsPlus"    to { tryLyricsPlus(t, a, durationMs) },
             "Unison"        to { tryUnison(videoId, title, artist, durationMs) },
             "LrcLib"        to { tryLrcLibGet(t, a, durationMs) ?: tryLrcLibSearch(t, a, durationMs) },
             "YouTube Music" to { tryYouTubeMusic(videoId) },
@@ -197,6 +199,17 @@ object LyricsHelper {
             }
         }
         return bestSynced ?: fallbackPlain ?: LyricsResult.NotFound
+    }
+
+    private fun tryLyricsPlus(title: String, artist: String, durationMs: Long): LyricsResult? {
+        val exactArtist = artist.replace(" - Topic", "", ignoreCase = true).trim()
+        val cleanedTitle = cleanTitle(title).ifBlank { title.trim() }
+        val cleanedArtist = cleanArtist(artist).ifBlank { exactArtist }
+        return LyricsPlusClient.fetch(
+            title = cleanedTitle,
+            artist = cleanedArtist,
+            durationMs = durationMs
+        )
     }
 
     private fun tryUnison(videoId: String, title: String, artist: String, durationMs: Long): LyricsResult? {

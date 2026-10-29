@@ -648,11 +648,22 @@ object YTMusicApi {
                 ?.get("watchNextTabbedResultsRenderer") as? Map<*, *>
             val tabs = tabbed?.get("tabs") as? List<*> ?: return YTNextResult(null, null)
 
-            val relatedTab = tabs.getOrNull(2) as? Map<*, *>
-            val browseEndpoint = ((relatedTab?.get("tabRenderer") as? Map<*, *>)
-                ?.get("endpoint") as? Map<*, *>)?.get("browseEndpoint") as? Map<*, *>
-            val related = (browseEndpoint?.get("browseId") as? String)?.let { id ->
-                YTRelatedBrowse(id, browseEndpoint["params"] as? String)
+            var related: YTRelatedBrowse? = null
+            for (tab in tabs) {
+                val tabRenderer = (tab as? Map<*, *>)?.get("tabRenderer") as? Map<*, *> ?: continue
+                val endpoint = tabRenderer["endpoint"] as? Map<*, *>
+                val browseEndpoint = endpoint?.get("browseEndpoint") as? Map<*, *>
+                val browseId = browseEndpoint?.get("browseId") as? String
+                val title = (tabRenderer["title"] as? String)
+                    ?: ((tabRenderer["title"] as? Map<*, *>)?.get("runs") as? List<*>)
+                        ?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }?.joinToString("")
+                val isRelatedTitle = title?.contains("Related", ignoreCase = true) == true ||
+                    title?.contains("You might also like", ignoreCase = true) == true
+                val isRelatedBrowseId = browseId?.startsWith("MPTR") == true || browseId?.startsWith("FEmusic_library") == true
+                if (browseId != null && (isRelatedTitle || isRelatedBrowseId)) {
+                    related = YTRelatedBrowse(browseId, browseEndpoint["params"] as? String)
+                    break
+                }
             }
 
             // Automix / radio playlist id from queue panel

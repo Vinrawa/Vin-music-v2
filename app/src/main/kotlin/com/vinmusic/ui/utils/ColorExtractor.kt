@@ -17,7 +17,9 @@ object ColorExtractor {
         val gradTop: Color,
         val gradMid: Color,
         val gradBottom: Color,
-        val accent: Color
+        val accent: Color,
+        val dominant: Color = accent,
+        val secondary: Color = accent
     )
 
     suspend fun extractColorsFromUrl(context: Context, url: String): MusicPalette {
@@ -41,11 +43,15 @@ object ColorExtractor {
             .maximumColorCount(24)
             .generate()
         val accent = pickCoverAccent(palette)
+        val dominant = palette.dominantSwatch?.rgb?.let { Color(it).boostForUi() } ?: accent
+        val secondary = (palette.vibrantSwatch ?: palette.lightVibrantSwatch ?: palette.mutedSwatch)?.rgb?.let { Color(it).boostForUi() } ?: dominant
         return MusicPalette(
             gradTop = accent.copy(alpha = 0.20f),
             gradMid = accent.copy(alpha = 0.12f),
             gradBottom = Color(0xFF0E0E11),
-            accent = accent
+            accent = accent,
+            dominant = dominant,
+            secondary = secondary
         )
     }
 
@@ -82,11 +88,15 @@ object ColorExtractor {
 
     private fun fallbackPalette(): MusicPalette {
         val accent = Color(0xFF6EA8FF)
+        val dominant = Color(0xFF1E3A8A)
+        val secondary = Color(0xFF7C3AED)
         return MusicPalette(
             gradTop = accent.copy(alpha = 0.20f),
             gradMid = accent.copy(alpha = 0.12f),
             gradBottom = Color(0xFF0E0E11),
-            accent = accent
+            accent = accent,
+            dominant = dominant,
+            secondary = secondary
         )
     }
 }

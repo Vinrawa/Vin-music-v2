@@ -17,6 +17,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
@@ -56,7 +57,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
-private val CATEGORIES = listOf("All", "For You", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits", "Long Listens")
+private val CATEGORIES = listOf("All", "For You", "SoundCloud", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits", "Long Listens")
 private val HOME_CURRENT_YEAR: Int get() = java.time.LocalDate.now().year
 
 private data class DedupedHomeRecommendations(
@@ -194,6 +195,19 @@ private val QUICK_PLAYLISTS = listOf(
     QuickPlaylist("Bollywood",  "bollywood superhits",     Icons.Default.Favorite,   Color(0xFFC5A880), Color(0xFF251F17)),
 )
 
+internal object HomeStateCache {
+    var recommendationSections: List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>> = emptyList()
+    var spotifyMixes: List<com.vinmusic.recommendation.SpotifyMix> = emptyList()
+    var quickPicks: List<VideoItem> = emptyList()
+    var ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection> = emptyList()
+    var ytLibraryPlaylists: List<com.vinmusic.innertube.AlbumItem> = emptyList()
+    var suggestedArtists: List<com.vinmusic.innertube.ArtistItem> = emptyList()
+    var recommendedRadio: List<VideoItem> = emptyList()
+    var radioSeedSong: VideoItem? = null
+    var recommendedAlbums: List<AlbumItem> = emptyList()
+    val soundCloudCache = java.util.concurrent.ConcurrentHashMap<Long, List<VideoItem>>()
+}
+
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
@@ -274,8 +288,8 @@ fun HomeScreen(
 
     // Home Screen Sections Data
     var recentlyPlayed  by remember { mutableStateOf<List<com.vinmusic.data.db.HistoryEntry>>(emptyList()) }
-    var suggestedArtists by remember { mutableStateOf<List<com.vinmusic.innertube.ArtistItem>>(emptyList()) }
-    var recommendedAlbums by remember { mutableStateOf<List<AlbumItem>>(emptyList()) }
+    var suggestedArtists by remember { mutableStateOf(HomeStateCache.suggestedArtists) }
+    var recommendedAlbums by remember { mutableStateOf(HomeStateCache.recommendedAlbums) }
     var downloads       by remember { mutableStateOf<List<com.vinmusic.data.db.DownloadEntity>>(emptyList()) }
 
     var selectedArtist by remember { mutableStateOf<com.vinmusic.innertube.ArtistItem?>(null) }
@@ -290,18 +304,18 @@ fun HomeScreen(
     var isLoadingPlaylistSongs by remember { mutableStateOf(false) }
     val remotePlaylistSongsCache = remember { mutableStateMapOf<String, List<VideoItem>>() }
 
-    var recommendationSections by remember { mutableStateOf<List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>>(emptyList()) }
-    var spotifyMixes by remember { mutableStateOf<List<com.vinmusic.recommendation.SpotifyMix>>(emptyList()) }
+    var recommendationSections by remember { mutableStateOf(HomeStateCache.recommendationSections) }
+    var spotifyMixes by remember { mutableStateOf(HomeStateCache.spotifyMixes) }
     var isLoadingMixes by remember { mutableStateOf(false) }
     var selectedSpotifyMix by remember { mutableStateOf<com.vinmusic.recommendation.SpotifyMix?>(null) }
-    var isRecommendationsLoading by remember { mutableStateOf(true) }
+    var isRecommendationsLoading by remember { mutableStateOf(HomeStateCache.recommendationSections.isEmpty()) }
     val isRefreshing by vm.isHomeRefreshing.collectAsStateWithLifecycle()
     val homeRefreshGeneration by vm.homeRefreshGeneration.collectAsStateWithLifecycle()
     var categoryRefreshTrigger by remember { mutableIntStateOf(0) }
     val pullRefreshState = rememberPullToRefreshState()
     val homeRefreshPayload by vm.homeRefreshPayload.collectAsStateWithLifecycle()
 
-    var quickPicks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var quickPicks by remember { mutableStateOf(HomeStateCache.quickPicks) }
     var isLoadingQuickPicks by remember { mutableStateOf(false) }
 
     val topTracksSignals by vm.topTracksFlow.collectAsState(initial = emptyList())
@@ -316,16 +330,23 @@ fun HomeScreen(
         }
     }
 
-    var recommendedRadio by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var recommendedRadio by remember { mutableStateOf(HomeStateCache.recommendedRadio) }
     var isLoadingRecommendedRadio by remember { mutableStateOf(false) }
-    var radioSeedSong by remember { mutableStateOf<VideoItem?>(null) }
+    var radioSeedSong by remember { mutableStateOf<VideoItem?>(HomeStateCache.radioSeedSong) }
     var lastRadioSeedId by remember { mutableStateOf("") }
 
-    var ytMusicSections by remember { mutableStateOf<List<com.vinmusic.innertube.YTMusicHomeSection>>(emptyList()) }
+    var ytMusicSections by remember { mutableStateOf(HomeStateCache.ytMusicSections) }
     var isLoadingYtHome by remember { mutableStateOf(false) }
     var ytMusicConnected by remember { mutableStateOf(YTMusicSession.hasCookie(ctx)) }
-    var ytLibraryPlaylists by remember { mutableStateOf<List<com.vinmusic.innertube.AlbumItem>>(emptyList()) }
+    var ytLibraryPlaylists by remember { mutableStateOf(HomeStateCache.ytLibraryPlaylists) }
     var isLoadingYtPlaylists by remember { mutableStateOf(false) }
+
+    // SoundCloud Recommendations
+    val soundCloudCategories = remember { com.vinmusic.soundcloud.DEFAULT_SOUNDCLOUD_CATEGORIES }
+    var selectedSoundCloudCategory by remember { mutableStateOf(soundCloudCategories[0]) }
+    var soundCloudTracks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var isSoundCloudLoading by remember { mutableStateOf(false) }
+    val soundCloudCache = remember { HomeStateCache.soundCloudCache }
 
     // Mood Deep Sections
     var moodSections by remember { mutableStateOf<List<Pair<String, List<AlbumItem>>>>(emptyList()) }
@@ -536,9 +557,19 @@ fun HomeScreen(
         cachedSignals: List<com.vinmusic.data.db.InteractionSignal>? = null,
         cachedHistory: List<com.vinmusic.data.db.HistoryEntry>? = null
     ): List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>> {
+        // 1. Try disk cache first (instant sub-millisecond retrieval of all personalized shelves)
+        val diskRecs = try {
+            com.vinmusic.recommendation.RecommendationManager.loadFromDisk(ctx, ignoreExpiry = true)
+        } catch (_: Exception) { null }
+        if (!diskRecs.isNullOrEmpty()) {
+            return diskRecs
+        }
+
+        // 2. Generate local sections if disk cache is empty
         val sections = mutableListOf<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>>()
         val signals = cachedSignals ?: try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
         val history = cachedHistory ?: try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
+        val liked = try { db.likedSongDao().getAll() } catch (_: Exception) { emptyList() }
 
         val repeatPool = (signals
             .sortedWith(
@@ -558,7 +589,20 @@ fun HomeScreen(
                 )
             }
         if (repeatPool.isNotEmpty()) {
-            sections.add("On Repeat" to repeatPool)
+            sections.add("Side A" to repeatPool)
+        }
+
+        val likedPool = liked.filterNot { l -> repeatPool.any { it.videoItem.videoId == l.videoId } }
+            .shuffled().take(10).mapIndexed { index, l ->
+                com.vinmusic.recommendation.RecommendedSong(
+                    videoItem = VideoItem(l.videoId, l.title, l.author, l.durationText),
+                    score = (90 - index).toDouble(),
+                    source = "liked_favorites",
+                    reason = "From your library"
+                )
+            }
+        if (likedPool.isNotEmpty()) {
+            sections.add("Deep cuts & hidden gems" to likedPool)
         }
 
         return sections
@@ -630,13 +674,20 @@ fun HomeScreen(
     LaunchedEffect(homeRefreshPayload) {
         homeRefreshPayload?.let { payload ->
             recommendationSections = payload.recommendationSections
+            HomeStateCache.recommendationSections = payload.recommendationSections
             spotifyMixes = payload.spotifyMixes
+            HomeStateCache.spotifyMixes = payload.spotifyMixes
             quickPicks = payload.quickPicks
+            HomeStateCache.quickPicks = payload.quickPicks
             ytMusicSections = payload.ytMusicSections
+            HomeStateCache.ytMusicSections = payload.ytMusicSections
             ytMusicConnected = YTMusicSession.hasCookie(ctx)
             ytLibraryPlaylists = payload.ytLibraryPlaylists
+            HomeStateCache.ytLibraryPlaylists = payload.ytLibraryPlaylists
             recommendedRadio = payload.recommendedRadio
+            HomeStateCache.recommendedRadio = payload.recommendedRadio
             recommendedAlbums = payload.recommendedAlbums
+            HomeStateCache.recommendedAlbums = payload.recommendedAlbums
         }
     }
 
@@ -656,20 +707,17 @@ fun HomeScreen(
     }
 
     LaunchedEffect(Unit) {
-        val cachedSignalsDeferred = async(Dispatchers.IO) {
-            try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
-        }
-        val cachedHistoryDeferred = async(Dispatchers.IO) {
-            try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
-        }
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
-                isRecommendationsLoading = true
-                val signals = cachedSignalsDeferred.await()
-                val history = cachedHistoryDeferred.await()
+                val signals = try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
+                val history = try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
                 val fastRecs = loadAutoHomeRecommendationSections(signals, history)
-                withContext(Dispatchers.Main) {
-                    recommendationSections = fastRecs
+                if (fastRecs.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        recommendationSections = fastRecs
+                        HomeStateCache.recommendationSections = fastRecs
+                        isRecommendationsLoading = false
+                    }
                 }
                 // Reuse the recommendation cache on normal Home entry. Fresh
                 // rotation is reserved for pull-to-refresh so expensive
@@ -679,7 +727,9 @@ fun HomeScreen(
                 }.orEmpty()
                 if (fullRecs.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
-                        recommendationSections = mergeRecommendationSections(fastRecs, fullRecs)
+                        val merged = mergeRecommendationSections(fastRecs, fullRecs)
+                        recommendationSections = merged
+                        HomeStateCache.recommendationSections = merged
                     }
                 }
             } catch (e: Exception) {
@@ -692,32 +742,38 @@ fun HomeScreen(
                 }
             }
         }
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
                 isLoadingMixes = true
-                val signals = cachedSignalsDeferred.await()
-                val history = cachedHistoryDeferred.await()
+                val signals = try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
+                val history = try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
                 val rewindMix = loadRepeatRewindMix(signals, history)
                 val genreMixes = try { vm.recommendationRepository.getGenreMixes() } catch (_: Exception) { emptyList() }
                 val combined = listOfNotNull(rewindMix) + genreMixes
                 withContext(Dispatchers.Main) {
                     spotifyMixes = combined
+                    HomeStateCache.spotifyMixes = combined
                     isLoadingMixes = false
                 }
             } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Failed to load Spotify mixes: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    android.util.Log.e("HomeScreen", "Failed to load Spotify mixes: ${e.message}")
+                }
                 withContext(Dispatchers.Main) {
                     isLoadingMixes = false
                 }
             }
         }
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
                 isLoadingQuickPicks = true
                 val local = loadLocalQuickPicks()
                 if (local.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
-                        if (quickPicks.isEmpty()) quickPicks = local
+                        if (quickPicks.isEmpty()) {
+                            quickPicks = local
+                            HomeStateCache.quickPicks = local
+                        }
                         isLoadingQuickPicks = false
                     }
                 }
@@ -725,17 +781,22 @@ fun HomeScreen(
                     vm.recommendationRepository.getQuickPicks()
                 }.orEmpty()
                 withContext(Dispatchers.Main) {
-                    if (qp.isNotEmpty()) quickPicks = qp
+                    if (qp.isNotEmpty()) {
+                        quickPicks = qp
+                        HomeStateCache.quickPicks = qp
+                    }
                     isLoadingQuickPicks = false
                 }
             } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Failed to load Quick Picks: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    android.util.Log.e("HomeScreen", "Failed to load Quick Picks: ${e.message}")
+                }
                 withContext(Dispatchers.Main) {
                     isLoadingQuickPicks = false
                 }
             }
         }
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
                 isLoadingYtHome = true
                 isLoadingYtPlaylists = YTMusicSession.hasCookie(ctx)
@@ -752,13 +813,17 @@ fun HomeScreen(
                 }
                 withContext(Dispatchers.Main) {
                     ytMusicSections = ytHome
+                    HomeStateCache.ytMusicSections = ytHome
                     ytLibraryPlaylists = ytPlaylists
+                    HomeStateCache.ytLibraryPlaylists = ytPlaylists
                     ytMusicConnected = YTMusicSession.hasCookie(ctx)
                     isLoadingYtHome = false
                     isLoadingYtPlaylists = false
                 }
             } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Failed to load YouTube Music shelves: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    android.util.Log.e("HomeScreen", "Failed to load YouTube Music shelves: ${e.message}")
+                }
                 withContext(Dispatchers.Main) {
                     isLoadingYtHome = false
                     isLoadingYtPlaylists = false
@@ -789,16 +854,20 @@ fun HomeScreen(
             lastRadioSeedId = lastSong.videoId
             val seed = VideoItem(lastSong.videoId, lastSong.title, lastSong.author, lastSong.durationText)
             radioSeedSong = seed
-            scope.launch(Dispatchers.IO) {
+            HomeStateCache.radioSeedSong = seed
+            vm.viewModelScope.launch(Dispatchers.IO) {
                 try {
                     isLoadingRecommendedRadio = true
                     val rad = vm.recommendationRepository.getSongRadio(seed.videoId, seed.title, seed.author)
                     withContext(Dispatchers.Main) {
                         recommendedRadio = rad
+                        HomeStateCache.recommendedRadio = rad
                         isLoadingRecommendedRadio = false
                     }
                 } catch (e: Exception) {
-                    android.util.Log.e("HomeScreen", "Failed to load Recommended Radio: ${e.message}")
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        android.util.Log.e("HomeScreen", "Failed to load Recommended Radio: ${e.message}")
+                    }
                     withContext(Dispatchers.Main) {
                         isLoadingRecommendedRadio = false
                     }
@@ -816,7 +885,7 @@ fun HomeScreen(
             lastRecommendationSeedId = currentSeedId
             songsPlayedSinceQuickPickRefresh += 1
             // Load "Similar To" songs for current song
-            scope.launch(Dispatchers.IO) {
+            vm.viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val similar = vm.recommendationRepository.getSongRadio(currentSeedId, vm.currentSong?.title ?: "", vm.currentSong?.author ?: "")
                     withContext(Dispatchers.Main) {
@@ -829,7 +898,7 @@ fun HomeScreen(
             // the cache so getQuickPicks() regenerates from fresh history/related data.
             if (songsPlayedSinceQuickPickRefresh >= 2) {
                 songsPlayedSinceQuickPickRefresh = 0
-                scope.launch(Dispatchers.IO) {
+                vm.viewModelScope.launch(Dispatchers.IO) {
                     try {
                         vm.recommendationRepository.invalidateQuickPicksCache()
                         val qp = kotlinx.coroutines.withTimeoutOrNull(9000L) {
@@ -838,6 +907,7 @@ fun HomeScreen(
                         if (qp.isNotEmpty()) {
                             withContext(Dispatchers.Main) {
                                 quickPicks = qp
+                                HomeStateCache.quickPicks = qp
                             }
                         }
                     } catch (_: Exception) {}
@@ -963,7 +1033,7 @@ fun HomeScreen(
 
     // ── Recommended Albums with Local Cache ──
     LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cachePrefs = ctx.getSharedPreferences("recommended_albums_cache", Context.MODE_PRIVATE)
                 val cachedJson = cachePrefs.getString("albums_json_v2", null)
@@ -975,6 +1045,7 @@ fun HomeScreen(
                     if (list.isNotEmpty()) {
                         withContext(Dispatchers.Main) {
                             recommendedAlbums = list
+                            HomeStateCache.recommendedAlbums = list
                         }
                         return@launch
                     }
@@ -1066,17 +1137,22 @@ fun HomeScreen(
                 }
                 
                 withContext(Dispatchers.Main) {
-                    if (uniqueAlbums.isNotEmpty()) recommendedAlbums = uniqueAlbums
+                    if (uniqueAlbums.isNotEmpty()) {
+                        recommendedAlbums = uniqueAlbums
+                        HomeStateCache.recommendedAlbums = uniqueAlbums
+                    }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Failed to load albums: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    android.util.Log.e("HomeScreen", "Failed to load albums: ${e.message}")
+                }
             }
         }
     }
 
     LaunchedEffect(Unit) {
         // Auto-refresh history database flow (Optimized: No network calls inside database collectors!)
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             db.historyDao().getRecentFlow().collect { history ->
                 withContext(Dispatchers.Main) {
                     recentlyPlayed = history
@@ -1085,7 +1161,7 @@ fun HomeScreen(
         }
 
         // Suggested Artists with Local Cache (Resolves concurrently once and caches on disk)
-        scope.launch(Dispatchers.IO) {
+        vm.viewModelScope.launch(Dispatchers.IO) {
             try {
                 val cachePrefs = ctx.getSharedPreferences("suggested_artists_cache", Context.MODE_PRIVATE)
                 val cachedJson = cachePrefs.getString("artists_json_v3", null)
@@ -1099,6 +1175,7 @@ fun HomeScreen(
                     if (list.isNotEmpty()) {
                         withContext(Dispatchers.Main) {
                             suggestedArtists = list
+                            HomeStateCache.suggestedArtists = list
                         }
                         return@launch
                     }
@@ -1213,11 +1290,14 @@ fun HomeScreen(
                             
                         withContext(Dispatchers.Main) {
                             suggestedArtists = resolved
+                            HomeStateCache.suggestedArtists = resolved
                         }
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("HomeScreen", "Failed to load suggested artists: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    android.util.Log.e("HomeScreen", "Failed to load suggested artists: ${e.message}")
+                }
             }
         }
 
@@ -1236,8 +1316,28 @@ fun HomeScreen(
         }
     }
 
+    LaunchedEffect(selectedSoundCloudCategory.playlistId, homeRefreshGeneration) {
+        val pid = selectedSoundCloudCategory.playlistId
+        val cached = soundCloudCache[pid]
+        if (cached != null && cached.isNotEmpty()) {
+            soundCloudTracks = cached
+            return@LaunchedEffect
+        }
+        isSoundCloudLoading = true
+        val tracks = try {
+            com.vinmusic.soundcloud.SoundCloudApi.getChartTracks(pid, limit = 25)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (tracks.isNotEmpty()) {
+            soundCloudCache[pid] = tracks
+            soundCloudTracks = tracks
+        }
+        isSoundCloudLoading = false
+    }
+
     LaunchedEffect(filter, categoryRefreshTrigger, homeRefreshGeneration) {
-        if (filter == "All" || filter == "For You") return@LaunchedEffect
+        if (filter == "All" || filter == "For You" || filter == "SoundCloud") return@LaunchedEffect
 
         val moodChips = setOf("Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party")
 
@@ -1598,62 +1698,21 @@ fun HomeScreen(
         val isScreenActive = lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && !isPlayerOpen
 
         if (isScreenActive) {
-            // ✨ 1. Dynamic Animated Lava Lamp Fluid Background ✨
-            val infiniteTransition = rememberInfiniteTransition(label = "home_bg_anims")
-            val blob1X by infiniteTransition.animateFloat(
-                initialValue = -100f, targetValue = 400f,
-                animationSpec = infiniteRepeatable(tween(35000, easing = LinearEasing), RepeatMode.Reverse),
-                label = "blob1X"
+            // ── Apple-Style Liquid Aura Mesh Dynamic Living Background ──
+            com.vinmusic.ui.components.LiquidAuraMesh(
+                palette = vm.currentPalette,
+                isPlaying = vm.isPlaying,
+                isScreenActive = isScreenActive,
+                modifier = Modifier.fillMaxSize()
             )
-            val blob2Y by infiniteTransition.animateFloat(
-                initialValue = 800f, targetValue = -150f,
-                animationSpec = infiniteRepeatable(tween(42000, easing = LinearEasing), RepeatMode.Reverse),
-                label = "blob2Y"
-            )
-            val blob3X by infiniteTransition.animateFloat(
-                initialValue = 500f, targetValue = -200f,
-                animationSpec = infiniteRepeatable(tween(48000, easing = LinearEasing), RepeatMode.Reverse),
-                label = "blob3X"
-            )
-
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                // Blob 1: Dynamic Light Brown aura
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFC5A880).copy(alpha = 0.15f), Color.Transparent),
-                        center = Offset(blob1X.dp.toPx(), 220.dp.toPx()),
-                        radius = size.width * 0.75f
-                    ),
-                    radius = size.width * 0.75f,
-                    center = Offset(blob1X.dp.toPx(), 220.dp.toPx())
-                )
-                // Blob 2: Warm Glowing Gold aura
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFB39873).copy(alpha = 0.10f), Color.Transparent),
-                        center = Offset(100.dp.toPx(), blob2Y.dp.toPx()),
-                        radius = size.width * 0.65f
-                    ),
-                    radius = size.width * 0.65f,
-                    center = Offset(100.dp.toPx(), blob2Y.dp.toPx())
-                )
-                // Blob 3: Warm Charcoal aura
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF2C251C).copy(alpha = 0.12f), Color.Transparent),
-                        center = Offset(blob3X.dp.toPx(), 620.dp.toPx()),
-                        radius = size.width * 0.70f
-                    ),
-                    radius = size.width * 0.70f,
-                    center = Offset(blob3X.dp.toPx(), 620.dp.toPx())
-                )
-            }
         }
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = {
                 vm.refreshHome()
                 categoryRefreshTrigger++
+                com.vinmusic.soundcloud.SoundCloudApi.invalidateChartCache()
+                soundCloudCache.clear()
             },
             state = pullRefreshState,
             modifier = Modifier.fillMaxSize()
@@ -1668,12 +1727,27 @@ fun HomeScreen(
                 sections = recommendationSections,
             )
         }
+        // ✨ Spotify-Style Top Ambient Atmosphere Mesh Fade ✨
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(360.dp)
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color(0xFF382A1B).copy(alpha = 0.50f),
+                        0.35f to Color(0xFF241B12).copy(alpha = 0.28f),
+                        0.75f to Color(0xFF16110B).copy(alpha = 0.08f),
+                        1.0f to Color.Transparent
+                    )
+                )
+        )
+
         LazyColumn(
             modifier = Modifier.fillMaxSize().background(Color.Transparent),
             contentPadding = PaddingValues(bottom = 140.dp)
         ) {
 
-            // ── Personalized Frosted Glass Top Header ──────────────────────────
+            // ── Personalized Frosted Glass Top Header (Clean Minimal Profile Touchpoint) ──────
             item {
                 Box(
                     modifier = Modifier
@@ -1692,74 +1766,45 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                editName = userName
+                                showProfileDialog = true
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    editName = userName
-                                    showProfileDialog = true
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            UserAvatar(
-                                avatarIndex = avatarIndex,
-                                size = 46.dp,
-                                name = userName
+                        UserAvatar(
+                            avatarIndex = avatarIndex,
+                            size = 46.dp,
+                            name = userName
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${greeting()}, $userName",
+                                fontSize = 18.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            Column(modifier = Modifier.weight(1f, fill = false)) {
-                                Text(
-                                    text = "${greeting()}, $userName",
-                                    fontSize = 18.sp,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Text(
+                                text = "Profile & Audio Taste",
+                                fontSize = 12.sp,
+                                color = VinColors.Secondary,
+                                maxLines = 1
+                            )
                         }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = {
-                                    android.widget.Toast.makeText(ctx, "No new notifications", android.widget.Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.08f))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.15f), CircleShape)
-                            ) {
-                                Icon(
-                                    Icons.Default.Notifications,
-                                    "Notifications",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            IconButton(
-                                onClick = onSettingsClick,
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.08f))
-                                    .border(0.5.dp, Color.White.copy(alpha = 0.15f), CircleShape)
-                            ) {
-                                Icon(
-                                    Icons.Default.Settings,
-                                    "Settings",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.4f),
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -1957,7 +2002,15 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.padding(bottom = 24.dp)
                         ) {
-                            val historySongs = recentlyPlayed.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                            val historySongs = recentlyPlayed.map {
+                                VideoItem(
+                                    videoId = it.videoId,
+                                    title = it.title,
+                                    author = it.author,
+                                    durationText = it.durationText,
+                                    customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
+                                )
+                            }
                             // History is event-based, so the same song can
                             // legitimately occur more than once. Its list key
                             // must include the position, not just videoId.
@@ -2142,6 +2195,78 @@ fun HomeScreen(
                             itemsIndexed(displayedRecommendations.radio, key = { index, song -> "radio_${song.videoId}_$index" }) { _, song ->
                                 RecommendedRadioCard(song = song) {
                                     onSongClick(song, displayedRecommendations.radio)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1.7. SoundCloud
+                item {
+                    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                        SectionTitle("SoundCloud")
+                        Spacer(Modifier.height(10.dp))
+
+                        // Sub-category switcher chips
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        ) {
+                            items(soundCloudCategories, key = { it.id }) { cat ->
+                                val active = cat.id == selectedSoundCloudCategory.id
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(
+                                            if (active) {
+                                                Brush.horizontalGradient(
+                                                    listOf(Color(0xFFC5A880), Color(0xFF8C7355))
+                                                )
+                                            } else {
+                                                Brush.verticalGradient(
+                                                    listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.02f))
+                                                )
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (active) Color.Transparent else Color.White.copy(alpha = 0.1f),
+                                            RoundedCornerShape(16.dp)
+                                        )
+                                        .clickable {
+                                            if (selectedSoundCloudCategory.id != cat.id) {
+                                                selectedSoundCloudCategory = cat
+                                            }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = cat.title,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (active) Color(0xFF141210) else Color.White.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Tracks Row
+                        if (isSoundCloudLoading && soundCloudTracks.isEmpty()) {
+                            ShelfSkeleton()
+                        } else if (soundCloudTracks.isNotEmpty()) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                itemsIndexed(
+                                    soundCloudTracks,
+                                    key = { index, song -> "sc_home_${selectedSoundCloudCategory.id}_${song.videoId}_$index" }
+                                ) { _, song ->
+                                    SoundCloudTrackCard(song = song) {
+                                        onSongClick(song, soundCloudTracks)
+                                    }
                                 }
                             }
                         }
@@ -2706,6 +2831,94 @@ fun HomeScreen(
                     }
                     if (rapSubSections.isEmpty() && !isRapSubLoading) {
                         item { EmptyScreenState("No playlists found for this sub-category.") }
+                    }
+                }
+            }
+            "SoundCloud" -> {
+                item {
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "SoundCloud",
+                            style = Vin.Text.sectionHeader
+                        )
+                    }
+                }
+
+                // Sub-category switcher chips
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    ) {
+                        items(soundCloudCategories, key = { it.id }) { cat ->
+                            val active = cat.id == selectedSoundCloudCategory.id
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        if (active) {
+                                            Brush.horizontalGradient(
+                                                listOf(Color(0xFFC5A880), Color(0xFF8C7355))
+                                            )
+                                        } else {
+                                            Brush.verticalGradient(
+                                                listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.02f))
+                                            )
+                                        }
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (active) Color.Transparent else Color.White.copy(alpha = 0.1f),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .clickable {
+                                        if (selectedSoundCloudCategory.id != cat.id) {
+                                            selectedSoundCloudCategory = cat
+                                        }
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = cat.title,
+                                    fontSize = 13.sp,
+                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (active) Color(0xFF141210) else Color.White.copy(alpha = 0.85f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (isSoundCloudLoading && soundCloudTracks.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(color = Color(0xFFC5A880), modifier = Modifier.size(36.dp))
+                            Text("Loading SoundCloud tracks...", color = VinColors.Secondary, fontSize = 13.sp)
+                        }
+                    }
+                } else if (soundCloudTracks.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "${selectedSoundCloudCategory.title} (${soundCloudTracks.size} tracks)",
+                            style = Vin.Text.sectionHeader,
+                            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
+                        )
+                    }
+                    itemsIndexed(
+                        soundCloudTracks,
+                        key = { index, song -> "sc_dedicated_${selectedSoundCloudCategory.id}_${song.videoId}_$index" }
+                    ) { _, song ->
+                        SongListItem(
+                            song = song,
+                            isPlaying = vm.currentSong?.videoId == song.videoId,
+                            onClick = { onSongClick(song, soundCloudTracks) },
+                            onMore = { onSongMore(song) }
+                        )
                     }
                 }
             }
@@ -3906,6 +4119,116 @@ private fun ShelfSkeleton(cardHeight: Dp = 190.dp, cardWidth: Dp = 140.dp) {
 }
 
 @Composable
+fun SoundCloudTrackCard(song: VideoItem, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "sc_card_scale"
+    )
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+                .clip(RoundedCornerShape(14.dp))
+                .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                .shimmerEffect()
+        ) {
+            AsyncImage(
+                model = song.thumbnail,
+                contentDescription = null,
+                placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.35f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.65f)
+                            )
+                        )
+                    )
+            )
+            // Minimal dark glass badge top-start (no orange)
+            Box(
+                modifier = Modifier
+                    .padding(8.dp)
+                    .align(Alignment.TopStart)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "SC",
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+            }
+            // Duration pill bottom-end
+            if (song.durationText.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = song.durationText,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = song.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardTitleSmall
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = song.author,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardSubtitle
+        )
+    }
+}
+
+@Composable
 fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -3915,6 +4238,21 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
         label = "recent_card_press"
     )
     val context = LocalContext.current
+    var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
+    var artworkUrl by remember(song.videoId, song.thumbnail) {
+        mutableStateOf(song.thumbnail.takeIf { it.isNotBlank() })
+    }
+
+    LaunchedEffect(song.videoId) {
+        if (artworkUrl.isNullOrBlank() && song.videoId.startsWith("sc:")) {
+            val fetched = com.vinmusic.soundcloud.SoundCloudApi.fetchTrackArtwork(song.videoId)
+            if (fetched != null) {
+                artworkUrl = fetched
+            } else {
+                isImageLoaded = true
+            }
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -3930,22 +4268,38 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        val model = artworkUrl ?: song.thumbnail.takeIf { it.isNotBlank() }
         Box(
             modifier = Modifier
                 .size(48.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(VinColors.Surface)
-                .shimmerEffect()
+                .then(if (!isImageLoaded && model != null) Modifier.shimmerEffect() else Modifier),
+            contentAlignment = Alignment.Center
         ) {
-            AsyncImage(
-                model = song.thumbnail, contentDescription = null,
-                modifier = Modifier.fillMaxSize().scale(1.35f),
-                contentScale = ContentScale.Crop
-            )
+            if (model != null) {
+                AsyncImage(
+                    model = model,
+                    contentDescription = null,
+                    placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                    error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                    onSuccess = { isImageLoaded = true },
+                    onError = { isImageLoaded = true },
+                    modifier = Modifier.fillMaxSize().scale(1.35f),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.MusicNote,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.4f),
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = Vin.Text.cardTitleSmall)
-            Text(song.author, maxLines = 1, overflow = TextOverflow.Ellipsis, style = Vin.Text.cardSubtitle)
+            Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = Vin.Text.cardTitleSmall.copy(letterSpacing = (-0.2).sp, color = Color.White))
+            Text(song.author, maxLines = 1, overflow = TextOverflow.Ellipsis, style = Vin.Text.cardSubtitle.copy(color = Color.White.copy(alpha = 0.65f)))
         }
     }
 }
@@ -4560,14 +4914,14 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
         Spacer(Modifier.height(8.dp))
         Text(
             text = playlist.title.orEmpty(),
-            style = Vin.Text.cardTitleSmall,
+            style = Vin.Text.cardTitleSmall.copy(letterSpacing = (-0.2).sp, color = Color.White),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Spacer(Modifier.height(2.dp))
         Text(
             text = playlist.author.orEmpty(),
-            style = Vin.Text.cardSubtitle,
+            style = Vin.Text.cardSubtitle.copy(color = Color.White.copy(alpha = 0.65f)),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )

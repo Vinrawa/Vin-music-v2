@@ -26,8 +26,8 @@ android {
         applicationId   = "com.vinmusic"
         minSdk          = 26
         targetSdk       = 35
-        versionCode     = 24
-        versionName     = "2.3.1"
+        versionCode     = 25
+        versionName     = "2.3.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -125,6 +125,7 @@ dependencies {
 
     // Media3 / ExoPlayer
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.session)
     implementation(libs.media3.ui)
     implementation(libs.media3.datasource.okhttp)

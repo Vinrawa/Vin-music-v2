@@ -284,7 +284,9 @@ class PlayerViewModel @Inject constructor(
             gradTop = androidx.compose.ui.graphics.Color(0x33C5A880),
             gradMid = androidx.compose.ui.graphics.Color(0x1FC5A880),
             gradBottom = androidx.compose.ui.graphics.Color(0xFF0E0E11),
-            accent = androidx.compose.ui.graphics.Color(0xFFC5A880)
+            accent = androidx.compose.ui.graphics.Color(0xFFC5A880),
+            dominant = androidx.compose.ui.graphics.Color(0xFF382A1B),
+            secondary = androidx.compose.ui.graphics.Color(0xFF261D15)
         )
     )
 
@@ -455,17 +457,19 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
 
-                    // Fetch description in parallel
-                    launch(Dispatchers.IO) {
-                        try {
-                            val desc = com.vinmusic.innertube.InnerTube.getSongDescription(song.videoId)
-                            withContext(Dispatchers.Main) {
-                                if (currentSong?.videoId == song.videoId) {
-                                    currentSongDescription = desc
+                    // Fetch description in parallel (YouTube tracks only)
+                    if (!song.videoId.startsWith("sc:")) {
+                        launch(Dispatchers.IO) {
+                            try {
+                                val desc = com.vinmusic.innertube.InnerTube.getSongDescription(song.videoId)
+                                withContext(Dispatchers.Main) {
+                                    if (currentSong?.videoId == song.videoId) {
+                                        currentSongDescription = desc
+                                    }
                                 }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to load description", e)
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to load description", e)
                         }
                     }
                 }
@@ -564,17 +568,25 @@ class PlayerViewModel @Inject constructor(
                 delay(600)
                 if (!isActive) return@launch
 
-                // FAST PATH: Direct radio playlist — pre-filtered so the first thing
-                // that plays after this song is actually similar, not raw popular drift.
-                Log.d(TAG, "playSongWithRadio: fetching instant radio for ${song.videoId}")
-                val radioTracks = InnerTube.getWatchNextRadio(song.videoId)
-                Log.d(TAG, "playSongWithRadio: instant radio returned ${radioTracks.size} tracks")
+                // FAST PATH: Genuine related tracks (no RDAMVM generic automix drift)
+                Log.d(TAG, "playSongWithRadio: fetching genuine related tracks for ${song.videoId}")
+                val relatedTracks = try {
+                    val next = com.vinmusic.innertube.YTMusicApi.getNextRelated(song.videoId)
+                    val browse = next.relatedBrowse
+                    if (browse != null) {
+                        com.vinmusic.innertube.YTMusicApi.getRelatedSongs(browse.browseId, browse.params)
+                    } else emptyList()
+                } catch (e: Exception) {
+                    Log.w(TAG, "playSongWithRadio: fast related fetch error: ${e.message}")
+                    emptyList()
+                }
+                Log.d(TAG, "playSongWithRadio: genuine related returned ${relatedTracks.size} tracks")
 
                 // Check if user already moved to another song
                 if (!isActive) return@launch
 
                 val fastRecs = com.vinmusic.recommendation.RecommendationManager
-                    .curateRadioCandidates(song, radioTracks)
+                    .curateRadioCandidates(song, relatedTracks)
 
                 if (fastRecs.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
@@ -587,15 +599,15 @@ class PlayerViewModel @Inject constructor(
                                 PlayerSingleton.markAutoplayTail(currentQueue.size, unique.map { it.videoId })
                                 currentQueue.addAll(unique)
                                 PlayerSingleton.queue = currentQueue
-                                Log.d(TAG, "playSongWithRadio: appended ${unique.size} curated radio tracks (raw=${radioTracks.size}), total=${currentQueue.size}")
+                                Log.d(TAG, "playSongWithRadio: appended ${unique.size} curated related tracks (raw=${relatedTracks.size}), total=${currentQueue.size}")
                             }
                         }
                         PlayerSingleton.isAutoplayLoading = false
                     }
                 } else {
-                    // Radio returned nothing — seed-aware search fallback (genre blend
+                    // Related returned nothing — seed-aware search fallback (genre blend
                     // instead of plain artist top-songs), same curation before appending.
-                    Log.w(TAG, "playSongWithRadio: radio empty, trying seed-aware search fallback")
+                    Log.w(TAG, "playSongWithRadio: related empty, trying seed-aware search fallback")
                     val seedMeta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(song)
                     val genreTerm = seedMeta.genre.lowercase(java.util.Locale.ROOT).replace("rap/hip-hop", "rap hip hop")
                     val searchResults = mutableListOf<VideoItem>()
@@ -1341,7 +1353,9 @@ class PlayerViewModel @Inject constructor(
         PlayerSingleton.audiophileDspAudioProcessor.bassStrength = (bassBoostStr / 1000f).coerceIn(0f, 1f)
         PlayerSingleton.audiophileDspAudioProcessor.clarityStrength = (clarityStr / 1000f).coerceIn(0f, 1f)
         PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
-        bassBoostFx?.runCatching { setStrength(bassBoostStr.toInt().toShort()) }
+        // AudiophileDspAudioProcessor handles studio-grade sub-bass & warmth with anti-distortion headroom.
+        // Hardware bassBoostFx is kept at 0 to prevent double-filtering distortion and clipping.
+        bassBoostFx?.runCatching { setStrength(0.toShort()) }
         loudnessFx?.runCatching  { 
             if (audioNormalizationEnabled) {
                 setTargetGain(150) // 150mB as per requirements

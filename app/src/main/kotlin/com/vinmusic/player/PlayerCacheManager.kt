@@ -155,14 +155,25 @@ object PlayerCacheManager {
                                 deferredPair.second.await()
                             } else {
                                 Log.d(TAG, "prefetchNextSongs: Fetching stream URL for prefetch offset=$offset attempt=$attempt...")
-                                ReliabilityDiagnostics.record("prefetch", "resolve", nextSong.videoId, attempt = attempt, status = "started")
-                                InnerTube.getStreamUrl(nextSong.videoId, quality)
+                                if (nextSong.videoId.startsWith("sc:")) {
+                                    com.vinmusic.soundcloud.SoundCloudApi.getStreamUrl(nextSong.videoId.removePrefix("sc:"))
+                                } else {
+                                    InnerTube.getStreamUrl(nextSong.videoId, quality)
+                                }
                             }
                         } catch (e: Exception) {
                             lastError = e
                             null
                         }
                         if (streamUrl.isNullOrBlank()) continue
+
+                        // SoundCloud streams: URL is already prefetched into memory. Skip byte-level CacheWriter
+                        // for HLS streams since caching playlist text files into disk cache breaks playback.
+                        if (nextSong.videoId.startsWith("sc:")) {
+                            Log.d(TAG, "prefetchNextSongs: URL prefetched into memory for SoundCloud track ${nextSong.videoId}")
+                            cached = true
+                            break
+                        }
 
                         try {
                             val resolvedUa = com.vinmusic.innertube.InnerTube.getUserAgentForUrl(streamUrl)

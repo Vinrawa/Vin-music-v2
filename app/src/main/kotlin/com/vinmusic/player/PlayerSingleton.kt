@@ -484,7 +484,11 @@ object PlayerSingleton {
                 
                 val deferred = async(Dispatchers.IO) {
                     try {
-                        InnerTube.getStreamUrl(nextSong.videoId, quality)
+                        if (nextSong.videoId.startsWith("sc:")) {
+                            com.vinmusic.soundcloud.SoundCloudApi.getStreamUrl(nextSong.videoId.removePrefix("sc:"))
+                        } else {
+                            InnerTube.getStreamUrl(nextSong.videoId, quality)
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Prefetch failed for videoId=${nextSong.videoId}: ${e.message}")
                         null
@@ -572,17 +576,29 @@ object PlayerSingleton {
                     // Match the User-Agent to the client that generated the stream URL.
                     // YouTube CDN validates the UA against the `c=` param in the URL.
                     val urlStr = dataSpec.uri.toString()
-                    val resolvedUa = com.vinmusic.innertube.InnerTube.getUserAgentForUrl(urlStr)
-                    val isNativeClient = urlStr.contains("c=IOS") ||
-                        urlStr.contains("c=ANDROID") ||
-                        urlStr.contains("c=VISIONOS") ||
-                        urlStr.contains("cps=1021")
+                    val isYouTube = urlStr.contains("googlevideo.com") || urlStr.contains("youtube.com")
+                    val isSoundCloud = urlStr.contains("soundcloud") || urlStr.contains("sndcdn")
+
+                    val resolvedUa = if (isSoundCloud) {
+                        "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    } else if (isYouTube) {
+                        com.vinmusic.innertube.InnerTube.getUserAgentForUrl(urlStr)
+                    } else {
+                        "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36"
+                    }
+
                     val requestProps = mutableMapOf(
                         "Accept-Encoding" to "identity"
                     )
-                    if (!isNativeClient) {
-                        requestProps["Origin"] = "https://www.youtube.com"
-                        requestProps["Referer"] = "https://www.youtube.com/"
+                    if (isYouTube) {
+                        val isNativeClient = urlStr.contains("c=IOS") ||
+                            urlStr.contains("c=ANDROID") ||
+                            urlStr.contains("c=VISIONOS") ||
+                            urlStr.contains("cps=1021")
+                        if (!isNativeClient) {
+                            requestProps["Origin"] = "https://www.youtube.com"
+                            requestProps["Referer"] = "https://www.youtube.com/"
+                        }
                     }
                     val source = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                         .setUserAgent(resolvedUa)
@@ -686,15 +702,20 @@ object PlayerSingleton {
         return builder.build()
     }
 
-    private fun buildMediaItem(song: VideoItem, url: String? = null, artBytes: ByteArray? = null): MediaItem {
+    private fun buildMediaItem(song: VideoItem, url: String? = null, artBytes: ByteArray? = null, isHls: Boolean = false): MediaItem {
         val builder = MediaItem.Builder()
             .setMediaId(song.videoId)
             .setMediaMetadata(buildMediaMetadata(song, artBytes))
 
         if (url != null) {
-            builder
-                .setUri(url)
-                .setCustomCacheKey(song.videoId)
+            builder.setUri(url)
+            val isSoundCloud = song.videoId.startsWith("sc:")
+            if (!isSoundCloud) {
+                builder.setCustomCacheKey(song.videoId)
+            }
+            if (isHls || url.contains(".m3u8") || url.contains("media-streaming.soundcloud.cloud")) {
+                builder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+            }
         }
 
         return builder.build()
@@ -803,15 +824,32 @@ object PlayerSingleton {
             }
         }
 
+        if (song.videoId.startsWith("sc:") && !song.customThumbnailUrl.isNullOrBlank()) {
+            com.vinmusic.soundcloud.SoundCloudApi.cacheArtwork(song.videoId, song.customThumbnailUrl)
+        } else if (!song.videoId.startsWith("sc:")) {
+            scope.launch(Dispatchers.IO) {
+                val highRes = com.vinmusic.data.HighResArtHelper.fetchArtwork(song.videoId, song.title, song.author)
+                if (highRes != null && currentSong?.videoId == song.videoId) {
+                    withContext(Dispatchers.Main) {
+                        if (currentSong?.videoId == song.videoId) {
+                            currentSong = currentSong?.copy(customThumbnailUrl = highRes)
+                        }
+                    }
+                }
+            }
+        }
+
         // Save to history + Metrolist-style related cache for recommendations
         scope.launch(Dispatchers.IO) {
+            val thumb = song.customThumbnailUrl ?: if (song.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId) else null
             database.historyDao().insert(
                 HistoryEntry(
                     videoId = song.videoId,
                     title = song.title,
                     author = song.author,
                     genre = null,
-                    durationText = song.durationText
+                    durationText = song.durationText,
+                    thumbnailUrl = thumb
                 )
             )
             recommendationRepository?.touchSongPlayMeta(song)
@@ -835,11 +873,15 @@ object PlayerSingleton {
                 var totalCachedBytes = cacheResult.totalCachedBytes
                 val isDeviceOnline = cacheResult.isDeviceOnline
 
-                Log.d(TAG, "Cache check: isDownloadCacheValid=$isDownloadCacheValid isPlayerCached=$isPlayerCached isCachedComplete=$isCachedComplete totalCachedBytes=$totalCachedBytes isDeviceOnline=$isDeviceOnline")
+                if (song.videoId.startsWith("sc:")) {
+                    isCachedComplete = false
+                    totalCachedBytes = 0L
+                }
 
                 var url: String
                 var artBytes: ByteArray? = null
                 var onlineAndCached = isCachedComplete && isDeviceOnline
+                var isSoundCloudHls = false
 
                 // Load artwork bytes locally first on IO thread.
                 val ctx = context
@@ -905,9 +947,13 @@ object PlayerSingleton {
                     withContext(Dispatchers.Main) { errorMessage = null }
                     // Fetch stream URL and artwork bytes in parallel
                     var fetchedUrl: String? = null
+                    isSoundCloudHls = false
                     
                     if (!forceFresh && prefetchedUrlDeferred != null && prefetchedUrlDeferred.first == song.videoId) {
                         fetchedUrl = prefetchedUrlDeferred.second.await()
+                        if (song.videoId.startsWith("sc:") && fetchedUrl != null) {
+                            isSoundCloudHls = fetchedUrl.contains(".m3u8") || fetchedUrl.contains("media-streaming.soundcloud.cloud")
+                        }
                         ReliabilityDiagnostics.record(
                             "playback", "resolve_prefetch", song.videoId,
                             status = if (fetchedUrl != null) "ok" else "empty"
@@ -915,24 +961,49 @@ object PlayerSingleton {
                     }
                     
                     if (fetchedUrl == null) {
-                        val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
-                        // Retry up to 2 times with 1-second delay for resilient playback
-                        for (attempt in 1..2) {
-                            ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = attempt, status = "started")
-                            fetchedUrl = try {
-                                InnerTube.getStreamUrl(song.videoId, quality, forceFresh = forceFresh)
+                        if (song.videoId.startsWith("sc:")) {
+                            ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = 1, status = "started_soundcloud")
+                            val scStream = try {
+                                val rawId = song.videoId.removePrefix("sc:")
+                                com.vinmusic.soundcloud.SoundCloudApi.getStream(rawId)
                             } catch (e: Exception) {
-                                Log.e(TAG, "Stream URL fetch attempt $attempt failed: ${e.message}")
+                                Log.e(TAG, "SoundCloud stream fetch failed: ${e.message}")
                                 null
+                            }
+                            fetchedUrl = scStream?.url
+                            isSoundCloudHls = scStream?.isHls ?: false
+                            val scArtwork = com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId)
+                            if (scArtwork != null && currentSong?.videoId == song.videoId && currentSong?.customThumbnailUrl == null) {
+                                withContext(Dispatchers.Main) {
+                                    if (currentSong?.videoId == song.videoId && currentSong?.customThumbnailUrl == null) {
+                                        currentSong = currentSong?.copy(customThumbnailUrl = scArtwork)
+                                    }
+                                }
                             }
                             ReliabilityDiagnostics.record(
                                 "playback", "resolve_attempt", song.videoId,
-                                attempt = attempt, status = if (fetchedUrl != null) "ok" else "empty"
+                                attempt = 1, status = if (fetchedUrl != null) "ok" else "empty"
                             )
-                            if (fetchedUrl != null) break
-                            if (attempt < 2) {
-                                Log.d(TAG, "Retrying stream URL fetch in 1s (attempt ${attempt + 1}/2)...")
-                                delay(1000)
+                        } else {
+                            val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
+                            // Retry up to 2 times with 1-second delay for resilient playback
+                            for (attempt in 1..2) {
+                                ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = attempt, status = "started")
+                                fetchedUrl = try {
+                                    InnerTube.getStreamUrl(song.videoId, quality, forceFresh = forceFresh)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Stream URL fetch attempt $attempt failed: ${e.message}")
+                                    null
+                                }
+                                ReliabilityDiagnostics.record(
+                                    "playback", "resolve_attempt", song.videoId,
+                                    attempt = attempt, status = if (fetchedUrl != null) "ok" else "empty"
+                                )
+                                if (fetchedUrl != null) break
+                                if (attempt < 2) {
+                                    Log.d(TAG, "Retrying stream URL fetch in 1s (attempt ${attempt + 1}/2)...")
+                                    delay(1000)
+                                }
                             }
                         }
                     }
@@ -974,98 +1045,107 @@ object PlayerSingleton {
                         Log.e(TAG, "Failed to start VinMusicService in playSong: ${e.message}")
                     }
 
-                    val mediaItem = buildMediaItem(song, url, artBytes)
+                    val isSoundCloud = song.videoId.startsWith("sc:")
+                    val isHlsStream = isSoundCloudHls || url.contains(".m3u8") || url.contains("/hls") || url.contains("media-streaming.soundcloud.cloud")
+                    val mediaItem = buildMediaItem(song, url, artBytes, isHls = isHlsStream)
                     notificationMediaItem = mediaItem
 
-                    Log.d(TAG, "Setting media source: ${url.take(80)}")
+                    Log.d(TAG, "Setting media source: isSoundCloud=$isSoundCloud isHls=$isHlsStream ${url.take(80)}")
                     ReliabilityDiagnostics.record("playback", "prepare", song.videoId, status = "started", details = if (onlineAndCached) "online_cached" else "network_or_download")
                     player.playWhenReady = true
                     
                     // ALWAYS use custom MediaSource with dynamic UA factory to match the client that generated the stream URL
-        val dynamicHttpFactory = createDynamicHttpDataSourceFactory()
-        val mediaSource: androidx.media3.exoplayer.source.MediaSource = if (url.startsWith("content://") || url.startsWith("file://")) {
-            Log.d(TAG, "Playing local media content URI with DefaultDataSource: $url")
-            val defaultFactory = androidx.media3.datasource.DefaultDataSource.Factory(ctx)
-            androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(defaultFactory)
-                .createMediaSource(mediaItem)
-        } else if (isCachedComplete) {
-            val cache = resolvedCache
-            if (cache != null) {
-                if (onlineAndCached) {
-                    Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=${song.videoId}")
-                    val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                        .setCache(cache)
-                        .setUpstreamDataSourceFactory(dynamicHttpFactory) // Dynamic UA for network fallback!
-                        .setCacheKeyFactory { dataSpec ->
-                            dataSpec.key ?: song.videoId
+                    val dynamicHttpFactory = createDynamicHttpDataSourceFactory()
+                    fun createTargetMediaSource(dsFactory: androidx.media3.datasource.DataSource.Factory): androidx.media3.exoplayer.source.MediaSource {
+                        return if (isHlsStream) {
+                            androidx.media3.exoplayer.hls.HlsMediaSource.Factory(dsFactory)
+                                .setAllowChunklessPreparation(true)
+                                .createMediaSource(mediaItem)
+                        } else {
+                            androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dsFactory).createMediaSource(mediaItem)
                         }
-                        .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                    androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
-                        .createMediaSource(mediaItem)
-                } else {
-                    Log.d(TAG, "Offline playback: using cache=${if (isDownloadCacheValid) "download" else "player"}, totalCachedBytes=$totalCachedBytes for videoId=${song.videoId}")
-                    val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                        .setCache(cache)
-                        .setCacheKeyFactory { dataSpec ->
-                            dataSpec.key ?: song.videoId
-                        }
-                        .setUpstreamDataSourceFactory {
-                            // Fixed upstream that reports bytesRemaining correctly relative to requested position
-                            object : androidx.media3.datasource.DataSource {
-                                private var uri: android.net.Uri? = null
-                                private var bytesRemaining = 0L
+                    }
 
-                                override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
-                                
-                                override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
-                                    uri = dataSpec.uri
-                                    val position = dataSpec.position
-                                    bytesRemaining = if (totalCachedBytes > position) {
-                                        totalCachedBytes - position
-                                    } else {
-                                        0L
+                    val mediaSource: androidx.media3.exoplayer.source.MediaSource = if (url.startsWith("content://") || url.startsWith("file://")) {
+                        Log.d(TAG, "Playing local media content URI with DefaultDataSource: $url")
+                        val defaultFactory = androidx.media3.datasource.DefaultDataSource.Factory(ctx)
+                        createTargetMediaSource(defaultFactory)
+                    } else if (isSoundCloud) {
+                        Log.d(TAG, "Playing SoundCloud stream via dynamic HTTP factory (isHls=$isHlsStream)")
+                        createTargetMediaSource(dynamicHttpFactory)
+                    } else if (isCachedComplete) {
+                        val cache = resolvedCache
+                        if (cache != null) {
+                            if (onlineAndCached) {
+                                Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=${song.videoId}")
+                                val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                                    .setCache(cache)
+                                    .setUpstreamDataSourceFactory(dynamicHttpFactory) // Dynamic UA for network fallback!
+                                    .setCacheKeyFactory { dataSpec ->
+                                        dataSpec.key ?: song.videoId
                                     }
-                                    Log.d(TAG, "Offline upstream open: position=$position, totalCachedBytes=$totalCachedBytes, bytesRemaining=$bytesRemaining")
-                                    return bytesRemaining
-                                }
-                                
-                                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-                                    if (bytesRemaining <= 0) {
-                                        return androidx.media3.common.C.RESULT_END_OF_INPUT
+                                    .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                                createTargetMediaSource(cacheFactory)
+                            } else {
+                                Log.d(TAG, "Offline playback: using cache=${if (isDownloadCacheValid) "download" else "player"}, totalCachedBytes=$totalCachedBytes for videoId=${song.videoId}")
+                                val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                                    .setCache(cache)
+                                    .setCacheKeyFactory { dataSpec ->
+                                        dataSpec.key ?: song.videoId
                                     }
-                                    Log.w(TAG, "Offline cache miss at remaining=$bytesRemaining, requesting length=$length")
-                                    throw java.io.IOException("Offline cache miss: no bytes available at this position")
-                                }
-                                
-                                override fun getUri(): android.net.Uri? = uri
-                                override fun close() {}
+                                    .setUpstreamDataSourceFactory {
+                                        // Fixed upstream that reports bytesRemaining correctly relative to requested position
+                                        object : androidx.media3.datasource.DataSource {
+                                            private var uri: android.net.Uri? = null
+                                            private var bytesRemaining = 0L
+
+                                            override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) {}
+                                            
+                                            override fun open(dataSpec: androidx.media3.datasource.DataSpec): Long {
+                                                uri = dataSpec.uri
+                                                val position = dataSpec.position
+                                                bytesRemaining = if (totalCachedBytes > position) {
+                                                    totalCachedBytes - position
+                                                } else {
+                                                    0L
+                                                }
+                                                Log.d(TAG, "Offline upstream open: position=$position, totalCachedBytes=$totalCachedBytes, bytesRemaining=$bytesRemaining")
+                                                return bytesRemaining
+                                            }
+                                            
+                                            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                                                if (bytesRemaining <= 0) {
+                                                    return androidx.media3.common.C.RESULT_END_OF_INPUT
+                                                }
+                                                Log.w(TAG, "Offline cache miss at remaining=$bytesRemaining, requesting length=$length")
+                                                throw java.io.IOException("Offline cache miss: no bytes available at this position")
+                                            }
+                                            
+                                            override fun getUri(): android.net.Uri? = uri
+                                            override fun close() {}
+                                        }
+                                    }
+                                createTargetMediaSource(cacheFactory)
                             }
+                        } else {
+                            // No cache available - use dynamic HTTP factory directly
+                            createTargetMediaSource(dynamicHttpFactory)
                         }
-                    androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
-                        .createMediaSource(mediaItem)
-                }
-            } else {
-                // No cache available - use dynamic HTTP factory directly
-                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dynamicHttpFactory)
-                    .createMediaSource(mediaItem)
-            }
-        } else {
-            // Fresh network playback — route through player cache so prefetched
-            // bytes from prefetchNextSongs() are used instead of re-downloading.
-            val pCache = context?.let { getCache(it) }
-            if (pCache != null) {
-                val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
-                    .setCache(pCache)
-                    .setUpstreamDataSourceFactory(dynamicHttpFactory)
-                    .setCacheKeyFactory { dataSpec -> dataSpec.key ?: song.videoId }
-                    .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(cacheFactory)
-                    .createMediaSource(mediaItem)
-            } else {
-                androidx.media3.exoplayer.source.ProgressiveMediaSource.Factory(dynamicHttpFactory)
-                    .createMediaSource(mediaItem)
-            }
-        }
+                    } else {
+                        // Fresh network playback — route through player cache so prefetched
+                        // bytes from prefetchNextSongs() are used instead of re-downloading.
+                        val pCache = context?.let { getCache(it) }
+                        if (pCache != null && !isHlsStream) {
+                            val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                                .setCache(pCache)
+                                .setUpstreamDataSourceFactory(dynamicHttpFactory)
+                                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: song.videoId }
+                                .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                            createTargetMediaSource(cacheFactory)
+                        } else {
+                            createTargetMediaSource(dynamicHttpFactory)
+                        }
+                    }
         
         player.setMediaSource(mediaSource, safeStartPositionMs)
         player.prepare()

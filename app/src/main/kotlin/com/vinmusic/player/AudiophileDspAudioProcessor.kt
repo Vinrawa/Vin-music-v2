@@ -153,8 +153,8 @@ class AudiophileDspAudioProcessor : BaseAudioProcessor() {
 
         // 1. Calculate Low-Shelf Bass Filter
         if (bassStrength > 0.001f) {
-            val dbGain = bassStrength.toDouble() * 14.0 // Up to +14dB
-            val f0 = 85.0 // Sub-bass & kick frequency
+            val dbGain = bassStrength.toDouble() * 7.5 // Clean studio sub-bass boost (up to +7.5dB)
+            val f0 = 80.0 // Sub-bass & kick frequency
             val q = 0.707
 
             val a = Math.pow(10.0, dbGain / 40.0)
@@ -227,7 +227,8 @@ class AudiophileDspAudioProcessor : BaseAudioProcessor() {
         val bStr = bassStrength.toDouble()
         val cStr = clarityStrength.toDouble()
         val normActive = normalizationEnabled
-        val harmonicBlend = bStr * 0.38 // Scale of psychoacoustic harmonic excitation
+        val harmonicBlend = bStr * 0.16 // Gentle psychoacoustic harmonic warmth
+        val headroom = if (bStr > 0.001) 1.0 / Math.pow(10.0, (bStr * 3.5) / 20.0) else 1.0
         val lpAlpha = 0.045 // ~100Hz low-pass cutoff at 44.1k/48k
 
         if (channelCount == 2) {
@@ -263,23 +264,23 @@ class AudiophileDspAudioProcessor : BaseAudioProcessor() {
                     right *= currentGain
                 }
 
-                // Harmonic Bass Exciter (MaxxBass style)
+                // Harmonic Bass Exciter & Sub-bass boost
                 if (bStr > 0.001) {
                     exciterLpL += lpAlpha * (left - exciterLpL)
                     exciterLpR += lpAlpha * (right - exciterLpR)
 
-                    // Soft cubic saturation generates 2nd/3rd harmonics of the sub-bass fundamentals
-                    val normL = (exciterLpL / 12000.0).coerceIn(-1.5, 1.5)
-                    val normR = (exciterLpR / 12000.0).coerceIn(-1.5, 1.5)
-                    val harmL = (normL - (normL * normL * normL * 0.33)) * 10000.0
-                    val harmR = (normR - (normR * normR * normR * 0.33)) * 10000.0
+                    // Smooth sinusoidal warmth generates even sub-bass harmonics without overdrive harshness
+                    val normL = (exciterLpL / 16000.0).coerceIn(-1.0, 1.0)
+                    val normR = (exciterLpR / 16000.0).coerceIn(-1.0, 1.0)
+                    val harmL = sin(normL * (PI * 0.5)) * 6000.0
+                    val harmR = sin(normR * (PI * 0.5)) * 6000.0
 
-                    // High-pass the harmonics so they sit right in the audible 90Hz–250Hz earphone range
+                    // High-pass the harmonics into audible 90Hz–250Hz punch range
                     exciterHpL += 0.09 * (harmL - exciterHpL)
                     exciterHpR += 0.09 * (harmR - exciterHpR)
 
-                    left += exciterHpL * harmonicBlend
-                    right += exciterHpR * harmonicBlend
+                    left = (left * headroom) + exciterHpL * harmonicBlend
+                    right = (right * headroom) + exciterHpR * harmonicBlend
 
                     // Apply low-shelf resonant bass boost
                     left = bassFilterL.process(left)
@@ -325,10 +326,10 @@ class AudiophileDspAudioProcessor : BaseAudioProcessor() {
 
                 if (bStr > 0.001) {
                     exciterLpL += lpAlpha * (sample - exciterLpL)
-                    val norm = (exciterLpL / 12000.0).coerceIn(-1.5, 1.5)
-                    val harm = (norm - (norm * norm * norm * 0.33)) * 10000.0
+                    val norm = (exciterLpL / 16000.0).coerceIn(-1.0, 1.0)
+                    val harm = sin(norm * (PI * 0.5)) * 6000.0
                     exciterHpL += 0.09 * (harm - exciterHpL)
-                    sample += exciterHpL * harmonicBlend
+                    sample = (sample * headroom) + exciterHpL * harmonicBlend
                     sample = bassFilterL.process(sample)
                 }
                 if (cStr > 0.001) {
@@ -342,17 +343,15 @@ class AudiophileDspAudioProcessor : BaseAudioProcessor() {
     }
 
     /**
-     * Smooth algebraic soft-knee limiter.
-     * Prevents 16-bit PCM integer wrap-around/clipping under extreme bass boosts.
+     * Smooth analog tape saturation limiter (hyperbolic tangent curve).
+     * Eliminates 16-bit PCM integer wrap-around and harsh clipping under deep bass peaks.
      */
     private fun softLimit(sample: Double): Short {
         val norm = sample / 32768.0
-        val limited = if (norm > 0.82) {
-            val delta = norm - 0.82
-            0.82 + 0.17 * (delta / (0.17 + delta))
-        } else if (norm < -0.82) {
-            val delta = -norm - 0.82
-            -(0.82 + 0.17 * (delta / (0.17 + delta)))
+        val limited = if (norm > 0.70) {
+            0.70 + 0.28 * kotlin.math.tanh((norm - 0.70) / 0.28)
+        } else if (norm < -0.70) {
+            -0.70 + 0.28 * kotlin.math.tanh((norm + 0.70) / 0.28)
         } else {
             norm
         }

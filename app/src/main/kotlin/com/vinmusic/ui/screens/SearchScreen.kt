@@ -73,7 +73,7 @@ private fun isDirectArtistMatch(query: String, artistName: String): Boolean {
     return (queryMatchesName || nameMatchesQuery) && nameWords.size <= qWords.size + 1
 }
 
-private enum class SearchTab { ALL, SONGS, VIDEOS, ARTISTS, ALBUMS }
+private enum class SearchTab { ALL, SONGS, SOUNDCLOUD, VIDEOS, ARTISTS, ALBUMS }
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -87,6 +87,7 @@ fun SearchScreen(
     var query          by remember { mutableStateOf("") }
     var activeTab      by remember { mutableStateOf(SearchTab.ALL) }
     var allResults     by remember { mutableStateOf(AllSearchResults()) }
+    var soundCloudResults by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var suggestions    by remember { mutableStateOf<List<String>>(emptyList()) }
     var isLoading      by remember { mutableStateOf(false) }
     var showSugg       by remember { mutableStateOf(false) }
@@ -144,8 +145,15 @@ fun SearchScreen(
         showSugg = false; isLoading = true; selectedArtist = null
         moreSongs = emptyList(); artistAlbums = emptyList()
         searchRecs = emptyList(); recsLabel = ""
+        soundCloudResults = emptyList()
         searchJob?.cancel()
         searchJob = scope.launch(Dispatchers.IO) {
+            val scTask = async {
+                runCatching {
+                    com.vinmusic.soundcloud.SoundCloudApi.searchTracks(q, limit = 25)
+                }.getOrDefault(emptyList())
+            }
+
             val fastSongs = runCatching {
                 withTimeout(5_500L) { InnerTube.search(q) }
             }.getOrDefault(emptyList())
@@ -161,6 +169,7 @@ fun SearchScreen(
             }.getOrElse {
                 AllSearchResults(songs = fastSongs)
             }
+            val scList = scTask.await()
             val filteredArtists = r.artists.filter { isDirectArtistMatch(q, it.name) }
             val merged = r.copy(
                 songs = (fastSongs + r.songs).distinctBy { it.videoId },
@@ -168,6 +177,7 @@ fun SearchScreen(
             )
             withContext(Dispatchers.Main) {
                 allResults = merged
+                soundCloudResults = scList
                 isLoading = false
             }
 
@@ -327,11 +337,12 @@ fun SearchScreen(
                         items(SearchTab.entries) { tab ->
                             val active = activeTab == tab
                             val label = when (tab) {
-                                SearchTab.ALL     -> "All"
-                                SearchTab.SONGS   -> if (allSongs.isNotEmpty()) "Songs (${allSongs.size}+)" else "Songs"
-                                SearchTab.VIDEOS  -> if (allResults.videos.isNotEmpty()) "Videos (${allResults.videos.size}+)" else "Videos"
-                                SearchTab.ARTISTS -> "Artists"
-                                SearchTab.ALBUMS  -> "Albums"
+                                SearchTab.ALL        -> "All"
+                                SearchTab.SONGS      -> if (allSongs.isNotEmpty()) "Songs (${allSongs.size}+)" else "Songs"
+                                SearchTab.SOUNDCLOUD -> if (soundCloudResults.isNotEmpty()) "SoundCloud (${soundCloudResults.size})" else "SoundCloud"
+                                SearchTab.VIDEOS     -> if (allResults.videos.isNotEmpty()) "Videos (${allResults.videos.size}+)" else "Videos"
+                                SearchTab.ARTISTS    -> "Artists"
+                                SearchTab.ALBUMS     -> "Albums"
                             }
                             Box(
                                 modifier = Modifier
@@ -460,6 +471,26 @@ fun SearchScreen(
                                         }
                                     }
                                 }
+
+                                // 5. SoundCloud Remixes & Tracks
+                                if (soundCloudResults.isNotEmpty()) {
+                                    item { SearchSectionHeader("SoundCloud Remixes & Tracks") }
+                                    items(soundCloudResults.take(4), key = { "sc_all_${it.videoId}" }) { scTrack ->
+                                        SongListItem(song = scTrack, isPlaying = vm.currentSong?.videoId == scTrack.videoId,
+                                            onClick = { onSongClick(scTrack, soundCloudResults) },
+                                            onMore = { onSongMore(scTrack) })
+                                    }
+                                    if (soundCloudResults.size > 4) {
+                                        item {
+                                            TextButton(
+                                                onClick = { activeTab = SearchTab.SOUNDCLOUD },
+                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("See all ${soundCloudResults.size} SoundCloud tracks →", color = VinColors.Accent, fontSize = 13.sp)
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             // ── SONGS tab: all songs + load more ─────────────────────
@@ -490,6 +521,29 @@ fun SearchScreen(
                                             }
                                         }
                                         Spacer(Modifier.height(16.dp))
+                                    }
+                                }
+                            }
+
+                            // ── SOUNDCLOUD tab: underground, remix, phonk ───────────
+                            SearchTab.SOUNDCLOUD -> {
+                                if (soundCloudResults.isEmpty() && !isLoading) {
+                                    item { SearchEmptyState("No SoundCloud tracks found") }
+                                } else {
+                                    item {
+                                        Text(
+                                            "${soundCloudResults.size} tracks from SoundCloud",
+                                            fontSize = 13.sp, color = VinColors.Secondary,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                        )
+                                    }
+                                    items(soundCloudResults, key = { it.videoId }) { song ->
+                                        SongListItem(
+                                            song = song,
+                                            isPlaying = vm.currentSong?.videoId == song.videoId,
+                                            onClick = { onSongClick(song, soundCloudResults) },
+                                            onMore = { onSongMore(song) }
+                                        )
                                     }
                                 }
                             }

@@ -407,6 +407,15 @@ object InnerTube {
             val url = info.audioStreams
                 .filter { it.content?.isNotEmpty() == true }
                 .let { streams ->
+                    val isOpusPreferred = quality?.contains("Opus", ignoreCase = true) == true
+                    val candidateStreams = if (isOpusPreferred) {
+                        val opusOnly = streams.filter {
+                            it.format?.name?.contains("opus", ignoreCase = true) == true ||
+                            it.format?.name?.contains("webm", ignoreCase = true) == true
+                        }
+                        if (opusOnly.isNotEmpty()) opusOnly else streams
+                    } else streams
+
                     val targetKbps = when {
                         quality?.contains("96") == true  -> 96
                         quality?.contains("160") == true -> 160
@@ -416,9 +425,9 @@ object InnerTube {
                         else -> null
                     }
                     if (targetKbps != null) {
-                        streams.minByOrNull { Math.abs(it.bitrate - (targetKbps * 1024)) }?.content
+                        candidateStreams.minByOrNull { Math.abs(it.bitrate - (targetKbps * 1024)) }?.content
                     } else {
-                        streams.maxByOrNull { it.bitrate }?.content
+                        candidateStreams.maxByOrNull { it.bitrate }?.content
                     }
                 }
             if (!url.isNullOrEmpty()) {
@@ -634,6 +643,15 @@ object InnerTube {
                     mime.startsWith("audio/") && url.isNotEmpty() && noCip
                 }
                 ?.let { streams ->
+                    val isOpusPreferred = quality?.contains("Opus", ignoreCase = true) == true
+                    val candidateStreams = if (isOpusPreferred) {
+                        val opusOnly = streams.filter {
+                            val mime = it["mimeType"] as? String ?: ""
+                            mime.contains("opus", ignoreCase = true) || mime.contains("webm", ignoreCase = true)
+                        }
+                        if (opusOnly.isNotEmpty()) opusOnly else streams
+                    } else streams
+
                     val targetKbps = when {
                         quality?.contains("96") == true  -> 96
                         quality?.contains("160") == true -> 160
@@ -643,9 +661,9 @@ object InnerTube {
                         else -> null
                     }
                     if (targetKbps != null) {
-                        streams.minByOrNull { Math.abs(((it["bitrate"] as? Double)?.toLong() ?: 0L) - (targetKbps * 1024)) }
+                        candidateStreams.minByOrNull { Math.abs(((it["bitrate"] as? Double)?.toLong() ?: 0L) - (targetKbps * 1024)) }
                     } else {
-                        streams.maxByOrNull { (it["bitrate"] as? Double)?.toLong() ?: 0L }
+                        candidateStreams.maxByOrNull { (it["bitrate"] as? Double)?.toLong() ?: 0L }
                     }
                 }
                 ?.get("url") as? String
@@ -3115,8 +3133,15 @@ data class VideoItem(
     /** Present only when the source response exposes a trustworthy view count. */
     val viewCount: Long? = null
 ) {
-    val thumbnail:   String get() = customThumbnailUrl ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
-    val thumbnailHd: String get() = customThumbnailUrl ?: "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+    val thumbnail: String
+        get() = customThumbnailUrl
+            ?: if (videoId.startsWith("sc:")) (com.vinmusic.soundcloud.SoundCloudApi.getArtwork(videoId) ?: "")
+               else "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+
+    val thumbnailHd: String
+        get() = customThumbnailUrl
+            ?: if (videoId.startsWith("sc:")) (com.vinmusic.soundcloud.SoundCloudApi.getArtwork(videoId) ?: "")
+               else (com.vinmusic.data.HighResArtHelper.getArtwork(videoId) ?: "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg")
 }
 
 data class ArtistItem(

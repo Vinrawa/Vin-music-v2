@@ -504,8 +504,15 @@ fun LibraryScreen(
             "History" -> {
                 if (history.isEmpty()) {
                     EmptyState(Icons.Default.History, "No history yet", "Play some songs to see them here")
-                } else {
-                    val songs = history.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                    val songs = history.map {
+                        VideoItem(
+                            videoId = it.videoId,
+                            title = it.title,
+                            author = it.author,
+                            durationText = it.durationText,
+                            customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
+                        )
+                    }
                     LazyColumn(contentPadding = PaddingValues(bottom = 220.dp)) {
                         item {
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),

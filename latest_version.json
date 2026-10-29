@@ -1,8 +1,8 @@
 {
-  "latestVersionCode": 24,
-  "latestVersionName": "2.3.1",
+  "latestVersionCode": 25,
+  "latestVersionName": "2.3.2",
   "apkUrl": "https://vinrawa.github.io/Vin-music-v2/vinmusic.apk",
-  "sha256": "4afefd824150930f918aff8a4eb61253656b86f34b61d9bc2e8e72b941b66754",
+  "sha256": "db2c1b93bf214cdd800c784c6697b4ce0208b11ca7456d0febe02d79a280258f",
   "forceUpdate": false,
-  "releaseNotes": "Tactile hardware haptics engine, redesigned grouped Apple-style credits panel, redesigned professional equalizer with live dB readouts & DSP sliders, standardized home shelf card dimensions, and deduplicated recommendations."
+  "releaseNotes": "Apple Music-inspired dynamic Liquid Aura Mesh ambient background on Home screen, Live animated Equalizer on Floating Mini-Player, strict two-way high-res album artwork matching, removed orange SoundCloud branding for champagne gold aesthetic, and Cloud Downloads Sync to backup and restore offline library."
 }

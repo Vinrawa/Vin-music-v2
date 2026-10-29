@@ -126,7 +126,12 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             android.util.Log.e("VIN_MAIN", "Failed to connect MediaController: ${e.message}")
         }
-        
+
+        // Initialize persistent SoundCloud artwork cache
+        com.vinmusic.soundcloud.SoundCloudApi.init(applicationContext)
+        // Initialize persistent High-Resolution artwork cache
+        com.vinmusic.data.HighResArtHelper.init(applicationContext)
+
         enableEdgeToEdge()
 
         val authVm: AuthViewModel by viewModels()

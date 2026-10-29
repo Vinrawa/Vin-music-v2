@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import java.util.Locale
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -96,6 +97,7 @@ object RecommendationManager {
     private val cachedMixes = ArrayList<SpotifyMix>()
     
     private val gson = Gson()
+    private val searchSemaphore = kotlinx.coroutines.sync.Semaphore(4)
 
     // Every Noise genre similarity graph — loaded lazily from assets
     private var genreSimilarMap: Map<String, List<String>>? = null
@@ -213,51 +215,37 @@ object RecommendationManager {
     /** Day-granular rotation bucket — stable within a day, advances at midnight. */
     private fun currentRotationBucket(): Int = (System.currentTimeMillis() / 86_400_000L).toInt()
 
-    private fun loadFromDisk(ctx: Context): List<Pair<String, List<RecommendedSong>>>? {
+    internal fun loadFromDisk(ctx: Context, ignoreExpiry: Boolean = false): List<Pair<String, List<RecommendedSong>>>? {
         try {
             val prefs = ctx.getSharedPreferences("vin_music_recommendation_cache", Context.MODE_PRIVATE)
             if (prefs.getInt("cache_schema_version", 0) != CACHE_SCHEMA_VERSION) {
-                prefs.edit().remove("cached_sections").remove("cached_time").apply()
                 return null
             }
             val json = prefs.getString("cached_sections", null) ?: return null
             val time = prefs.getLong("cached_time", 0L)
 
-            // Expired shelves are treated as a cache miss so a fresh session
-            // regenerates from current listening behavior.
-            if (System.currentTimeMillis() - time > SHELF_DISK_TTL_MS) {
-                Log.d(TAG, "Disk cache older than TTL — treating as invalid.")
-                prefs.edit().remove("cached_sections").remove("cached_time").apply()
-                return null
-            }
-
-            // Shelves from a previous rotation day would visibly swap out against
-            // today's generated set — treat them as stale too. This keeps the
-            // shelf set stable for the whole day (no random appear/disappear).
-            if (prefs.getInt("rotation_bucket", -1) != currentRotationBucket()) {
-                Log.d(TAG, "Disk cache from a previous rotation day — treating as invalid.")
-                prefs.edit().remove("cached_sections").remove("cached_time").apply()
-                return null
+            if (!ignoreExpiry) {
+                // If not ignoring expiry, treat expired as miss but DO NOT delete!
+                if (System.currentTimeMillis() - time > SHELF_DISK_TTL_MS) {
+                    Log.d(TAG, "Disk cache older than TTL.")
+                    return null
+                }
+                if (prefs.getInt("rotation_bucket", -1) != currentRotationBucket()) {
+                    Log.d(TAG, "Disk cache from a previous rotation day.")
+                    return null
+                }
             }
             
             val type = object : TypeToken<List<CachedSection>>() {}.type
             val list: List<CachedSection> = gson.fromJson(json, type) ?: return null
             
-            if (list.isEmpty()) {
-                Log.w(TAG, "Disk cache has 0 sections — treating as invalid.")
-                prefs.edit().remove("cached_sections").remove("cached_time").apply()
-                return null
-            }
+            if (list.isEmpty()) return null
 
             val totalSongs = list.sumOf { it.songs.size }
-            if (totalSongs == 0) {
-                Log.w(TAG, "Disk cache has sections but 0 songs — treating as invalid.")
-                prefs.edit().remove("cached_sections").remove("cached_time").apply()
-                return null
-            }
+            if (totalSongs == 0) return null
             
             lastCacheTime = time
-            Log.d(TAG, "Loaded ${list.size} sections ($totalSongs songs) from disk cache.")
+            Log.d(TAG, "Loaded ${list.size} sections ($totalSongs songs) from disk cache (ignoreExpiry=$ignoreExpiry).")
             return list.map { Pair(it.title, it.songs) }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load recommendations from disk: ${e.message}")
@@ -1487,6 +1475,7 @@ object RecommendationManager {
             if (author.isBlank() || author.lowercase() == "unknown") continue
 
             var score = 0.0
+            score += sig.playCount * 2.0
             score += sig.completeCount * 5.0
             score += sig.repeatCount * 6.0
             if (sig.isLiked) {
@@ -1556,7 +1545,7 @@ object RecommendationManager {
                 agg.interactionScore * (0.35 + 0.65 * recency)
             } else 0.0
             // Plain plays fade fast — they only matter while recent.
-            val plainPlay = if (agg.inHistory && agg.interactionScore <= 0) 0.6 * recency else 0.0
+            val plainPlay = if (agg.inHistory && agg.interactionScore <= 0) 2.5 * recency else 0.0
             // Imports express deliberate intent, so no decay — but modest weight.
             val importBoost = if (agg.imported && agg.interactionScore <= 0) 2.5 else 0.0
 
@@ -2184,12 +2173,9 @@ object RecommendationManager {
         
         val pool = mutableListOf<VideoItem>()
         
-        // 1. PRIMARY: YTM Related (fresh, algorithm-curated)
+        // 1. PRIMARY: YTM Related (fresh, algorithm-curated without RDAMVM automix drift)
         try {
-            val ytmNext = com.vinmusic.innertube.YTMusicApi.getNextRelated(
-                seedSong.videoId, 
-                playlistId = "RDAMVM${seedSong.videoId}"
-            )
+            val ytmNext = com.vinmusic.innertube.YTMusicApi.getNextRelated(seedSong.videoId)
             val browse = ytmNext.relatedBrowse
             if (browse != null) {
                 val related = com.vinmusic.innertube.YTMusicApi.getRelatedSongs(browse.browseId, browse.params)
@@ -2200,23 +2186,6 @@ object RecommendationManager {
             }
         } catch (e: Exception) {
             Log.w(TAG, "YTM Related failed: ${e.message}")
-        }
-
-        // 2. SECONDARY: YTM Radio (RDAMVM radio playlist)
-        if (pool.size < 10) {
-            try {
-                val radio = InnerTube.getWatchNextRadio(seedSong.videoId)
-                if (radio.isNotEmpty()) {
-                    Log.d(TAG, "YTM Radio: ${radio.size} tracks")
-                    for (track in radio) {
-                        if (pool.none { it.videoId == track.videoId }) {
-                            pool.add(track)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "YTM Radio failed: ${e.message}")
-            }
         }
 
         // 3. FALLBACK: Simple search (only if pool is small)
@@ -2255,7 +2224,7 @@ object RecommendationManager {
     /** Fetches YT Music's own related tracks for a seed; empty list when unavailable. */
     private suspend fun fetchYtmRelated(videoId: String): List<VideoItem> = withContext(Dispatchers.IO) {
         try {
-            val next = com.vinmusic.innertube.YTMusicApi.getNextRelated(videoId, playlistId = "RDAMVM$videoId")
+            val next = com.vinmusic.innertube.YTMusicApi.getNextRelated(videoId, playlistId = null)
             val browse = next.relatedBrowse ?: return@withContext emptyList()
             com.vinmusic.innertube.YTMusicApi.getRelatedSongs(browse.browseId, browse.params)
         } catch (e: Exception) {
@@ -2360,7 +2329,7 @@ object RecommendationManager {
 
         // 3. Disk cache is also stale-first; manual pull refresh clears/replaces it.
         if (!forceRefresh) {
-            val disk = loadFromDisk(ctx)
+            val disk = loadFromDisk(ctx, ignoreExpiry = false) ?: loadFromDisk(ctx, ignoreExpiry = true)
             if (disk != null && disk.isNotEmpty()) {
                 synchronized(cachedSections) {
                     cachedSections.clear()
@@ -2834,11 +2803,13 @@ object RecommendationManager {
                         // Plus taste-blended search results for breadth
                         val queryJobs = task.queries.map { query ->
                             async(Dispatchers.IO) {
-                                try {
-                                    InnerTube.search(query)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Search query failed '$query': ${e.message}")
-                                    emptyList<VideoItem>()
+                                searchSemaphore.withPermit {
+                                    try {
+                                        InnerTube.search(query)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Search query failed '$query': ${e.message}")
+                                        emptyList<VideoItem>()
+                                    }
                                 }
                             }
                         }
@@ -2855,11 +2826,13 @@ object RecommendationManager {
                     } else {
                         val queryJobs = task.queries.map { query ->
                             async(Dispatchers.IO) {
-                                try {
-                                    InnerTube.search(query)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Search query failed '$query': ${e.message}")
-                                    emptyList<VideoItem>()
+                                searchSemaphore.withPermit {
+                                    try {
+                                        InnerTube.search(query)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Search query failed '$query': ${e.message}")
+                                        emptyList<VideoItem>()
+                                    }
                                 }
                             }
                         }

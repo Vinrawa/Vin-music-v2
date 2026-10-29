@@ -15,6 +15,7 @@ object RemoteConfigHelper {
     const val KEY_STREAM_EXTRACT_FALLBACK = "stream_extract_fallback_enabled"
     const val KEY_SMART_AUTOPLAY_DEFAULT = "smart_autoplay_default"
     const val KEY_LASTFM_API_KEY = "lastfm_api_key"
+    const val KEY_SOUNDCLOUD_CLIENT_ID = "soundcloud_client_id"
 
     /**
      * Initialize Remote Config with default values and fetch the latest parameters.
@@ -35,7 +36,8 @@ object RemoteConfigHelper {
                 KEY_LYRICS_PROVIDER_PRIORITY to "KuGou,NetEase,Jsoup",
                 KEY_STREAM_EXTRACT_FALLBACK to true,
                 KEY_SMART_AUTOPLAY_DEFAULT to true,
-                KEY_LASTFM_API_KEY to "526331c755d4f3a5e8c965230186a29b"
+                KEY_LASTFM_API_KEY to "526331c755d4f3a5e8c965230186a29b",
+                KEY_SOUNDCLOUD_CLIENT_ID to "ZeISTkUY1Q4so1FsHJKZaJo898iWk0d3"
             )
             remoteConfig.setDefaultsAsync(defaults)
 
@@ -107,6 +109,18 @@ object RemoteConfigHelper {
             Firebase.remoteConfig.getBoolean(KEY_SMART_AUTOPLAY_DEFAULT)
         } catch (e: Exception) {
             true
+        }
+    }
+
+    /**
+     * Get SoundCloud Client ID from Remote Config with fallback to active default.
+     */
+    fun getSoundCloudClientId(): String {
+        return try {
+            val key = Firebase.remoteConfig.getString(KEY_SOUNDCLOUD_CLIENT_ID)
+            if (key.isNotBlank()) key else "ZeISTkUY1Q4so1FsHJKZaJo898iWk0d3"
+        } catch (e: Exception) {
+            "ZeISTkUY1Q4so1FsHJKZaJo898iWk0d3"
         }
     }
 }
