@@ -7,6 +7,7 @@ import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
@@ -19,6 +20,11 @@ import com.vinmusic.diagnostics.ReliabilityDiagnostics
 
 @HiltAndroidApp
 class VinMusicApp : Application(), SingletonImageLoader.Factory {
+
+    companion object {
+        val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
+
     override fun onCreate() {
         super.onCreate()
         
@@ -36,7 +42,7 @@ class VinMusicApp : Application(), SingletonImageLoader.Factory {
         ReliabilityDiagnostics.init(this)
 
         // Warm up ExoPlayer caches and Recommendation DB asynchronously on Dispatchers.IO to eliminate Main thread disk scans
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        applicationScope.launch {
             com.vinmusic.player.PlayerSingleton.getCache(applicationContext)
             com.vinmusic.player.PlayerSingleton.getDownloadCache(applicationContext)
             try {

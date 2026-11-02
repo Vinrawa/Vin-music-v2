@@ -236,7 +236,7 @@ fun ArtistProfileScreen(
     // ── UI ────────────────────────────────────────────────────────────────────
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(VinColors.BgColor),
-        contentPadding = PaddingValues(bottom = 220.dp)
+        contentPadding = PaddingValues(bottom = 100.dp)
     ) {
 
         // ── Premium Artist Profile Header Banner ──────────────────────────────
@@ -306,9 +306,10 @@ fun ArtistProfileScreen(
                         Button(
                             onClick = { toggleFollowArtist() },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isFollowed) Color.White.copy(0.08f) else Color.White,
+                                containerColor = if (isFollowed) VinColors.White10 else VinColors.Accent,
                                 contentColor = if (isFollowed) Color.White else Color.Black
                             ),
+                            border = if (isFollowed) BorderStroke(1.dp, VinColors.GlassBorder) else null,
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                             modifier = Modifier.height(34.dp)

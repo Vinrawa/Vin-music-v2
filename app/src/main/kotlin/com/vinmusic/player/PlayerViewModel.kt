@@ -6,6 +6,7 @@ import android.media.audiofx.Equalizer
 import android.media.audiofx.EnvironmentalReverb
 import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.PresetReverb
+import android.media.audiofx.Virtualizer
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -36,6 +37,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 
 private const val PREF_CONCERT_HALL = "concert_hall"
 private const val PRESET_CONCERT_HALL = "Concert Hall"
+private const val PREF_HAPTIC_BASS = "haptic_bass_enabled"
+private const val PREF_TAPE_WARMTH = "tape_warmth_enabled"
+private const val PREF_DEVICE_PRESET = "device_preset"
+private const val PREF_BASS_ENGINE_MODE = "bass_engine_mode"
+private const val PREF_HAPTIC_INTENSITY = "haptic_intensity"
 
 @UnstableApi
 @HiltViewModel
@@ -266,6 +272,12 @@ class PlayerViewModel @Inject constructor(
     private var isCrossfadeAdvancing = false
     var concertHallEnabled by mutableStateOf(false)
 
+    var hapticBassEnabled by mutableStateOf(false)
+    var tapeWarmthEnabled by mutableStateOf(false)
+    var devicePreset by mutableStateOf(DevicePreset.DEFAULT)
+    var bassEngineMode by mutableStateOf(BassEngineMode.THUNDER)
+    var hapticIntensity by mutableIntStateOf(2)
+
     var isUiForeground by mutableStateOf(true)
 
     fun setAudioNormalization(enabled: Boolean) {
@@ -273,6 +285,38 @@ class PlayerViewModel @Inject constructor(
         prefs.edit().putBoolean("audio_normalization", enabled).apply()
         PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = enabled
         applyEQInternal()
+    }
+
+    fun setHapticBass(enabled: Boolean) {
+        hapticBassEnabled = enabled
+        prefs.edit().putBoolean(PREF_HAPTIC_BASS, enabled).apply()
+        PlayerSingleton.audiophileDspAudioProcessor.hapticBassEnabled = enabled
+        HapticBassController.isEnabled = enabled
+    }
+
+    fun updateHapticIntensity(level: Int) {
+        val clamped = level.coerceIn(1, 3)
+        hapticIntensity = clamped
+        prefs.edit().putInt(PREF_HAPTIC_INTENSITY, clamped).apply()
+        HapticBassController.intensityLevel.set(clamped)
+    }
+
+    fun setTapeWarmth(enabled: Boolean) {
+        tapeWarmthEnabled = enabled
+        prefs.edit().putBoolean(PREF_TAPE_WARMTH, enabled).apply()
+        PlayerSingleton.audiophileDspAudioProcessor.tapeWarmthEnabled = enabled
+    }
+
+    fun updateBassEngineMode(mode: BassEngineMode) {
+        bassEngineMode = mode
+        prefs.edit().putString(PREF_BASS_ENGINE_MODE, mode.name).apply()
+        PlayerSingleton.audiophileDspAudioProcessor.bassEngineMode = mode
+    }
+
+    fun updateDevicePreset(preset: DevicePreset) {
+        devicePreset = preset
+        prefs.edit().putString(PREF_DEVICE_PRESET, preset.name).apply()
+        PlayerSingleton.audiophileDspAudioProcessor.devicePreset = preset
     }
 
     var smartAutoplayEnabled: Boolean
@@ -305,6 +349,7 @@ class PlayerViewModel @Inject constructor(
     private var loudnessFx:  LoudnessEnhancer? = null
     private var concertHallFx: PresetReverb?   = null
     private var concertHallEnvFx: EnvironmentalReverb? = null
+    private var virtualizerFx: Virtualizer?    = null
 
     // EQ apply handler — debounce rapid slider changes to avoid audio artifacts
     private val eqHandler = Handler(Looper.getMainLooper())
@@ -378,6 +423,29 @@ class PlayerViewModel @Inject constructor(
                     Log.e(TAG, "Failed to apply skip_silence: ${e.message}")
                 }
             }
+            PREF_HAPTIC_BASS -> {
+                hapticBassEnabled = sharedPreferences.getBoolean(key, false)
+                PlayerSingleton.audiophileDspAudioProcessor.hapticBassEnabled = hapticBassEnabled
+                HapticBassController.isEnabled = hapticBassEnabled
+            }
+            PREF_TAPE_WARMTH -> {
+                tapeWarmthEnabled = sharedPreferences.getBoolean(key, false)
+                PlayerSingleton.audiophileDspAudioProcessor.tapeWarmthEnabled = tapeWarmthEnabled
+            }
+            PREF_DEVICE_PRESET -> {
+                val presetName = sharedPreferences.getString(key, DevicePreset.DEFAULT.name) ?: DevicePreset.DEFAULT.name
+                devicePreset = runCatching { DevicePreset.valueOf(presetName) }.getOrDefault(DevicePreset.DEFAULT)
+                PlayerSingleton.audiophileDspAudioProcessor.devicePreset = devicePreset
+            }
+            PREF_BASS_ENGINE_MODE -> {
+                val modeName = sharedPreferences.getString(key, BassEngineMode.THUNDER.name) ?: BassEngineMode.THUNDER.name
+                bassEngineMode = runCatching { BassEngineMode.valueOf(modeName) }.getOrDefault(BassEngineMode.THUNDER)
+                PlayerSingleton.audiophileDspAudioProcessor.bassEngineMode = bassEngineMode
+            }
+            PREF_HAPTIC_INTENSITY -> {
+                hapticIntensity = sharedPreferences.getInt(key, 2).coerceIn(1, 3)
+                HapticBassController.intensityLevel.set(hapticIntensity)
+            }
         }
     }
 
@@ -411,6 +479,19 @@ class PlayerViewModel @Inject constructor(
 
         audioNormalizationEnabled = prefs.getBoolean("audio_normalization", false)
         PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
+        hapticBassEnabled = prefs.getBoolean(PREF_HAPTIC_BASS, false)
+        PlayerSingleton.audiophileDspAudioProcessor.hapticBassEnabled = hapticBassEnabled
+        HapticBassController.isEnabled = hapticBassEnabled
+        tapeWarmthEnabled = prefs.getBoolean(PREF_TAPE_WARMTH, false)
+        PlayerSingleton.audiophileDspAudioProcessor.tapeWarmthEnabled = tapeWarmthEnabled
+        val presetName = prefs.getString(PREF_DEVICE_PRESET, DevicePreset.DEFAULT.name) ?: DevicePreset.DEFAULT.name
+        devicePreset = runCatching { DevicePreset.valueOf(presetName) }.getOrDefault(DevicePreset.DEFAULT)
+        PlayerSingleton.audiophileDspAudioProcessor.devicePreset = devicePreset
+        val savedBassMode = prefs.getString(PREF_BASS_ENGINE_MODE, BassEngineMode.THUNDER.name) ?: BassEngineMode.THUNDER.name
+        bassEngineMode = runCatching { BassEngineMode.valueOf(savedBassMode) }.getOrDefault(BassEngineMode.THUNDER)
+        PlayerSingleton.audiophileDspAudioProcessor.bassEngineMode = bassEngineMode
+        hapticIntensity = prefs.getInt(PREF_HAPTIC_INTENSITY, 2).coerceIn(1, 3)
+        HapticBassController.intensityLevel.set(hapticIntensity)
         crossfadeEnabled = prefs.getBoolean("crossfade", false)
         crossfadeSecs = prefs.getInt("crossfade_secs", 3)
         concertHallEnabled = prefs.getBoolean(PREF_CONCERT_HALL, false)
@@ -1353,9 +1434,10 @@ class PlayerViewModel @Inject constructor(
         PlayerSingleton.audiophileDspAudioProcessor.bassStrength = (bassBoostStr / 1000f).coerceIn(0f, 1f)
         PlayerSingleton.audiophileDspAudioProcessor.clarityStrength = (clarityStr / 1000f).coerceIn(0f, 1f)
         PlayerSingleton.audiophileDspAudioProcessor.normalizationEnabled = audioNormalizationEnabled
-        // AudiophileDspAudioProcessor handles studio-grade sub-bass & warmth with anti-distortion headroom.
-        // Hardware bassBoostFx is kept at 0 to prevent double-filtering distortion and clipping.
-        bassBoostFx?.runCatching { setStrength(0.toShort()) }
+        // Hardware BassBoost is disabled to prevent double-processing and HAL distortion (DSP handles 100% of bass cleanly)
+        bassBoostFx?.runCatching {
+            enabled = false
+        }
         loudnessFx?.runCatching  { 
             if (audioNormalizationEnabled) {
                 setTargetGain(150) // 150mB as per requirements
@@ -1488,6 +1570,7 @@ class PlayerViewModel @Inject constructor(
             loudnessFx?.release()
             concertHallFx?.release()
             concertHallEnvFx?.release()
+            virtualizerFx?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing previous AudioEffects", e)
         }
@@ -1496,6 +1579,7 @@ class PlayerViewModel @Inject constructor(
         loudnessFx = null
         concertHallFx = null
         concertHallEnvFx = null
+        virtualizerFx = null
 
         runCatching {
             equalizer = Equalizer(0, sessionId).apply { enabled = true }
@@ -1506,6 +1590,11 @@ class PlayerViewModel @Inject constructor(
             bassBoostFx = BassBoost(0, sessionId).apply { enabled = true }
             Log.d(TAG, "BassBoost bound to session $sessionId")
         }.onFailure { Log.e(TAG, "BassBoost build failed: ${it.message}") }
+
+        runCatching {
+            virtualizerFx = Virtualizer(0, sessionId).apply { enabled = false }
+            Log.d(TAG, "Virtualizer bound to session $sessionId")
+        }.onFailure { Log.e(TAG, "Virtualizer build failed: ${it.message}") }
 
         runCatching {
             loudnessFx = LoudnessEnhancer(sessionId).apply { enabled = true }
@@ -1540,30 +1629,39 @@ class PlayerViewModel @Inject constructor(
         val shouldApply = concertHallEnabled && !PlayerSingleton.is8dEnabled && currentSessionId > 0
         try {
             if (shouldApply) {
+                virtualizerFx?.runCatching {
+                    if (strengthSupported) setStrength(850.toShort())
+                    enabled = true
+                }
                 val env = concertHallEnvFx ?: EnvironmentalReverb(0, 0).also { concertHallEnvFx = it }
-                env.setRoomLevel((-900).toShort())
-                env.setRoomHFLevel((-1600).toShort())
-                env.setDecayTime(2400)
-                env.setDecayHFRatio((640).toShort())
-                env.setReflectionsLevel((-850).toShort())
-                env.setReflectionsDelay(38)
-                env.setReverbLevel((-650).toShort())
-                env.setReverbDelay(72)
-                env.setDiffusion((900).toShort())
+                env.setRoomLevel((-200).toShort())
+                env.setRoomHFLevel((-700).toShort())
+                env.setDecayTime(3200)
+                env.setDecayHFRatio((750).toShort())
+                env.setReflectionsLevel((-300).toShort())
+                env.setReflectionsDelay(45)
+                env.setReverbLevel((-100).toShort())
+                env.setReverbDelay(65)
+                env.setDiffusion((1000).toShort())
                 env.setDensity((1000).toShort())
                 env.enabled = true
-                exoPlayer.setAuxEffectInfo(AuxEffectInfo(env.id, 0.18f))
+                exoPlayer.setAuxEffectInfo(AuxEffectInfo(env.id, 0.45f))
             } else {
+                virtualizerFx?.runCatching { enabled = false }
                 exoPlayer.setAuxEffectInfo(AuxEffectInfo(0, 0f))
                 concertHallFx?.enabled = false
                 concertHallEnvFx?.enabled = false
             }
         } catch (e: Exception) {
             runCatching {
+                virtualizerFx?.runCatching {
+                    if (strengthSupported) setStrength(850.toShort())
+                    enabled = shouldApply
+                }
                 val effect = concertHallFx ?: PresetReverb(0, 0).also { concertHallFx = it }
                 effect.preset = PresetReverb.PRESET_LARGEHALL
                 effect.enabled = shouldApply
-                exoPlayer.setAuxEffectInfo(if (shouldApply) AuxEffectInfo(effect.id, 0.20f) else AuxEffectInfo(0, 0f))
+                exoPlayer.setAuxEffectInfo(if (shouldApply) AuxEffectInfo(effect.id, 0.45f) else AuxEffectInfo(0, 0f))
             }.onFailure {
                 Log.e(TAG, "Failed to apply Concert Hall: ${it.message}")
             }
@@ -1574,6 +1672,7 @@ class PlayerViewModel @Inject constructor(
         equalizer?.release()
         bassBoostFx?.release()
         loudnessFx?.release()
+        virtualizerFx?.release()
         concertHallFx?.release()
         concertHallEnvFx?.release()
         eqHandler.removeCallbacks(eqApplyRunnable)
@@ -1642,14 +1741,17 @@ data class EQPreset(
 )
 
 val EQ_PRESETS = listOf(
-    EQPreset("pTron Bass Clarity", 5.5f, 2.0f, -1.5f, 3.5f, 4.0f, 4.5f),
+    EQPreset("Bass & Clarity", 5.5f, 2.0f, -1.5f, 3.5f, 4.0f, 4.5f),
     EQPreset("Flat",       0f,   0f,   0f,   0f,   0f,   0f),
     EQPreset("Bass Boost", 6f,   8f,   2f,   0f,  -1f,  -1f),
     EQPreset("Treble+",   -1f,  -1f,   0f,   2f,   7f,   9f),
     EQPreset("Pop",       -1f,   2f,   4f,   3f,   2f,   0f),
     EQPreset("Rock",       4f,   3f,  -1f,   1f,   4f,   3f),
+    EQPreset("Hip-Hop",    7f,   5f,   1f,  -1f,   2f,   3f),
     EQPreset("Classical",  3f,   2f,   0f,  -2f,   3f,   4f),
     EQPreset("Jazz",       3f,   2f,   0f,   2f,   4f,   3f),
+    EQPreset("Dance / EDM", 6f,  5f,  -1f,   2f,   4f,   5f),
+    EQPreset("Acoustic",   2f,   1f,   3f,   2f,   4f,   4f),
     EQPreset("Electronic", 5f,   4f,   0f,   3f,   2f,   2f),
     EQPreset(PRESET_CONCERT_HALL, 2f, 3f, -1f, -1f, 4f, 5f),
     EQPreset("Vocal",     -2f,   0f,   5f,   5f,   3f,   0f),

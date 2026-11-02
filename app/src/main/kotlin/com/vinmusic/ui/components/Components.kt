@@ -114,6 +114,27 @@ fun LiveEqualizerIndicator(
     }
 }
 
+fun Modifier.horizontalFadingEdge(fadeWidth: Dp = 8.dp): Modifier = this
+    .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+    .drawWithContent {
+        drawContent()
+        val fadePx = fadeWidth.toPx()
+        val w = size.width
+        if (w > fadePx * 2) {
+            val leftStop = (fadePx / w).coerceIn(0f, 0.2f)
+            val rightStop = ((w - fadePx) / w).coerceIn(0.8f, 1f)
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0.0f to Color.Transparent,
+                    leftStop to Color.Black,
+                    rightStop to Color.Black,
+                    1.0f to Color.Transparent
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
+    }
+
 // ── Mini Player ───────────────────────────────────────────────────────────────
 
 @OptIn(UnstableApi::class, ExperimentalSharedTransitionApi::class)
@@ -335,7 +356,7 @@ fun MiniPlayer(
                 Spacer(Modifier.width(12.dp))
 
                 // Song info + Live Equalizer
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f).horizontalFadingEdge(8.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
@@ -816,7 +837,7 @@ fun SongOptionsSheet(
                 )
 
                 OptionRow(
-                    icon = Icons.Default.PlaylistAdd,
+                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                     text = "Add to Playlist",
                     onClick = {
                         onAddToPlaylist()
@@ -1116,7 +1137,7 @@ fun AddToPlaylistDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Icon(Icons.Default.PlaylistPlay, null, tint = VinColors.Secondary)
+                                    Icon(Icons.AutoMirrored.Filled.PlaylistPlay, null, tint = VinColors.Secondary)
                                     Text(pl.name, color = VinColors.Primary, fontWeight = FontWeight.Medium)
                                 }
                             }

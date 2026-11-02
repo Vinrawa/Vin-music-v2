@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -504,14 +505,18 @@ fun LibraryScreen(
             "History" -> {
                 if (history.isEmpty()) {
                     EmptyState(Icons.Default.History, "No history yet", "Play some songs to see them here")
-                    val songs = history.map {
-                        VideoItem(
-                            videoId = it.videoId,
-                            title = it.title,
-                            author = it.author,
-                            durationText = it.durationText,
-                            customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
-                        )
+                } else {
+                    val uniqueHistory = remember(history) { history.distinctBy { it.videoId } }
+                    val songs = remember(uniqueHistory) {
+                        uniqueHistory.map {
+                            VideoItem(
+                                videoId = it.videoId,
+                                title = it.title,
+                                author = it.author,
+                                durationText = it.durationText,
+                                customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
+                            )
+                        }
                     }
                     LazyColumn(contentPadding = PaddingValues(bottom = 220.dp)) {
                         item {
@@ -524,9 +529,13 @@ fun LibraryScreen(
                                 }
                             }
                         }
-                        items(songs, key = { it.videoId }) { song ->
-                            SongListItem(song = song, isPlaying = vm.currentSong?.videoId == song.videoId,
-                                onClick = { onSongClick(song, songs) })
+                        itemsIndexed(songs, key = { index, _ -> uniqueHistory[index].id }) { index, song ->
+                            SongListItem(
+                                song = song,
+                                isPlaying = vm.currentSong?.videoId == song.videoId,
+                                onClick = { onSongClick(song, songs) },
+                                onMore = { onSongMore(song) }
+                            )
                         }
                     }
                 }
@@ -1455,7 +1464,7 @@ private fun LocalMusicSection(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = VinColors.Accent)
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = VinColors.Accent)
                                 Text("Back to Folders", color = VinColors.Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                             }
                         }

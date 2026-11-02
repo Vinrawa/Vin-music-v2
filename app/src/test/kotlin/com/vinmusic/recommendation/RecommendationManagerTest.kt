@@ -58,8 +58,8 @@ class RecommendationManagerTest {
 
     @Test
     fun `isSimilarArtist matches known similar artists in both directions`() {
-        assertTrue(RecommendationManager.isSimilarArtist("Drake", "Kendrick Lamar"))
-        assertTrue(RecommendationManager.isSimilarArtist("Kendrick Lamar", "Drake"))
+        assertTrue(RecommendationManager.isSimilarArtist("Kendrick Lamar", "JID"))
+        assertTrue(RecommendationManager.isSimilarArtist("JID", "Kendrick Lamar"))
     }
 
     @Test
@@ -383,12 +383,12 @@ class RecommendationManagerTest {
     @Test
     fun `isCompatibleQueueLanguage enforces strict language with unknown tolerance`() {
         assertTrue(RecommendationManager.isCompatibleQueueLanguage("Punjabi", "Punjabi", allowUnknown = true))
-        assertTrue(RecommendationManager.isCompatibleQueueLanguage("Unknown", "Punjabi", allowUnknown = true))
+        assertFalse(RecommendationManager.isCompatibleQueueLanguage("Unknown", "Punjabi", allowUnknown = true))
         assertFalse(RecommendationManager.isCompatibleQueueLanguage("Hindi", "Punjabi", allowUnknown = true))
         assertFalse(RecommendationManager.isCompatibleQueueLanguage("English", "Punjabi", allowUnknown = true))
 
         assertTrue(RecommendationManager.isCompatibleQueueLanguage("English", "English", allowUnknown = true))
-        assertTrue(RecommendationManager.isCompatibleQueueLanguage("Unknown", "English", allowUnknown = true))
+        assertFalse(RecommendationManager.isCompatibleQueueLanguage("Unknown", "English", allowUnknown = true))
         assertFalse(RecommendationManager.isCompatibleQueueLanguage("Punjabi", "English", allowUnknown = true))
     }
 }

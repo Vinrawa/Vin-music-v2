@@ -137,13 +137,12 @@ class MainActivity : ComponentActivity() {
         val authVm: AuthViewModel by viewModels()
 
         setContent {
-            // Restore the appearance choice before the first composition.  The
-            // settings screen persists Monet, but the theme state is process
-            // local; without this initialization it silently reset after every
-            // app restart.
+            // Restore appearance choices before the first composition.
+            val startupPrefs = getSharedPreferences("vin_music_prefs", MODE_PRIVATE)
             com.vinmusic.ui.theme.MonetState.enabled.value =
-                getSharedPreferences("vin_music_prefs", MODE_PRIVATE)
-                    .getBoolean("monet_enabled", false)
+                startupPrefs.getBoolean("monet_enabled", false)
+            com.vinmusic.ui.theme.PlayerBackgroundState.blurEnabled.value =
+                startupPrefs.getBoolean("player_background_blur", true)
             VinMusicTheme {
                 VinMusicApp(playerVm, authVm)
             }

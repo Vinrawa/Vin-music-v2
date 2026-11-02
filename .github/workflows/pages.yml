@@ -34,7 +34,9 @@ jobs:
           mkdir -p site
           cp index.html site/
           cp latest_version.json site/
-          cp vinmusic.apk site/
+          [ -f robots.txt ] && cp robots.txt site/
+          [ -f sitemap.xml ] && cp sitemap.xml site/
+          cp google*.html site/ 2>/dev/null || true
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

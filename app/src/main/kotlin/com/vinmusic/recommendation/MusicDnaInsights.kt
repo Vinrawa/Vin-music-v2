@@ -89,7 +89,30 @@ object MusicDnaInsights {
         nowMs: Long = System.currentTimeMillis(),
         recentHistory: List<HistoryEntry> = emptyList()
     ): MusicDnaComparison? {
-        val usableSignals = signals.filter { it.title.isNotBlank() && it.author.isNotBlank() }
+        val usableSignals = run {
+            val map = signals.filter { it.title.isNotBlank() && it.author.isNotBlank() }
+                .associateBy { it.videoId }
+                .toMutableMap()
+            val historyAgg = recentHistory
+                .filter { it.videoId.isNotBlank() && it.title.isNotBlank() && it.author.isNotBlank() }
+                .groupBy { it.videoId }
+            for ((vId, entries) in historyAgg) {
+                if (!map.containsKey(vId)) {
+                    val first = entries.first()
+                    val maxPlayedAt = entries.maxOf { it.playedAt }
+                    map[vId] = InteractionSignal(
+                        videoId = vId,
+                        title = first.title,
+                        author = first.author,
+                        durationText = first.durationText,
+                        playCount = entries.size,
+                        completeCount = maxOf(1, entries.size / 2),
+                        lastPlayedAt = maxPlayedAt
+                    )
+                }
+            }
+            map.values.toList()
+        }
         if (usableSignals.isEmpty()) return null
 
         val enriched = usableSignals.map { enrichSignalIfNeeded(it) }.filter(::hasUsableFeatures)

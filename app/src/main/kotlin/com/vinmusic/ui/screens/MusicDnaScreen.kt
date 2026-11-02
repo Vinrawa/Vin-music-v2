@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -67,6 +67,8 @@ fun MusicDnaScreen(
     var recentTopSongs by remember { mutableStateOf<List<RecentTrackInfo>>(emptyList()) }
     var topSongs by remember { mutableStateOf<List<InteractionSignal>>(emptyList()) }
     var favoriteGenres by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    var topArtists by remember { mutableStateOf<List<Pair<String, Double>>>(emptyList()) }
+    var topMoods by remember { mutableStateOf<List<Pair<String, Double>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         // Open the screen from existing local signals first. Feature enrichment
@@ -86,6 +88,8 @@ fun MusicDnaScreen(
                 withContext(Dispatchers.IO) { RecommendationManager.buildTasteProfile(db) }
             }
             favoriteGenres = tasteProfile?.topGenres?.take(4)?.map { it.first to it.second.toInt() }.orEmpty()
+            topArtists = tasteProfile?.topArtists?.take(5).orEmpty()
+            topMoods = tasteProfile?.topMoods?.take(3).orEmpty()
 
             // 1. Calculate Currently On Repeat (Recent Listening in last 14 days)
             val nowMs = System.currentTimeMillis()
@@ -284,7 +288,7 @@ fun MusicDnaScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             
                             DnaStatBar("Energy", dna.energy, VinColors.Accent, Icons.Default.ElectricBolt)
-                            DnaStatBar("Danceability", dna.danceability, VinColors.AccentLight, Icons.Default.DirectionsRun)
+                            DnaStatBar("Danceability", dna.danceability, VinColors.AccentLight, Icons.AutoMirrored.Filled.DirectionsRun)
                             DnaStatBar("Acousticness", dna.acousticness, Color(0xFF8C7355), Icons.Default.Spa)
                             
                             Spacer(modifier = Modifier.height(4.dp))
@@ -296,23 +300,167 @@ fun MusicDnaScreen(
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.fillMaxWidth()
                             )
+
+                            Button(
+                                onClick = {
+                                    scope.launch(Dispatchers.IO) {
+                                        val mix = vm.recommendationRepository.getQuickPicks()
+                                        if (mix.isNotEmpty()) {
+                                            withContext(Dispatchers.Main) {
+                                                vm.setQueue(mix, 0)
+                                            }
+                                        }
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Play Taste DNA Mix", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 13.sp)
+                            }
                         }
                     }
 
                     // SECTION 2: FAVORITE GENRES
                     if (favoriteGenres.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Your Favorite Genres", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Your Top Genres", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                                Icon(Icons.Default.GraphicEq, null, tint = VinColors.Accent, modifier = Modifier.size(18.dp))
+                            }
                             
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                favoriteGenres.take(2).forEach { genre ->
-                                    Card(
-                                        modifier = Modifier.weight(1f).aspectRatio(1.5f).border(1.dp, VinColors.White10, RoundedCornerShape(16.dp)),
-                                        colors = CardDefaults.cardColors(containerColor = VinColors.White10)
-                                    ) {
-                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                            Text(genre.first, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary, textAlign = TextAlign.Center)
+                            val maxGenreScore = favoriteGenres.maxOfOrNull { it.second } ?: 1
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                favoriteGenres.chunked(2).forEach { rowGenres ->
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        rowGenres.forEach { (genreName, score) ->
+                                            Card(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .border(1.dp, VinColors.White10, RoundedCornerShape(16.dp)),
+                                                colors = CardDefaults.cardColors(containerColor = VinColors.White10)
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(14.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = genreName,
+                                                        fontSize = 15.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = VinColors.Primary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    val pct = if (maxGenreScore > 0) ((score.toFloat() / maxGenreScore) * 100).toInt().coerceIn(10, 100) else 50
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(4.dp)
+                                                            .clip(RoundedCornerShape(2.dp))
+                                                            .background(VinColors.White10)
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxHeight()
+                                                                .fillMaxWidth(pct / 100f)
+                                                                .clip(RoundedCornerShape(2.dp))
+                                                                .background(VinColors.Accent)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
+                                        if (rowGenres.size == 1) {
+                                            Spacer(Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // SECTION 2B: TOP ARTISTS DEFINING YOUR SOUND
+                    if (topArtists.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Top Artists", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = VinColors.Primary)
+                                    Text("Artists defining your sound universe", fontSize = 12.sp, color = VinColors.Secondary)
+                                }
+                                Icon(Icons.Default.Person, null, tint = VinColors.Accent, modifier = Modifier.size(18.dp))
+                            }
+
+                            topArtists.forEachIndexed { idx, (artistName, affinity) ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(VinColors.White10)
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                when (idx) {
+                                                    0 -> VinColors.Accent.copy(alpha = 0.25f)
+                                                    1 -> VinColors.AccentLight.copy(alpha = 0.25f)
+                                                    else -> VinColors.White10
+                                                }
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "#${idx + 1}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = when (idx) {
+                                                0 -> VinColors.Accent
+                                                1 -> VinColors.AccentLight
+                                                else -> VinColors.Primary
+                                            }
+                                        )
+                                    }
+
+                                    Text(
+                                        text = artistName,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VinColors.Primary,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(VinColors.Accent.copy(alpha = 0.15f))
+                                            .border(0.5.dp, VinColors.Accent.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            "Affinity ${(affinity * 10).toInt().coerceIn(10, 99)}%",
+                                            fontSize = 11.sp,
+                                            color = VinColors.AccentLight,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
                                     }
                                 }
                             }
@@ -378,7 +526,7 @@ fun MusicDnaScreen(
                             colors = CardDefaults.cardColors(containerColor = VinColors.White10)
                         ) {
                             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Icon(Icons.Default.TrendingUp, null, tint = VinColors.Accent)
+                                Icon(Icons.AutoMirrored.Filled.TrendingUp, null, tint = VinColors.Accent)
                                 Text("Taste Trend", fontSize = 12.sp, color = VinColors.Secondary)
                                 Text(trendCopy, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = VinColors.Primary, lineHeight = 18.sp)
                             }

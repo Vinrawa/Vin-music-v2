@@ -1,30 +1,81 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /songs/{songId}
+    // Document ID: songKey (e.g., hash or composite key of author + title)
+    // Fields:
+    //   - likedByCount: int (required, initialized to 0 or 1 on create,
+    //                        incremented/decremented by exactly 1 on update,
+    //                        must remain >= 0 and <= 1,000,000)
+    //
+    // Collection: /users/{userId} (and all recursive subcollections /{document=**})
+    // Document ID: userId (matches request.auth.uid)
+    // Fields / Subcollections:
+    //   - Private user data and cloud backups: likedSongs, followedArtists,
+    //     playlists, playlists/{id}/songs, interactions, profile, etc.
+    //   - Access strictly restricted to the authenticated document owner.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidSongCreate() {
+      return request.resource.data.keys().hasOnly(['likedByCount'])
+        && request.resource.data.likedByCount is int
+        && request.resource.data.likedByCount in [0, 1];
+    }
+
+    function isValidSongUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedByCount'])
+        && request.resource.data.likedByCount is int
+        && request.resource.data.likedByCount >= 0
+        && request.resource.data.likedByCount <= 1000000
+        && (
+          // When likedByCount already exists, it can only change by +1 or -1
+          ('likedByCount' in resource.data &&
+            (request.resource.data.likedByCount == resource.data.likedByCount + 1 ||
+             request.resource.data.likedByCount == resource.data.likedByCount - 1)) ||
+          // When likedByCount did not previously exist on an existing document, allow initialization to 0 or 1
+          (!('likedByCount' in resource.data) &&
+            request.resource.data.likedByCount in [0, 1])
+        );
+    }
+
     match /songs/{songId} {
-      // Authenticated users can read shared song metadata (BPM, energy, genres)
-      allow read: if request.auth != null;
+      // Authenticated users can read shared song metadata (BPM, energy, genres, likedByCount)
+      allow read: if isAuthenticated();
 
       // The app's only shared write is {likedByCount: FieldValue.increment(n)}
-      // via set(merge) — the previous rules required full metadata fields on
-      // every write, so like-counts for NEW songs were silently rejected with
-      // PERMISSION_DENIED. These rules validate exactly that write shape.
-      allow create: if request.auth != null
-        && request.resource.data.keys().hasOnly(['likedByCount'])
-        && request.resource.data.likedByCount is number
-        && request.resource.data.likedByCount >= 0
-        && request.resource.data.likedByCount <= 1000000;
+      // via set(merge). On create, likedByCount can only be initialized to 1 (or 0).
+      allow create: if isAuthenticated() && isValidSongCreate();
 
-      allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likedByCount'])
-        && request.resource.data.likedByCount is number
-        && request.resource.data.likedByCount >= 0
-        && request.resource.data.likedByCount <= 1000000;
+      // On update, likedByCount can only change by +1 or -1 from resource.data.likedByCount,
+      // and must stay >= 0.
+      allow update: if isAuthenticated() && isValidSongUpdate();
 
-      // No delete allowed — shared data is append-only.
-      // NOTE: if a future feature writes full song *metadata* again (title/
-      // artist/status/bpmReal/...), reintroduce validated-field checks for those
-      // writes here — do not widen these rules to accept arbitrary fields.
+      // Shared song documents cannot be deleted by clients (append-only shared data).
+      // NOTE: if a future feature writes full song metadata again (title/artist/status/bpmReal/...),
+      // reintroduce validated-field checks for those writes here — do not widen these rules
+      // to accept arbitrary fields.
       allow delete: if false;
     }
 

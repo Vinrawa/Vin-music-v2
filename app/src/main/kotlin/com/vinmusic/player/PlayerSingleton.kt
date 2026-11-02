@@ -286,6 +286,7 @@ object PlayerSingleton {
                 val ctx = context.applicationContext
                 this.context = ctx
                 ReliabilityDiagnostics.init(ctx)
+                HapticBassController.initialize(ctx)
                 val databaseInstance = VinDatabase.getInstance(ctx)
                 db = databaseInstance
                 val recDb = com.vinmusic.recommendation.RecommendationDatabase.getInstance(ctx)
@@ -294,6 +295,21 @@ object PlayerSingleton {
                 smartAutoplayEnabled = prefs?.getBoolean("smart_autoplay", true) ?: true
                 _smartShuffle = prefs?.getBoolean("smart_shuffle", false) ?: false
 
+                val hapticPref = prefs?.getBoolean("haptic_bass_enabled", false) ?: false
+                audiophileDspAudioProcessor.hapticBassEnabled = hapticPref
+                HapticBassController.isEnabled = hapticPref
+
+                val tapeWarmthPref = prefs?.getBoolean("tape_warmth_enabled", false) ?: false
+                audiophileDspAudioProcessor.tapeWarmthEnabled = tapeWarmthPref
+
+                val devicePresetStr = prefs?.getString("device_preset", DevicePreset.DEFAULT.name) ?: DevicePreset.DEFAULT.name
+                audiophileDspAudioProcessor.devicePreset = runCatching { DevicePreset.valueOf(devicePresetStr) }.getOrDefault(DevicePreset.DEFAULT)
+
+                val hapticIntensityPref = prefs?.getInt("haptic_intensity", 2) ?: 2
+                HapticBassController.intensityLevel.set(hapticIntensityPref)
+
+                val bassEnginePref = prefs?.getString("bass_engine_mode", BassEngineMode.THUNDER.name) ?: BassEngineMode.THUNDER.name
+                audiophileDspAudioProcessor.bassEngineMode = runCatching { BassEngineMode.valueOf(bassEnginePref) }.getOrDefault(BassEngineMode.THUNDER)
                 
                 buildPlayer(ctx).also { playerInstance ->
                     _player = playerInstance
@@ -435,8 +451,17 @@ object PlayerSingleton {
                                 val uniqueRecs = recommended.filter { it.videoId !in existingIds }.take(10)
                                 if (uniqueRecs.isNotEmpty()) {
                                     newQueue.addAll(uniqueRecs)
-                                    queue = newQueue
-                                    Log.d(TAG, "SmartQueue lazily extended: appended ${uniqueRecs.size} tracks, new total=${queue.size}")
+                                    // Memory Protection: Cap queue size to prevent unbounded memory growth
+                                    if (newQueue.size > 80 && queueIndex > 30) {
+                                        val trimCount = (queueIndex - 15).coerceAtLeast(0)
+                                        val trimmedQueue = newQueue.drop(trimCount)
+                                        queue = trimmedQueue
+                                        queueIndex = (queueIndex - trimCount).coerceAtLeast(0)
+                                        Log.d(TAG, "SmartQueue capped: trimmed $trimCount past tracks, new size=${queue.size}, index=$queueIndex")
+                                    } else {
+                                        queue = newQueue
+                                        Log.d(TAG, "SmartQueue lazily extended: appended ${uniqueRecs.size} tracks, new total=${queue.size}")
+                                    }
 
                                     // Re-evaluate next song with newly appended items
                                     val newNextIndex = if (shuffle) {
@@ -840,20 +865,24 @@ object PlayerSingleton {
         }
 
         // Save to history + Metrolist-style related cache for recommendations
-        scope.launch(Dispatchers.IO) {
-            val thumb = song.customThumbnailUrl ?: if (song.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId) else null
-            database.historyDao().insert(
-                HistoryEntry(
-                    videoId = song.videoId,
-                    title = song.title,
-                    author = song.author,
-                    genre = null,
-                    durationText = song.durationText,
-                    thumbnailUrl = thumb
+        // Only record history for fresh song plays (not error retries / seek resumptions)
+        if (safeStartPositionMs == 0L) {
+            scope.launch(Dispatchers.IO) {
+                val thumb = song.customThumbnailUrl ?: if (song.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId) else null
+                database.historyDao().deleteByVideoId(song.videoId)
+                database.historyDao().insert(
+                    HistoryEntry(
+                        videoId = song.videoId,
+                        title = song.title,
+                        author = song.author,
+                        genre = null,
+                        durationText = song.durationText,
+                        thumbnailUrl = thumb
+                    )
                 )
-            )
-            recommendationRepository?.touchSongPlayMeta(song)
-            recommendationRepository?.cacheRelatedForSong(song.videoId)
+                recommendationRepository?.touchSongPlayMeta(song)
+                recommendationRepository?.cacheRelatedForSong(song.videoId)
+            }
         }
 
         fetchJob = scope.launch(Dispatchers.IO) {

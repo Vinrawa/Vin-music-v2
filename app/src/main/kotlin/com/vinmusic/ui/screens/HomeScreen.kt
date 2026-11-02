@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -1091,7 +1092,7 @@ fun HomeScreen(
                     "ambient synthwave albums",
                     "top hip hop rap albums",
                     "new english albums $HOME_CURRENT_YEAR",
-                    "underrated indie albums",
+                    "acclaimed indie albums",
                     "r&b soul albums popular",
                     "desi hip hop albums",
                     "k-pop albums trending"
@@ -1727,16 +1728,16 @@ fun HomeScreen(
                 sections = recommendationSections,
             )
         }
-        // ✨ Spotify-Style Top Ambient Atmosphere Mesh Fade ✨
+        // ✨ Top Ambient Atmosphere Mesh Fade ✨
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(360.dp)
                 .background(
                     Brush.verticalGradient(
-                        0.0f to Color(0xFF382A1B).copy(alpha = 0.50f),
-                        0.35f to Color(0xFF241B12).copy(alpha = 0.28f),
-                        0.75f to Color(0xFF16110B).copy(alpha = 0.08f),
+                        0.0f to VinColors.Accent.copy(alpha = 0.16f),
+                        0.35f to VinColors.Accent.copy(alpha = 0.08f),
+                        0.75f to VinColors.Accent.copy(alpha = 0.02f),
                         1.0f to Color.Transparent
                     )
                 )
@@ -1879,18 +1880,8 @@ fun HomeScreen(
                                     letterSpacing = (-0.5).sp
                                 )
                             }
-                            // Time-aware greeting — a small human moment that makes
-                            // home feel composed rather than generated.
                             Text(
-                                text = remember {
-                                    when (java.util.Calendar.getInstance()
-                                        .get(java.util.Calendar.HOUR_OF_DAY)) {
-                                        in 5..11 -> "Good morning — fresh picks for your day"
-                                        in 12..17 -> "Good afternoon — your mix is ready"
-                                        in 18..21 -> "Good evening — unwind with your sound"
-                                        else -> "Late night session — calm vibes ahead"
-                                    }
-                                },
+                                text = "Pure Sound & Discovery",
                                 style = Vin.Text.bodySmall.copy(color = VinColors.Secondary)
                             )
                         }
@@ -2002,7 +1993,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             modifier = Modifier.padding(bottom = 24.dp)
                         ) {
-                            val historySongs = recentlyPlayed.map {
+                            val historySongs = recentlyPlayed.distinctBy { it.videoId }.map {
                                 VideoItem(
                                     videoId = it.videoId,
                                     title = it.title,
@@ -2011,9 +2002,6 @@ fun HomeScreen(
                                     customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
                                 )
                             }
-                            // History is event-based, so the same song can
-                            // legitimately occur more than once. Its list key
-                            // must include the position, not just videoId.
                             itemsIndexed(historySongs.take(8), key = { index, song -> "history_${song.videoId}_$index" }) { _, song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, emptyList())
@@ -2520,75 +2508,6 @@ fun HomeScreen(
                                             onSongClick(song, section.songs)
                                         }
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-                // 1. Quick Picks
-                // 0. On Repeat (Smart Playlist)
-                if (onRepeatTracks.isNotEmpty()) {
-                    item {
-                        SectionTitle("On Repeat")
-                        Spacer(Modifier.height(10.dp))
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
-                        ) {
-                            itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
-                                SmallRecentlyPlayedCard(song = song) {
-                                    onSongClick(song, emptyList())
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (isLoadingQuickPicks && displayedRecommendations.quickPicks.isEmpty()) {
-                    item { ShelfSkeleton(cardHeight = 64.dp, cardWidth = 280.dp) }
-                } else if (displayedRecommendations.quickPicks.isNotEmpty()) {
-                    item {
-                        SectionTitle("Quick Picks")
-                        Spacer(Modifier.height(10.dp))
-                        
-                        val columns = displayedRecommendations.quickPicks.chunked(3)
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
-                        ) {
-                            itemsIndexed(columns, key = { index, _ -> "quick_pick_column_$index" }) { _, columnSongs ->
-                                Column(
-                                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                                    modifier = Modifier.width(280.dp)
-                                ) {
-                                    columnSongs.forEach { song ->
-                                        QuickPickRow(
-                                            song = song,
-                                            onClick = { onSongClick(song, displayedRecommendations.quickPicks) },
-                                            onMore = { onSongMore(song) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Artists you may like (right after Quick Picks) - sleek single horizontal row
-                if (suggestedArtists.isNotEmpty()) {
-                    item {
-                        SectionTitle("Artists you may like")
-                        Spacer(Modifier.height(10.dp))
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            modifier = Modifier.padding(bottom = 20.dp)
-                        ) {
-                            items(suggestedArtists.take(16), key = { it.name.ifBlank { it.channelId } }) { artist ->
-                                ArtistCircleCard(artist = artist) {
-                                    selectedArtist = artist
                                 }
                             }
                         }
@@ -3552,7 +3471,7 @@ fun HomeRemotePlaylistDetailScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                     Text(
                         text = "Playlist",
@@ -3712,7 +3631,7 @@ fun HomeSpotifyMixDetailScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
                     Text(
                         text = "Mix",
@@ -4274,6 +4193,7 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
                 .size(48.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
                 .then(if (!isImageLoaded && model != null) Modifier.shimmerEffect() else Modifier),
             contentAlignment = Alignment.Center
         ) {
@@ -4578,7 +4498,7 @@ fun SpotifyMixCard(
                 AsyncImage(
                     model = coverUrl,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().scale(1.35f),
                     contentScale = ContentScale.Crop
                 )
                 Box(
@@ -4734,6 +4654,7 @@ fun QuickPickRow(
                 .size(56.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
                 .shimmerEffect()
         ) {
             AsyncImage(

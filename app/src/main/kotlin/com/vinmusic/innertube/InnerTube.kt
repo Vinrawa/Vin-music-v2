@@ -37,6 +37,7 @@ object InnerTube {
     @Volatile private var appContext: android.content.Context? = null
 
     val verifiedArtistCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun init(context: android.content.Context) {
         val ctx = context.applicationContext
@@ -50,7 +51,7 @@ object InnerTube {
             android.util.Log.d("DEBUG_TOKEN", "Loaded persisted visitorData from disk (len=${savedToken.length})")
         } else {
             // Warm up in background asynchronously on launch
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            scope.launch {
                 ensureVisitorData()
             }
         }
@@ -1099,13 +1100,15 @@ object InnerTube {
             "unreleased", "leak", "leaked", "demo", "rare", "loosie",
             "snippet", "cdq", "acapella", "instrumental demo"
         )
+        val nonRareJunk = listOf("interview", "podcast", "reaction", "review", "vlog", "gameplay", "shorts", "trailer", "karaoke")
         return searchYouTubeArtistUploads(cleanArtist)
             .filter { item ->
                 val title = normalizeArtistText(item.title)
                 val author = normalizeArtistText(item.author)
                 val isRareTitle = rareTerms.any { title.contains(it) }
-                val isOfficialChannel = author.contains("topic") || author.contains("vevo") || author.contains(artist)
-                isRareTitle || !isOfficialChannel
+                val mentionsArtist = title.contains(artist) || author.contains(artist)
+                val isJunk = nonRareJunk.any { title.contains(it) || author.contains(it) }
+                isRareTitle && mentionsArtist && !isJunk
             }
             .distinctBy { it.videoId }
             .take(20)
@@ -2406,7 +2409,7 @@ object InnerTube {
         val result = ChannelData(bannerUrl = banner, bio = finalBio, subscriberCount = subs, title = finalTitle, avatarUrl = avatar)
         channelDataCache.put(cacheKey, Pair(System.currentTimeMillis(), result))
         if (result.avatarUrl.isNotBlank() || result.bannerUrl.isNotBlank() || result.subscriberCount.isNotBlank()) {
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            scope.launch {
                 com.vinmusic.data.ArtistDataCache.put(
                     queryKey,
                     com.vinmusic.data.CachedArtistData(

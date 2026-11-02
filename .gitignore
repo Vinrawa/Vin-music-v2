@@ -40,7 +40,6 @@ Thumbs.db
 
 # Built APKs
 *.apk
-!vinmusic.apk
 
 # Large local logs / debug artifacts (machine-generated, should not be tracked)
 logcat.txt

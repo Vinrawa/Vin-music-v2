@@ -1,8 +1,14 @@
- VIN Music
+# VIN Music — Open-Source Audiophile Android Music Player
 
-A modern Android music player focused on intelligent discovery, offline playback, lyrics, personalization, and a polished native experience.
+[![GitHub Release](https://img.shields.io/github/v/release/Vinrawa/Vin-music-v2?color=orange&label=Release)](https://github.com/Vinrawa/Vin-music-v2/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://github.com/Vinrawa/Vin-music-v2)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/Vinrawa/Vin-music-v2?style=social)](https://github.com/Vinrawa/Vin-music-v2)
 
-VIN Music is a feature-rich Android music player built around the idea that a music player should do more than simply play songs. It combines a modern UI, personalized recommendations, synchronized lyrics, offline playback, audio processing, and intelligent music discovery into one application.
+**VIN Music (VinMusic)** is a modern, high-performance, open-source Android music streaming and offline player. Built with Jetpack Compose, Kotlin, and an advanced 32-bit Audiophile DSP engine featuring zero-pumping bass boost, tactile kick haptics, synchronized real-time lyrics, and AI-driven music recommendations.
+
+> 🌐 **Website & Web Player:** [https://vinrawa.github.io/Vin-music-v2/](https://vinrawa.github.io/Vin-music-v2/)  
+> 📥 **Download Latest APK:** [VIN Music Releases](https://github.com/Vinrawa/Vin-music-v2/releases/latest)
 
 ---
 
@@ -320,9 +326,9 @@ If you find a bug or have an idea for improving VIN Music, feel free to open an 
 
 ---
 
- License
+## License
 
-Add your preferred open-source license here.
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 

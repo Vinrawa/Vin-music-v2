@@ -183,14 +183,17 @@ interface LikedSongDao {
 
 @Dao
 interface HistoryDao {
-    @Query("SELECT * FROM history ORDER BY playedAt DESC LIMIT 50")
+    @Query("SELECT * FROM history WHERE id IN (SELECT MAX(id) FROM history GROUP BY videoId) ORDER BY playedAt DESC LIMIT 50")
     fun getRecentFlow(): Flow<List<HistoryEntry>>
 
-    @Query("SELECT * FROM history ORDER BY playedAt DESC")
+    @Query("SELECT * FROM history WHERE id IN (SELECT MAX(id) FROM history GROUP BY videoId) ORDER BY playedAt DESC")
     suspend fun getAllHistory(): List<HistoryEntry>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entry: HistoryEntry)
+
+    @Query("DELETE FROM history WHERE videoId = :videoId")
+    suspend fun deleteByVideoId(videoId: String)
 
     @Query("DELETE FROM history")
     suspend fun clearAll()

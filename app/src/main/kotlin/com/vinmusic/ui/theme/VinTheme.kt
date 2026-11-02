@@ -75,6 +75,11 @@ object MonetState {
     var enabled = mutableStateOf(false)
 }
 
+// ── Player background appearance global state ─────────────────────────────────
+object PlayerBackgroundState {
+    var blurEnabled = mutableStateOf(true)
+}
+
 @Composable
 fun VinMusicTheme(content: @Composable () -> Unit) {
     val useMonet = MonetState.enabled.value

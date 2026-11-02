@@ -126,7 +126,7 @@ object GenreQueryBuilder {
      */
     fun buildIndieUndiscoveredQueries(): List<String> = listOf(
         "indie unsigned artist new",
-        "underrated indie songs $currentYear",
+        "indie pop hits $currentYear",
         "new indie music hidden gems",
         "indie discoveries underground"
     )

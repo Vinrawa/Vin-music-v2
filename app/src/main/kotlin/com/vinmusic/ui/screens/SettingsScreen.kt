@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -27,6 +28,8 @@ import androidx.media3.common.util.UnstableApi
 import coil3.compose.AsyncImage
 import com.vinmusic.player.PlayerViewModel
 import com.vinmusic.player.EQ_PRESETS
+import com.vinmusic.player.DevicePreset
+import com.vinmusic.player.BassEngineMode
 import com.vinmusic.ui.theme.VinColors
 import com.vinmusic.ui.components.UserAvatar
 import com.vinmusic.innertube.VideoItem
@@ -291,7 +294,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = VinColors.Primary)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = VinColors.Primary)
             }
             Spacer(Modifier.width(8.dp))
             Text(
@@ -386,7 +389,7 @@ fun SettingsScreen(
                         onBack()
                     }) {
                         Icon(
-                            imageVector = Icons.Default.ExitToApp,
+                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
                             contentDescription = "Reset Profile",
                             tint = Color(0xFFFF4D4D),
                             modifier = Modifier.size(20.dp)
@@ -653,7 +656,7 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        if (showAdvancedCookie) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                        if (showAdvancedCookie) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp)
                     )
                     Text(
@@ -854,7 +857,7 @@ fun SettingsScreen(
                                 .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(10.dp))
                                 .clip(RoundedCornerShape(10.dp))
                         ) {
-                            Icon(Icons.Default.ExitToApp, null, tint = Color(0xFFFF4D4D))
+                            Icon(Icons.AutoMirrored.Filled.ExitToApp, null, tint = Color(0xFFFF4D4D))
                         }
                     }
                 }
@@ -866,6 +869,9 @@ fun SettingsScreen(
         // 0. Appearance
         var appearanceExpanded by remember { mutableStateOf(false) }
         var monetEnabled by remember { mutableStateOf(prefs.getBoolean("monet_enabled", false)) }
+        var blurBackgroundEnabled by remember {
+            mutableStateOf(prefs.getBoolean("player_background_blur", true))
+        }
 
         CollapsibleSection(
             title = "Appearance",
@@ -884,6 +890,20 @@ fun SettingsScreen(
                     monetEnabled = it
                     prefs.edit().putBoolean("monet_enabled", it).apply()
                     com.vinmusic.ui.theme.MonetState.enabled.value = it
+                }
+            )
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsToggle(
+                title = "Player Blurred Background",
+                subtitle = if (blurBackgroundEnabled)
+                    "Atmospheric soft blur behind player controls"
+                else
+                    "Crisp, clear album artwork in player background",
+                checked = blurBackgroundEnabled,
+                onChanged = {
+                    blurBackgroundEnabled = it
+                    prefs.edit().putBoolean("player_background_blur", it).apply()
+                    com.vinmusic.ui.theme.PlayerBackgroundState.blurEnabled.value = it
                 }
             )
         }
@@ -954,6 +974,68 @@ fun SettingsScreen(
                 prefs.edit().putString("streaming_quality", it).apply()
             }
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsToggle(
+                title = "Haptic Bass (Music Haptics)",
+                subtitle = "Physical sub-bass kick vibrations synced to the beat",
+                checked = vm.hapticBassEnabled,
+                onChanged = {
+                    vm.setHapticBass(it)
+                }
+            )
+            if (vm.hapticBassEnabled) {
+                val intensityOptions = listOf("Subtle", "Punchy (Default)", "Heavy Subwoofer")
+                val currentIntensityStr = when (vm.hapticIntensity) {
+                    1 -> "Subtle"
+                    3 -> "Heavy Subwoofer"
+                    else -> "Punchy (Default)"
+                }
+                SettingsDropdown(
+                    title = "Haptic Intensity",
+                    current = currentIntensityStr,
+                    options = intensityOptions
+                ) { selected ->
+                    val lvl = when (selected) {
+                        "Subtle" -> 1
+                        "Heavy Subwoofer" -> 3
+                        else -> 2
+                    }
+                    vm.updateHapticIntensity(lvl)
+                }
+            }
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsToggle(
+                title = "Analog Tape Warmth",
+                subtitle = "Samsung Tube Amp Pro style warm analog harmonics & saturation",
+                checked = vm.tapeWarmthEnabled,
+                onChanged = {
+                    vm.setTapeWarmth(it)
+                }
+            )
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsDropdown(
+                title = "Mega Bass Engine Mode",
+                current = vm.bassEngineMode.label,
+                options = BassEngineMode.entries.map { it.label }
+            ) { selectedLabel ->
+                val mode = BassEngineMode.entries.find { it.label == selectedLabel } ?: BassEngineMode.THUNDER
+                vm.updateBassEngineMode(mode)
+            }
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsDropdown(
+                title = "Audio Output Mode",
+                current = vm.devicePreset.label,
+                options = listOf(
+                    DevicePreset.DEFAULT.label,
+                    DevicePreset.PHONE_SPEAKER.label,
+                    DevicePreset.TWS_EARBUDS.label,
+                    DevicePreset.CAR_AUX.label
+                )
+            ) { selectedLabel ->
+                val preset = DevicePreset.entries.find { it.label == selectedLabel }
+                    ?: DevicePreset.DEFAULT
+                vm.updateDevicePreset(preset)
+            }
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
             // Custom Equaliser row
             Row(
                 modifier = Modifier
@@ -969,7 +1051,7 @@ fun SettingsScreen(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (vm.eqEnabled) "On" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
-                    Icon(Icons.Default.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
                 }
             }
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
@@ -988,7 +1070,7 @@ fun SettingsScreen(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (vm.sleepTimerMinutes > 0) "${vm.sleepTimerMinutes} mins" else "Off", fontSize = 13.sp, color = VinColors.Secondary)
-                    Icon(Icons.Default.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp))
                 }
             }
         }

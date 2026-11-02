@@ -3,8 +3,52 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VinMusic — Every track. Every artist. Zero ads.</title>
-<meta name="description" content="VinMusic streams straight from YouTube's catalog — ad-free, downloadable, and built around what you actually listen to.">
+<title>VIN Music — Free & Open Source Audiophile Android Music Player</title>
+<meta name="description" content="VIN Music (VinMusic) is a free, open-source Android music player featuring ad-free streaming, 32-bit audiophile DSP, synchronized lyrics, offline downloads, and personalized recommendations.">
+<meta name="keywords" content="VIN Music, Vin Music, VinMusic, Vin-music-v2, vin music android, vin music apk, vin music github, open source android music player, free music streaming app, offline music player, synchronized lyrics android, audiophile music player">
+<meta name="author" content="Vinrawa">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<meta name="google-site-verification" content="google439d126e8f08e252">
+<link rel="canonical" href="https://vinrawa.github.io/Vin-music-v2/">
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://vinrawa.github.io/Vin-music-v2/">
+<meta property="og:site_name" content="VIN Music">
+<meta property="og:title" content="VIN Music — Free & Open Source Audiophile Android Music Player">
+<meta property="og:description" content="Stream ad-free music, download tracks offline, enjoy synchronized lyrics, and experience high-fidelity 32-bit DSP audio with VIN Music for Android.">
+<meta property="og:image" content="https://raw.githubusercontent.com/Vinrawa/Vin-music-v2/main/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="VIN Music — Free & Open Source Audiophile Android Music Player">
+<meta name="twitter:description" content="Ad-free music streaming, offline downloads, synchronized lyrics & audiophile DSP. Download the free APK for Android.">
+<meta name="twitter:image" content="https://raw.githubusercontent.com/Vinrawa/Vin-music-v2/main/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png">
+
+<!-- Structured Data (Schema.org JSON-LD) for Google Rich Snippets -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "VIN Music",
+  "alternateName": ["VinMusic", "VIN Music Android", "Vin-music-v2"],
+  "operatingSystem": "Android 8.0 and up",
+  "applicationCategory": "MultimediaApplication",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "description": "VIN Music is an open-source Android music player offering ad-free music streaming, synchronized lyrics, offline downloads, and an advanced 32-bit audiophile DSP audio engine.",
+  "softwareVersion": "2.3.2",
+  "downloadUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/latest",
+  "author": {
+    "@type": "Person",
+    "name": "Vinrawa",
+    "url": "https://github.com/Vinrawa"
+  }
+}
+</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -414,7 +458,7 @@
 <header>
   <div class="wrap nav">
     <div class="wordmark"><span class="dot"></span>VinMusic</div>
-    <a class="btn btn-primary btn-nav" href="./vinmusic.apk" download="Vin Music.apk">Download APK</a>
+    <a id="nav-download" class="btn btn-primary btn-nav" href="./vinmusic.apk" download="Vin Music.apk">Download APK</a>
   </div>
 </header>
 
@@ -430,7 +474,7 @@
             Download APK
           </a>
           <div class="cta-meta">
-            <span>v2.3.2 · direct install</span>
+            <span id="version-badge">v2.3.2 · direct install</span>
             <span>not on the Play Store</span>
           </div>
         </div>
@@ -471,14 +515,19 @@
           <p>Every track plays straight through — no pre-rolls, no mid-song cuts.</p>
         </div>
         <div class="feature">
-          <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 19h16"/></svg>
-          <h3>Offline downloads</h3>
-          <p>Save any song to the device and it's yours without a connection.</p>
+          <svg viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 11l5 5 5-5M12 4v12"/></svg>
+          <h3>Downloads & Cache tab</h3>
+          <p>Dedicated tabs for saved offline tracks and stream caching. Zero-latency playback without re-downloading music you've already heard.</p>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+          <h3>Discover</h3>
+          <p>Endless music discovery feeds featuring curated genre stations, mood shelves, and intelligent track recommendations tailored to you.</p>
         </div>
         <div class="feature">
           <svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h6M4 18h13M16 6l4 3-4 3M14 18l4-3-4-3"/></svg>
-          <h3>Smart mixes</h3>
-          <p>Recommendations built from what you actually play — by artist, by genre, by mood.</p>
+          <h3>Anti-fatigue mixes</h3>
+          <p>Intelligent repetition penalty actively tracks recently played tracks and artists, eliminating repetitive song fatigue so your queue stays fresh.</p>
         </div>
         <div class="feature">
           <svg viewBox="0 0 24 24"><path d="M6 4l12 8-12 8V4z" fill="var(--accent)" stroke="none"/><circle cx="19" cy="6" r="1.4" fill="var(--accent)" stroke="none"/></svg>
@@ -488,12 +537,17 @@
         <div class="feature">
           <svg viewBox="0 0 24 24"><path d="M15 5a12 12 0 000 14M9 5a12 12 0 000 14"/></svg>
           <h3>Real artist pages</h3>
-          <p>Jump from any track straight to its artist — official or independent.</p>
+          <p>Jump from any track straight to its artist — official releases and discographies.</p>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <h3>Liquid Aura mesh</h3>
+          <p>Dynamic ambient background glow matching the artwork of the currently playing track.</p>
         </div>
         <div class="feature">
           <svg viewBox="0 0 24 24"><path d="M16 4L8 12l8 8" /></svg>
           <h3>Modern Android, done right</h3>
-          <p>Predictive back gestures and the rest of the Android 13+ playbook.</p>
+          <p>Predictive back gestures, themed icons, and the rest of the Android 13+ playbook.</p>
         </div>
       </div>
     </div>
@@ -531,10 +585,38 @@
     <p class="foot-note">VinMusic is an independent project, distributed directly rather than through the Play Store. Not affiliated with YouTube or Google.</p>
     <div class="foot-links">
       <a href="https://github.com/Vinrawa/Vin-music-v2" target="_blank" rel="noopener">GitHub</a>
-      <a href="./vinmusic.apk" download="Vin Music.apk">Download</a>
+      <a id="foot-download" href="./vinmusic.apk" download="Vin Music.apk">Download</a>
     </div>
   </div>
 </footer>
+
+<script>
+  // Dynamically sync version number and APK download links from latest_version.json
+  document.addEventListener('DOMContentLoaded', function () {
+    fetch('./latest_version.json')
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (data.latestVersionName) {
+          var badge = document.getElementById('version-badge');
+          if (badge) {
+            badge.textContent = 'v' + data.latestVersionName + ' · direct install';
+          }
+        }
+        if (data.apkUrl) {
+          ['download', 'nav-download', 'foot-download'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.href = data.apkUrl;
+          });
+        }
+      })
+      .catch(function (err) {
+        console.warn('Could not load latest_version.json, using fallback values:', err);
+      });
+  });
+</script>
 
 </body>
 </html>

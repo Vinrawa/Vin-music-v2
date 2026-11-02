@@ -774,7 +774,8 @@ object RecommendationManager {
         "vaibhav gupta", "amit trivedi", "vishal mishra", "vishal-shekhar", "sachin-jigar",
         "armaan malik", "amaal mallik", "anuv jain", "prateek kuhad", "aditya rikhari",
         "mitraz", "zaeden", "jasleen royal", "shilpa rao", "monali thakur", "neeti mohan",
-        "palak muchhal", "tulsi kumar", "dhvani bhanushali", "kk", "lucky ali", "papon"
+        "palak muchhal", "tulsi kumar", "dhvani bhanushali", "kk", "lucky ali", "papon",
+        "sachet tandon", "akhil sachdeva"
     )
 
     val knownPunjabiArtists = listOf(
@@ -817,7 +818,8 @@ object RecommendationManager {
         "central cee", "dave", "stormzy", "skepta", "kali uchis", "steve lacy", "dominic fike",
         "rex orange county", "boy pablo", "cuco", "mac demarco", "clairo", "wallows", "omar apollo",
         "beabadoobee", "saba", "mick jenkins", "noname", "smino", "little simz", "loyle carner",
-        "billy woods", "mach-hommy", "mavi", "navy blue", "yasiin bey", "mos def", "talib kweli"
+        "billy woods", "mach-hommy", "mavi", "navy blue", "yasiin bey", "mos def", "talib kweli",
+        "the prodigy", "sub urban"
     )
 
     val knownRapArtists: Set<String> by lazy {
@@ -1571,7 +1573,7 @@ object RecommendationManager {
                 }
                 langScores[meta.language] = (langScores[meta.language] ?: 0.0) + weight
 
-                if (agg.interactionScore > 2.0) {
+                if (weight > 0.0) {
                     weightedEnergy += meta.energy * weight
                     weightedTempo += meta.tempo * weight
                     totalWeight += weight
@@ -2283,8 +2285,11 @@ object RecommendationManager {
             val artistKey = normalizeArtistName(author)
             val cap = if (artistKey.isNotBlank() && artistKey == seedArtist) 1 else 2
             if ((artistCounts[artistKey] ?: 0) >= cap) continue
-            val lastArtist = selected.lastOrNull()?.let { normalizeArtistName(it.author) }
-            if (artistKey == lastArtist && candidates.any { normalizeArtistName(it.author) != artistKey }) continue
+            val recentArtists = selected.takeLast(2).map { normalizeArtistName(it.author) }
+            if (artistKey in recentArtists && candidates.any {
+                val candidateKey = normalizeArtistName(it.author)
+                candidateKey !in recentArtists && (artistCounts[candidateKey] ?: 0) < 2
+            }) continue
             if (isTooSimilar(seed.title, title)) continue
             if (selected.any { normalizeArtistName(it.author) == artistKey && isTooSimilar(it.title, title) }) continue
             selected.add(item)
@@ -2372,7 +2377,7 @@ object RecommendationManager {
         for (genre in topGenresForMix) {
             val genreLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
             mixQueries.add("$genreLower official hits $currentMusicYear")
-            mixQueries.add("$genreLower underrated songs")
+            mixQueries.add("$genreLower essential tracks $currentMusicYear")
             // Add Every Noise similar genres for cross-genre discovery
             val similarGenres = genreSimilarMap?.get(genreLower)?.take(1) ?: emptyList()
             for (sg in similarGenres) {
@@ -2455,8 +2460,9 @@ object RecommendationManager {
                     val recencyScore = if (sig.lastPlayedAt > 0) {
                         val hoursAgo = (System.currentTimeMillis() - sig.lastPlayedAt) / (1000 * 60 * 60)
                         when {
-                            hoursAgo < 24 -> 30.0    // Played today
-                            hoursAgo < 72 -> 20.0    // Played in last 3 days
+                            hoursAgo < 12 -> 70.0    // Played very recently
+                            hoursAgo < 24 -> 50.0    // Played today
+                            hoursAgo < 72 -> 30.0    // Played in last 3 days
                             hoursAgo < 168 -> 10.0   // Played in last week
                             else -> 5.0
                         }
@@ -2491,7 +2497,7 @@ object RecommendationManager {
                 val genreQueries = similarGenres.map { "$it official popular songs" }
                 genreQueries + listOf(
                     "$genreLower similar vibes official hits",
-                    "$genreLower underrated artists songs"
+                    "$genreLower melodic hits official"
                 )
             }
         } else if (similarSeed != null) {
@@ -2526,7 +2532,7 @@ object RecommendationManager {
             // Cold start: no listening history — serve diverse genre discovery
             val coldStartGenres = listOf("hip hop", "pop", "indie", "r&b", "bollywood", "electronic")
             val selectedGenres = coldStartGenres.shuffled().take(3)
-            selectedGenres.flatMap { g -> listOf("$g official hits $currentMusicYear", "$g underrated songs") }
+            selectedGenres.flatMap { g -> listOf("$g official hits $currentMusicYear", "$g top essential songs") }
         }
         val seedVideo = similarSeed?.let { VideoItem(it.videoId, it.title, it.author, it.durationText) }
         tasks.add(CurationTask("Similar songs", similarQueries, seedVideo, "similar_songs"))
@@ -2542,7 +2548,7 @@ object RecommendationManager {
                 queries = listOf(
                     "$genreLower official hits $currentMusicYear",
                     "$genreLower fresh releases",
-                    "$genreLower underrated songs",
+                    "$genreLower top essential songs",
                     "$genreLower$similarGenreQuery playlist $currentMusicYear"
                 ),
                 seedItem = null,
@@ -2629,8 +2635,8 @@ object RecommendationManager {
             queries = listOf(
                 "new music releases $currentMusicYear official audio",
                 "fresh indie pop songs $currentMusicYear",
-                "underrated artists songs $currentMusicYear",
-                "new hindi punjabi english songs"
+                "trending new singles $currentMusicYear",
+                "new music releases $currentMusicYear hits"
             ),
             seedItem = null,
             sourceType = "fresh_finds"
@@ -2639,10 +2645,10 @@ object RecommendationManager {
         tasks.add(CurationTask(
             sectionKey = "Deep cuts & hidden gems",
             queries = listOf(
-                "underrated indie songs official audio",
-                "lesser known artist hits official",
-                "overlooked tracks worth listening",
-                "underrated rap bollywood punjabi songs official"
+                "indie songs acoustic session official audio",
+                "acoustic live sessions official",
+                "studio live session songs official",
+                "unplugged official audio tracks"
             ),
             seedItem = null,
             sourceType = "hidden_gems"
@@ -2664,7 +2670,7 @@ object RecommendationManager {
         if (laneRotation.isNotEmpty()) {
             tasks.add(CurationTask(
                 sectionKey = "Outside Your Lane",
-                queries = laneRotation.flatMap { g -> listOf("$g official popular songs", "$g underrated artists") },
+                queries = laneRotation.flatMap { g -> listOf("$g official popular songs", "best $g classics official") },
                 seedItem = null,
                 sourceType = "outside_your_lane"
             ))
@@ -2680,7 +2686,7 @@ object RecommendationManager {
                 sectionKey = "B-Sides",
                 queries = listOf(
                     "$bSideArtist album deep cuts official",
-                    "$bSideArtist underrated songs",
+                    "$bSideArtist live session acoustic",
                     "$bSideArtist live acoustic session"
                 ),
                 seedItem = null,
@@ -2922,6 +2928,17 @@ object RecommendationManager {
                     
                     // Score with vector profile matching TasteDNA similarity
                     val similarity = calculateTasteSimilarity(meta, dna)
+
+                    val minSim = if (cleanListenedCount >= 5) {
+                        when (task.sourceType) {
+                            "fresh_finds", "genre_for_you", "mood_for_you", "artists_like" -> 0.35
+                            "hidden_gems" -> 0.28
+                            else -> 0.0
+                        }
+                    } else 0.0
+                    if (similarity < minSim) {
+                        continue
+                    }
                     
                     var historyScore = 0.0
                     if (sig != null) {
@@ -2951,6 +2968,10 @@ object RecommendationManager {
                         }
                     } else if (task.sourceType == "first_listen" && meta.year >= yrNow - 1) {
                         vibeBonus = 12.0
+                    }
+
+                    if (task.sourceType == "fresh_finds" && meta.year > 0 && meta.year < yrNow - 2) {
+                        continue
                     }
 
                     // Small entropy factor (±3 points) — enough for gentle variety

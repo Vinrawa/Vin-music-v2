@@ -14,6 +14,7 @@ import androidx.core.content.FileProvider
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -35,6 +36,7 @@ data class UpdateInfo(
 object UpdateManager {
     private const val TAG = "VIN_UPDATE"
     private const val UPDATE_URL = "https://raw.githubusercontent.com/Vinrawa/vin-music-v2/main/latest_version.json"
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Only these hosts may serve update APKs — the manifest JSON is plain text in
     // a public repo, so a compromised/tampered manifest must not be able to point
@@ -87,7 +89,7 @@ object UpdateManager {
     }
 
     fun downloadAndInstall(context: Context, updateInfo: UpdateInfo) {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 if (!isAllowedUpdateUrl(updateInfo.apkUrl)) {
                     Log.e(TAG, "Refusing to download from non-allowlisted URL")
@@ -176,7 +178,7 @@ object UpdateManager {
         }
 
         // Hashing a ~90 MB APK must not run on the main thread.
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             val expected = expectedSha256
             if (expected.isNullOrBlank()) {
                 Log.e(TAG, "Refusing update without SHA-256 integrity hash")

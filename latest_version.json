@@ -1,8 +1,8 @@
 {
   "latestVersionCode": 25,
   "latestVersionName": "2.3.2",
-  "apkUrl": "https://vinrawa.github.io/Vin-music-v2/vinmusic.apk",
-  "sha256": "db2c1b93bf214cdd800c784c6697b4ce0208b11ca7456d0febe02d79a280258f",
+  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/latest/download/app-release.apk",
+  "sha256": "1422c60f50ff5e89307e5a1e43c9d9b0a802db5c44a1069a8db40552ecb5afef",
   "forceUpdate": false,
-  "releaseNotes": "Apple Music-inspired dynamic Liquid Aura Mesh ambient background on Home screen, Live animated Equalizer on Floating Mini-Player, strict two-way high-res album artwork matching, removed orange SoundCloud branding for champagne gold aesthetic, and Cloud Downloads Sync to backup and restore offline library."
+  "releaseNotes": "Downloads and Cache tab for offline music and stream caching, Discover screen with genre stations and curated spotlight, Anti-fatigue mixes with dynamic repetition penalties to eliminate repeat songs, Apple Music-inspired dynamic Liquid Aura Mesh ambient background, and Live animated Equalizer on Floating Mini-Player."
 }

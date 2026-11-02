@@ -111,9 +111,9 @@ class RecommendationScoringTest {
 
     @Test
     fun `similar artist gets partial boost`() {
-        val dna = buildDNA(artists = mapOf("j. cole" to 80.0))
-        // Kendrick Lamar is in SIMILAR_ARTISTS_MAP for J. Cole
-        val similarMeta = makeMeta(artist = "Kendrick Lamar")
+        val dna = buildDNA(artists = mapOf("Kendrick Lamar" to 80.0))
+        // JID is in SIMILAR_ARTISTS_MAP for Kendrick Lamar
+        val similarMeta = makeMeta(artist = "JID")
         val unknownMeta = makeMeta(artist = "Adele")
         val scoreSimilar = RecommendationManager.calculateTasteSimilarity(similarMeta, dna)
         val scoreUnknown = RecommendationManager.calculateTasteSimilarity(unknownMeta, dna)
@@ -292,8 +292,15 @@ class RecommendationScoringTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `inferMetadata defaults to Unknown when no language keywords match`() {
+    fun `inferMetadata defaults to English for Latin text without specific keywords`() {
         val item = VideoItem("v1", "Random Title", "Random Artist", "3:00")
+        val meta = RecommendationManager.inferMetadata(item)
+        assertEquals("English", meta.language)
+    }
+
+    @Test
+    fun `inferMetadata defaults to Unknown when text contains unmapped non-Latin script`() {
+        val item = VideoItem("v1", "\u05D0\u05D1\u05D2\u05D3", "\u05D4\u05D5\u05D6", "3:00")
         val meta = RecommendationManager.inferMetadata(item)
         assertEquals("Unknown", meta.language)
     }
@@ -442,7 +449,7 @@ class RecommendationScoringTest {
     fun `isOfficialArtistChannel accepts channels with Music keyword`() {
         // "music" was removed from the blacklist to fix false positives
         // for legitimate artist channels with "Music" in their name
-        assertTrue(RecommendationManager.isOfficialArtistChannel("Song", "My Official Music"))
+        assertTrue(RecommendationManager.isOfficialArtistChannel("Song", "Sony Music"))
     }
 
     @Test
@@ -513,7 +520,7 @@ class RecommendationScoringTest {
     @Test
     fun `SIMILAR_ARTISTS_MAP has entries for key artists`() {
         val map = RecommendationManager.SIMILAR_ARTISTS_MAP
-        assertTrue("Should have J. Cole", map.containsKey("j. cole"))
+        assertTrue("Should have J. Cole", map.containsKey("j cole"))
         assertTrue("Should have Kendrick Lamar", map.containsKey("kendrick lamar"))
         assertTrue("Should have Drake", map.containsKey("drake"))
         assertTrue("Should have Arijit Singh", map.containsKey("arijit singh"))
@@ -524,18 +531,17 @@ class RecommendationScoringTest {
     fun `SIMILAR_ARTISTS_MAP is bidirectional`() {
         val map = RecommendationManager.SIMILAR_ARTISTS_MAP
         // If A lists B, then B should list A
-        val jcoleSimilar = map["j. cole"] ?: emptyList()
-        assertTrue("J. Cole should list Kendrick", jcoleSimilar.any { it.contains("kendrick") })
-
         val kendrickSimilar = map["kendrick lamar"] ?: emptyList()
-        assertTrue("Kendrick should list J. Cole", kendrickSimilar.any { it.contains("j. cole") || it.contains("cole") })
+        assertTrue("Kendrick should list JID", kendrickSimilar.contains("jid"))
+
+        val jidSimilar = map["jid"] ?: emptyList()
+        assertTrue("JID should list Kendrick", jidSimilar.contains("kendrick lamar"))
     }
 
     @Test
-    fun `SIMILAR_ARTISTS_MAP only covers 19 artists`() {
+    fun `SIMILAR_ARTISTS_MAP covers curated artists`() {
         val map = RecommendationManager.SIMILAR_ARTISTS_MAP
-        // This documents the known limitation — only 19 hardcoded entries
-        assertTrue("Map has ~19 entries, actual: ${map.size}", map.size <= 25)
+        assertTrue("Map has curated entries, actual: ${map.size}", map.size >= 19)
     }
 
     // ═══════════════════════════════════════════════════════════════════════

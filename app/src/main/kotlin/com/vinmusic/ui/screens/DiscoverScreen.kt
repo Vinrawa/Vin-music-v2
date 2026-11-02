@@ -37,6 +37,7 @@ import com.vinmusic.ui.theme.VinColors
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import kotlinx.coroutines.Dispatchers
@@ -167,6 +168,35 @@ private fun rememberShownDiscoverKeys(ctx: android.content.Context, keys: Collec
     } catch (_: Exception) { /* memory is best-effort */ }
 }
 
+private fun clearShownDiscoverKeys(ctx: android.content.Context) {
+    try {
+        ctx.getSharedPreferences(DISCOVER_SHOWN_PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .remove("keys")
+            .apply()
+    } catch (_: Exception) { /* best-effort */ }
+}
+
+val DISCOVER_GENRES = listOf(
+    "All", "Rap/Hip-Hop", "Pop", "Indie", "Bollywood", "Lofi", "Rock", "Punjabi", "Acoustic"
+)
+
+private fun matchesGenreFilter(song: VideoItem, filter: String): Boolean {
+    if (filter == "All") return true
+    val meta = runCatching { RecommendationManager.inferMetadata(song) }.getOrNull() ?: return true
+    return when (filter) {
+        "Rap/Hip-Hop" -> meta.genre.equals("Rap/Hip-Hop", ignoreCase = true) || song.title.contains("hip hop", ignoreCase = true) || song.title.contains("rap", ignoreCase = true)
+        "Indie" -> meta.genre.equals("Indie", ignoreCase = true) || song.title.contains("indie", ignoreCase = true)
+        "Bollywood" -> meta.genre.equals("Bollywood", ignoreCase = true) || meta.language.equals("Hindi", ignoreCase = true)
+        "Punjabi" -> meta.genre.contains("Punjabi", ignoreCase = true) || meta.language.equals("Punjabi", ignoreCase = true)
+        "Lofi" -> meta.genre.equals("Lofi", ignoreCase = true) || song.title.contains("lofi", ignoreCase = true) || song.title.contains("lo-fi", ignoreCase = true)
+        "Rock" -> meta.genre.equals("Rock", ignoreCase = true) || song.title.contains("rock", ignoreCase = true)
+        "Acoustic" -> song.title.contains("acoustic", ignoreCase = true) || meta.energy <= 0.45f
+        "Pop" -> meta.genre.equals("Pop", ignoreCase = true)
+        else -> meta.genre.contains(filter, ignoreCase = true)
+    }
+}
+
 /**
  * Filter search results to ensure only official audio/video released by the artist is added.
  * Excludes fan-made content, covers, karaokes, reaction videos, and loops.
@@ -277,6 +307,11 @@ fun DiscoverScreen(
 ) {
     val scope = rememberCoroutineScope()
     var cards by remember { mutableStateOf<List<DiscoverSong>>(emptyList()) }
+    var selectedGenreFilter by remember { mutableStateOf("All") }
+    val displayedCards = remember(cards, selectedGenreFilter) {
+        if (selectedGenreFilter == "All") cards
+        else cards.filter { matchesGenreFilter(it.videoItem, selectedGenreFilter) }
+    }
     var isLoading by remember { mutableStateOf(true) }
     val swipeState = rememberSwipeState(scope)
     
@@ -353,7 +388,14 @@ fun DiscoverScreen(
                         isDiscoverCandidate(song) &&
                         (historyCentroid == null || !RecommendationManager.isThematicallyContradictory(song.title, song.author, RecommendationManager.inferMetadata(song).genre, historyCentroid))
                     ) {
-                        discoverPool.add(DiscoverSong(song, reason, score.coerceIn(55, 100)))
+                        discoverPool.add(
+                            DiscoverSong(
+                                videoItem = song,
+                                recommendationReason = reason,
+                                vibeScore = score.coerceIn(55, 100),
+                                matchHighlights = discoverMatchHighlights(song, tasteProfile)
+                            )
+                        )
                     }
                 }
 
@@ -378,10 +420,6 @@ fun DiscoverScreen(
                         cards = instantDeck
                         autoPreviewEnabled = true
                     }
-                    // A dealt card should not be dealt again next visit—even if
-                    // the user exits without swiping it. This is what prevents the
-                    // same deck from returning over and over.
-                    rememberShownDiscoverKeys(ctx, instantDeck.map { discoverSongKey(it.videoItem) })
                 }
 
                 // Gather top artists from signals, history, and custom playlists
@@ -629,9 +667,6 @@ fun DiscoverScreen(
                     isLoading = false
                     autoPreviewEnabled = true
                 }
-                if (uniqueDiscover.isNotEmpty()) {
-                    rememberShownDiscoverKeys(ctx, uniqueDiscover.map { discoverSongKey(it.videoItem) })
-                }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { isLoading = false }
             }
@@ -642,48 +677,152 @@ fun DiscoverScreen(
         loadDiscoverSongs()
     }
 
+    fun fetchGenreCandidates(genre: String) {
+        if (genre == "All") {
+            loadDiscoverSongs()
+            return
+        }
+        isLoading = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                val shownKeys = loadShownDiscoverKeys(ctx)
+                val queries = when (genre) {
+                    "Rap/Hip-Hop" -> listOf("hip hop hits official audio", "top rap songs official", "desi hip hop official audio")
+                    "Indie" -> listOf("indian indie official audio", "indie songs official music", "indie pop hits official")
+                    "Bollywood" -> listOf("bollywood romantic official songs", "latest bollywood hits official audio", "bollywood melodies official")
+                    "Punjabi" -> listOf("latest punjabi songs official", "top punjabi hits official audio", "punjabi pop official")
+                    "Lofi" -> listOf("lofi beats official audio", "hindi lofi official songs", "aesthetic chill lofi official")
+                    "Rock" -> listOf("classic rock official audio", "rock hits official music", "indie rock official songs")
+                    "Acoustic" -> listOf("acoustic versions official", "acoustic guitar songs official", "unplugged official audio")
+                    "Pop" -> listOf("top pop hits official audio", "global pop songs official", "pop melodies official")
+                    else -> listOf("$genre official hits", "$genre popular music audio")
+                }
+                val results = mutableListOf<VideoItem>()
+                for (query in queries) {
+                    if (results.size >= 15) break
+                    try {
+                        val searchHits = InnerTube.search(query)
+                        results.addAll(
+                            searchHits.filter {
+                                isDiscoverCandidate(it) &&
+                                !shownKeys.contains(discoverSongKey(it)) &&
+                                matchesGenreFilter(it, genre)
+                            }
+                        )
+                    } catch (_: Exception) {}
+                }
+                val newCards = results.distinctBy { it.videoId }.take(20).map { song ->
+                    DiscoverSong(
+                        videoItem = song,
+                        recommendationReason = "$genre Selection",
+                        vibeScore = 80,
+                        matchHighlights = listOf("Matches your $genre filter", "Fresh pick")
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    if (newCards.isNotEmpty()) {
+                        val existingIds = cards.map { it.videoItem.videoId }.toSet()
+                        val toAdd = newCards.filter { it.videoItem.videoId !in existingIds }
+                        cards = toAdd + cards
+                    }
+                    isLoading = false
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) { isLoading = false }
+            }
+        }
+    }
+
+    LaunchedEffect(selectedGenreFilter) {
+        if (selectedGenreFilter != "All") {
+            val matchingCount = cards.count { matchesGenreFilter(it.videoItem, selectedGenreFilter) }
+            if (matchingCount < 5 && !isLoading) {
+                fetchGenreCandidates(selectedGenreFilter)
+            }
+        }
+    }
+
     fun dropCurrentCard() {
-        val swipedCard = cards.lastOrNull()
+        val swipedCard = displayedCards.lastOrNull()
         if (swipedCard != null) {
             // Remember only cards the user actually swiped past — this keeps
             // future decks fresh without draining the instant local pool.
             scope.launch(Dispatchers.IO) {
                 rememberShownDiscoverKeys(ctx, listOf(discoverSongKey(swipedCard.videoItem)))
             }
+            cards = cards.filter { it.videoItem.videoId != swipedCard.videoItem.videoId }
         }
-        val remainingCards = cards.dropLast(1)
-        cards = remainingCards
+        val remainingCards = displayedCards.filter { it.videoItem.videoId != swipedCard?.videoItem?.videoId }
         if (remainingCards.size <= 4 && !isLoading) {
-            loadDiscoverSongs()
+            if (selectedGenreFilter == "All") {
+                loadDiscoverSongs()
+            } else {
+                fetchGenreCandidates(selectedGenreFilter)
+            }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(VinColors.BgColor)) {
-        if (isLoading && cards.isEmpty()) {
+        if (isLoading && displayedCards.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(48.dp), strokeWidth = 3.dp)
-                    Text("Loading", color = VinColors.Secondary, fontSize = 14.sp)
+                    Text(
+                        text = "Finding fresh ${if (selectedGenreFilter == "All") "music" else selectedGenreFilter}…",
+                        color = VinColors.Secondary,
+                        fontSize = 14.sp
+                    )
                 }
             }
-        } else if (cards.isEmpty()) {
+        } else if (displayedCards.isEmpty()) {
             Column(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("You've swiped them all!", color = VinColors.Primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (selectedGenreFilter == "All") "You've swiped them all!" else "No more $selectedGenreFilter songs right now!",
+                    color = VinColors.Primary,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
                 Spacer(Modifier.height(8.dp))
-                Text("Ready for another customized batch?", color = VinColors.Secondary, fontSize = 14.sp)
+                Text(
+                    text = "Ready for another customized batch?",
+                    color = VinColors.Secondary,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
                 Spacer(Modifier.height(20.dp))
-                Button(onClick = { loadDiscoverSongs() }, colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent)) {
-                    Icon(Icons.Default.Refresh, null, tint = Color.White)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Refresh Deck", color = Color.White, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (selectedGenreFilter != "All") {
+                        Button(
+                            onClick = { selectedGenreFilter = "All" },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.15f))
+                        ) {
+                            Text("All Vibes", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            if (selectedGenreFilter == "All") {
+                                clearShownDiscoverKeys(ctx)
+                                loadDiscoverSongs()
+                            } else {
+                                fetchGenreCandidates(selectedGenreFilter)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent)
+                    ) {
+                        Icon(Icons.Default.Refresh, null, tint = Color.White)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Refresh Deck", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         } else {
-            val currentCard = cards.last()
+            val currentCard = displayedCards.last()
 
             // Ambient background with animated layers
             val infiniteTransition = rememberInfiniteTransition(label = "discover_bg")
@@ -733,7 +872,7 @@ fun DiscoverScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text("Discover Mix", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, color = Color.White)
-                Text("${cards.size} songs • Smart matching enabled", fontSize = 11.sp, color = Color.White.copy(alpha = 0.6f))
+                Text("${displayedCards.size} songs • Smart matching enabled", fontSize = 11.sp, color = Color.White.copy(alpha = 0.6f))
             }
 
             // Stack & Control layout
@@ -746,15 +885,16 @@ fun DiscoverScreen(
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
                 DiscoverGenreFilterRow(
-                    selected = null,
-                    onSelected = { }
+                    genres = DISCOVER_GENRES,
+                    selected = selectedGenreFilter,
+                    onSelected = { selectedGenreFilter = it }
                 )
 
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (cards.size > 1) {
+                    if (displayedCards.size > 1) {
                         Card(
                             modifier = Modifier.fillMaxWidth(0.88f).fillMaxHeight(0.82f)
                                 .offset(y = 14.dp).graphicsLayer { scaleX = 0.93f; scaleY = 0.93f; alpha = 0.6f },
@@ -762,7 +902,7 @@ fun DiscoverScreen(
                             colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f))
                         ) {}
                     }
-                    if (cards.size > 2) {
+                    if (displayedCards.size > 2) {
                         Card(
                             modifier = Modifier.fillMaxWidth(0.82f).fillMaxHeight(0.76f)
                                 .offset(y = 26.dp).graphicsLayer { scaleX = 0.87f; scaleY = 0.87f; alpha = 0.35f },
@@ -796,7 +936,7 @@ fun DiscoverScreen(
                             }
                         },
                         onSwipedUp = {
-                            val discoveryQueue = cards.asReversed().map { it.videoItem }
+                            val discoveryQueue = displayedCards.asReversed().map { it.videoItem }
                             onSongClick(currentCard.videoItem, discoveryQueue)
                             showToastMessage = "Playing your discovery queue"
                             dropCurrentCard()
@@ -1182,38 +1322,6 @@ fun DiscoverCard(
             )
         }
 
-        if (false) { // Match Mood tag row disabled (was hidden/truncated behind artwork)
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 96.dp, start = 20.dp, end = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                discoverSong.matchHighlights.forEach { highlight ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color.Black.copy(alpha = 0.46f))
-                            .border(0.5.dp, Color.White.copy(alpha = 0.13f), RoundedCornerShape(14.dp))
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(Icons.Default.AutoAwesome, null, tint = VinColors.AccentLight, modifier = Modifier.size(11.dp))
-                        Text(
-                            text = highlight,
-                            fontSize = 9.sp,
-                            color = Color.White.copy(alpha = 0.88f),
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-        }
-
         // Center artwork, no decorative disc behind it.
         Box(
             modifier = Modifier.align(Alignment.Center).offset(y = (-70).dp),
@@ -1261,6 +1369,35 @@ fun DiscoverCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            if (discoverSong.matchHighlights.isNotEmpty()) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    discoverSong.matchHighlights.take(2).forEach { highlight ->
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.Black.copy(alpha = 0.5f))
+                                .border(0.5.dp, VinColors.AccentLight.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, null, tint = VinColors.AccentLight, modifier = Modifier.size(11.dp))
+                            Text(
+                                text = highlight,
+                                fontSize = 10.sp,
+                                color = Color.White.copy(alpha = 0.92f),
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
 
             // Song Info (Title & Author)
@@ -1343,24 +1480,25 @@ fun DiscoverCard(
 
 @Composable
 private fun DiscoverGenreFilterRow(
-    selected: Unit?,
-    onSelected: (Unit?) -> Unit
+    genres: List<String>,
+    selected: String,
+    onSelected: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 8.dp)
+            .padding(bottom = 6.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 6.dp),
+                .padding(horizontal = 20.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "All Songs",
-                fontSize = 18.sp,
+                text = if (selected == "All") "All Vibes" else "$selected Mix",
+                fontSize = 17.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = Color.White
             )
@@ -1370,6 +1508,44 @@ private fun DiscoverGenreFilterRow(
                 fontWeight = FontWeight.Bold,
                 color = VinColors.AccentLight
             )
+        }
+
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(genres) { genre ->
+                val isSelected = genre == selected
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(
+                            if (isSelected) Brush.horizontalGradient(
+                                listOf(Color(0xFFC5A880), Color(0xFFE5CBA3))
+                            ) else Brush.horizontalGradient(
+                                listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.08f))
+                            )
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isSelected) Color(0xFFE5CBA3) else Color.White.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(20.dp)
+                        )
+                        .clickable { onSelected(genre) }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = genre,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) Color.Black else Color.White.copy(alpha = 0.85f)
+                    )
+                }
+            }
         }
     }
 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -366,7 +367,7 @@ fun DownloadsScreen(
                         ) {
                             if (isPlaying) {
                                 Icon(
-                                    imageVector = Icons.Default.VolumeUp,
+                                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                     contentDescription = null,
                                     tint = VinColors.AccentLight,
                                     modifier = Modifier.size(16.dp)
@@ -553,7 +554,7 @@ fun DownloadsScreen(
                             ) {
                                 if (isPlaying) {
                                     Icon(
-                                        imageVector = Icons.Default.VolumeUp,
+                                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                         contentDescription = null,
                                         tint = VinColors.AccentLight,
                                         modifier = Modifier.size(16.dp)

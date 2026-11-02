@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -48,6 +49,7 @@ import com.vinmusic.innertube.InnerTube
 import com.vinmusic.lyrics.LyricsResult
 import com.vinmusic.player.*
 import com.vinmusic.ui.theme.VinColors
+import com.vinmusic.ui.theme.Vin
 import com.vinmusic.ui.utils.ColorExtractor
 import androidx.compose.animation.core.*
 import androidx.compose.ui.geometry.Offset
@@ -218,10 +220,23 @@ fun FullPlayerScreen(
         isSimilarSongsLoading = true
         withContext(Dispatchers.IO) {
             try {
-                val query = "similar to ${song.title} ${song.author}"
-                val results = InnerTube.search(query).filter { it.videoId != song.videoId }
+                val cleanArtist = song.author.replace("-topic", "", ignoreCase = true).replace("- topic", "", ignoreCase = true).trim()
+                // Use YouTube Music algorithmic radio / related tracks for authentic music similarity
+                val radioResults = runCatching {
+                    InnerTube.getWatchNextRadio(song.videoId)
+                }.getOrNull().orEmpty().filter {
+                    it.videoId != song.videoId && !it.author.contains(cleanArtist, ignoreCase = true)
+                }
+
+                val finalResults = if (radioResults.size < 4) {
+                    val fallbackSearch = InnerTube.search("$cleanArtist similar radio").filter {
+                        it.videoId != song.videoId && !it.author.contains(cleanArtist, ignoreCase = true)
+                    }
+                    (radioResults + fallbackSearch).distinctBy { it.videoId }
+                } else radioResults
+
                 withContext(Dispatchers.Main) {
-                    similarSongs = results.take(6)
+                    similarSongs = finalResults.take(6)
                 }
             } catch (e: Exception) {
                 android.util.Log.e("FullPlayerScreen", "Failed to load similar songs: ${e.message}")
@@ -256,15 +271,29 @@ fun FullPlayerScreen(
             .fillMaxSize()
             .background(VinColors.BgColor)
     ) {
-        // ── 1. Album Art as crisp background ──
-        AsyncImage(
-            model = activeArtUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer(alpha = 0.72f)
-        )
+        // ── 1. Album Art background (Atmospheric Blur or Crisp/Normal) ──
+        val isBlur = com.vinmusic.ui.theme.PlayerBackgroundState.blurEnabled.value
+        if (isBlur) {
+            AsyncImage(
+                model = activeArtUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(36.dp)
+                    .graphicsLayer(alpha = 0.38f)
+            )
+        } else {
+            AsyncImage(
+                model = activeArtUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.88f)
+                    .graphicsLayer(alpha = 0.55f)
+            )
+        }
 
         // ── 2. Dynamic translucent gradient overlay ──
         Box(
@@ -272,11 +301,19 @@ fun FullPlayerScreen(
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(
-                            Color.Black.copy(alpha = 0.12f),
-                            Color.Black.copy(alpha = 0.50f),
-                            VinColors.BgColor.copy(alpha = 0.96f)
-                        )
+                        if (isBlur) {
+                            listOf(
+                                Color.Black.copy(alpha = 0.12f),
+                                Color.Black.copy(alpha = 0.50f),
+                                VinColors.BgColor.copy(alpha = 0.96f)
+                            )
+                        } else {
+                            listOf(
+                                Color.Black.copy(alpha = 0.15f),
+                                Color.Black.copy(alpha = 0.50f),
+                                VinColors.BgColor.copy(alpha = 0.98f)
+                            )
+                        }
                     )
                 )
         )
@@ -332,18 +369,28 @@ fun FullPlayerScreen(
                     HapticHelper.click(ctx)
                     onClose()
                 }) {
-                    Icon(Icons.Default.ArrowBack, "Back", tint = VinColors.Primary, modifier = Modifier.size(24.dp))
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = VinColors.Primary, modifier = Modifier.size(24.dp))
                 }
-                Text(
-                    text = "${song.title} by ${song.author}",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = VinColors.Primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
-                    textAlign = TextAlign.Center
-                )
+                Column(
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = song.title,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = VinColors.Primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = song.author,
+                        fontSize = 11.sp,
+                        color = VinColors.Secondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = {
                         HapticHelper.click(ctx)
@@ -813,11 +860,10 @@ fun FullPlayerScreen(
                             // Slider Thumb position
                             val thumbHeight = 16.dp
                             val dragRange = fHeight - thumbHeight
-                            val yOffset = dragRange * (1f - faderProgress)
 
                             Box(
                                 modifier = Modifier
-                                    .offset(y = yOffset)
+                                    .offset { androidx.compose.ui.unit.IntOffset(0, (dragRange * (1f - faderProgress)).roundToPx()) }
                                     .size(20.dp, thumbHeight)
                                     .align(Alignment.TopCenter)
                                     .clip(RoundedCornerShape(3.dp))
@@ -963,7 +1009,7 @@ fun FullPlayerScreen(
                 )
 
                 GlassActionButton(
-                    icon = Icons.Default.PlaylistAdd,
+                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                     label = "Playlist",
                     active = false,
                     onClick = { onAddToPlaylist(song) }
@@ -1371,8 +1417,14 @@ private fun PlayerSeekBar(vm: PlayerViewModel, animatedAccent: Color) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(formatMs(vm.currentTimeMs), fontSize = 12.sp, color = VinColors.Secondary)
-        Text(formatMs(vm.durationMs), fontSize = 12.sp, color = VinColors.Secondary)
+        Text(
+            text = formatMs(vm.currentTimeMs),
+            style = Vin.Text.bodySmall.copy(fontSize = 12.sp, fontFeatureSettings = "tnum", color = VinColors.Secondary)
+        )
+        Text(
+            text = formatMs(vm.durationMs),
+            style = Vin.Text.bodySmall.copy(fontSize = 12.sp, fontFeatureSettings = "tnum", color = VinColors.Secondary)
+        )
     }
 }
 
@@ -1387,40 +1439,60 @@ fun KaraokeLine(
     fillFraction: Float,
     modifier: Modifier = Modifier
 ) {
+    val groupedWords = remember(words) {
+        val groups = ArrayList<List<Pair<Int, com.vinmusic.lyrics.WordTiming>>>()
+        var currentGroup = ArrayList<Pair<Int, com.vinmusic.lyrics.WordTiming>>()
+        for ((idx, w) in words.withIndex()) {
+            currentGroup.add(idx to w)
+            if (w.hasTrailingSpace || idx == words.lastIndex) {
+                groups.add(currentGroup)
+                currentGroup = ArrayList()
+            }
+        }
+        groups
+    }
+
     FlowRow(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        words.forEachIndexed { idx, word ->
-            val isPast = isActive && idx < activeWordIndex
-            val isCurrent = isActive && idx == activeWordIndex
-            val wordAlpha = when {
-                !isActive -> 0.5f
-                isPast -> 1.0f
-                isCurrent -> 0.6f + (fillFraction * 0.4f)
-                else -> 0.35f
+        groupedWords.forEach { wordGroup ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                wordGroup.forEach { (idx, word) ->
+                    val isPast = isActive && idx < activeWordIndex
+                    val isCurrent = isActive && idx == activeWordIndex
+                    val wordAlpha = when {
+                        !isActive -> 0.5f
+                        isPast -> 1.0f
+                        isCurrent -> 0.6f + (fillFraction * 0.4f)
+                        else -> 0.35f
+                    }
+                    val wordColor = when {
+                        !isActive -> Color.White.copy(alpha = 0.5f)
+                        isPast -> Color.White
+                        isCurrent -> Color.White.copy(alpha = wordAlpha)
+                        else -> Color.White.copy(alpha = 0.35f)
+                    }
+                    Text(
+                        text = word.text + if (word.hasTrailingSpace) " " else "",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = wordColor,
+                        style = androidx.compose.ui.text.TextStyle(
+                            shadow = if (isCurrent) Shadow(
+                                color = Color.White.copy(alpha = 0.5f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 8.dp.value
+                            ) else null
+                        ),
+                        lineHeight = 24.sp
+                    )
+                }
             }
-            val wordColor = when {
-                !isActive -> Color.White.copy(alpha = 0.5f)
-                isPast -> Color.White
-                isCurrent -> Color.White.copy(alpha = wordAlpha)
-                else -> Color.White.copy(alpha = 0.35f)
-            }
-            Text(
-                text = word.text + if (word.hasTrailingSpace) " " else "",
-                fontSize = 18.sp,
-                fontWeight = if (isActive && (isPast || isCurrent)) FontWeight.ExtraBold else FontWeight.SemiBold,
-                color = wordColor,
-                style = androidx.compose.ui.text.TextStyle(
-                    shadow = if (isCurrent) Shadow(
-                        color = Color.White.copy(alpha = 0.4f),
-                        offset = Offset(0f, 0f),
-                        blurRadius = 8.dp.value
-                    ) else null
-                ),
-                lineHeight = 24.sp
-            )
         }
     }
 }
@@ -1466,36 +1538,36 @@ fun LyricsPanel(vm: PlayerViewModel) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header Controls Row
-            Row(
+            // Header Controls: 2-row layout to prevent source truncation and button overflow
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(bottom = 10.dp)
             ) {
-                // Left: Source and Offset Tuner
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val sourceText = when (val res = vm.lyricsResult) {
-                        is LyricsResult.Synced -> "Source: ${res.source}"
-                        is LyricsResult.Plain -> "Source: ${res.source}"
-                        else -> "No lyrics"
-                    }
-                    Text(
-                        text = sourceText,
-                        fontSize = 10.sp,
-                        color = VinColors.AccentLight,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
+                // Top Row: Source text clearly visible
+                val sourceText = when (val res = vm.lyricsResult) {
+                    is LyricsResult.Synced -> "Source: ${res.source} (Synced)"
+                    is LyricsResult.Plain -> "Source: ${res.source}"
+                    else -> "No lyrics"
+                }
+                Text(
+                    text = sourceText,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = VinColors.AccentLight,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
+                // Bottom Row: Offset capsule on left, Action buttons on right
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Left: Offset capsule (if lyrics available)
                     if (vm.lyricsResult is LyricsResult.Synced || vm.lyricsResult is LyricsResult.Plain) {
-                        // Offset capsule
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -1547,108 +1619,110 @@ fun LyricsPanel(vm: PlayerViewModel) {
                                 }
                             }
                         }
+                    } else {
+                        Spacer(Modifier.width(1.dp))
                     }
-                }
 
-                // Right: Refetch + Edit Buttons
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // Translate Button
-                    IconButton(
-                        onClick = { vm.transliterateLyricsToHinglish() },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(VinColors.White10)
-                            .border(1.dp, VinColors.GlassBorder, CircleShape)
+                    // Right: Action Buttons with sleek 34dp size and 8dp spacing
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (vm.isTransliterating) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = VinColors.AccentLight,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Text(
-                                text = "Aa",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = VinColors.AccentLight
+                        // Translate Button
+                        IconButton(
+                            onClick = { vm.transliterateLyricsToHinglish() },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(VinColors.White10)
+                                .border(1.dp, VinColors.GlassBorder, CircleShape)
+                        ) {
+                            if (vm.isTransliterating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = VinColors.AccentLight,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = "Aa",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = VinColors.AccentLight
+                                )
+                            }
+                        }
+
+                        // Source Picker Button
+                        IconButton(
+                            onClick = {
+                                vm.fetchLyricsCandidates()
+                                showCandidatePicker = !showCandidatePicker
+                            },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(if (showCandidatePicker) VinColors.Accent.copy(alpha = 0.3f) else VinColors.White10)
+                                .border(1.dp, VinColors.GlassBorder, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = "Lyrics Sources",
+                                tint = VinColors.AccentLight,
+                                modifier = Modifier.size(15.dp)
                             )
                         }
-                    }
 
-                    // Source Picker Button
-                    IconButton(
-                        onClick = {
-                            vm.fetchLyricsCandidates()
-                            showCandidatePicker = !showCandidatePicker
-                        },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(if (showCandidatePicker) VinColors.Accent.copy(alpha = 0.3f) else VinColors.White10)
-                            .border(1.dp, VinColors.GlassBorder, CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = "Lyrics Sources",
-                            tint = VinColors.AccentLight,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                        // Refetch Button
+                        IconButton(
+                            onClick = { vm.refetchLyrics() },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(VinColors.White10)
+                                .border(1.dp, VinColors.GlassBorder, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Refetch Lyrics",
+                                tint = VinColors.AccentLight,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
 
-                    // Refetch Button
-                    IconButton(
-                        onClick = { vm.refetchLyrics() },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(VinColors.White10)
-                            .border(1.dp, VinColors.GlassBorder, CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refetch Lyrics",
-                            tint = VinColors.AccentLight,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-
-                    // Edit Button
-                    IconButton(
-                        onClick = {
-                            val currentResult = vm.lyricsResult
-                            editIsSynced = currentResult is LyricsResult.Synced
-                            editText = when (currentResult) {
-                                is LyricsResult.Synced -> {
-                                    currentResult.lines.joinToString("\n") { line ->
-                                        val ms = line.timeMs
-                                        val min = ms / 60000
-                                        val sec = (ms % 60000) / 1000
-                                        val hundredths = (ms % 1000) / 10
-                                        String.format(java.util.Locale.US, "[%02d:%02d.%02d] %s", min, sec, hundredths, line.text)
+                        // Edit Button
+                        IconButton(
+                            onClick = {
+                                val currentResult = vm.lyricsResult
+                                editIsSynced = currentResult is LyricsResult.Synced
+                                editText = when (currentResult) {
+                                    is LyricsResult.Synced -> {
+                                        currentResult.lines.joinToString("\n") { line ->
+                                            val ms = line.timeMs
+                                            val min = ms / 60000
+                                            val sec = (ms % 60000) / 1000
+                                            val hundredths = (ms % 1000) / 10
+                                            String.format(java.util.Locale.US, "[%02d:%02d.%02d] %s", min, sec, hundredths, line.text)
+                                        }
                                     }
+                                    is LyricsResult.Plain -> currentResult.text
+                                    else -> ""
                                 }
-                                is LyricsResult.Plain -> currentResult.text
-                                else -> ""
-                            }
-                            showEditDialog = true
-                        },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(VinColors.White10)
-                            .border(1.dp, VinColors.GlassBorder, CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Edit Lyrics",
-                            tint = VinColors.Primary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                                showEditDialog = true
+                            },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(VinColors.White10)
+                                .border(1.dp, VinColors.GlassBorder, CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit Lyrics",
+                                tint = VinColors.AccentLight,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -2096,7 +2170,7 @@ fun QueuePanel(vm: PlayerViewModel, onSaveAsPlaylist: (() -> Unit)? = null) {
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
-                                Icons.Default.PlaylistAdd,
+                                Icons.AutoMirrored.Filled.PlaylistAdd,
                                 contentDescription = null,
                                 tint = VinColors.AccentLight,
                                 modifier = Modifier.size(14.dp)
@@ -2290,7 +2364,7 @@ fun RemixPanel(vm: PlayerViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(bottom = 32.dp),
+            .padding(bottom = 72.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // ── Card 1: Presets ──
@@ -2319,20 +2393,10 @@ fun RemixPanel(vm: PlayerViewModel) {
                 color = Color.White.copy(alpha = 0.75f)
             )
             LazyRow(
+                contentPadding = PaddingValues(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                item {
-                    SmartEQPresetChip(
-                        name = "pTron Clarity",
-                        icon = "",
-                        active = vm.eqPreset == "pTron Bass Clarity",
-                        onClick = {
-                            val preset = EQ_PRESETS.find { it.name == "pTron Bass Clarity" }
-                            if (preset != null) vm.applyPreset(preset)
-                        }
-                    )
-                }
                 item {
                     SmartEQPresetChip(
                         name = "Bass Booster",
@@ -2415,6 +2479,7 @@ fun RemixPanel(vm: PlayerViewModel) {
                 color = Color.White.copy(alpha = 0.75f)
             )
             LazyRow(
+                contentPadding = PaddingValues(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -2521,6 +2586,71 @@ fun RemixPanel(vm: PlayerViewModel) {
             )
 
             EQSlider("Punchy Bass Boost", vm.bassBoostStr, 0f, 1000f) { vm.bassBoostStr = it; vm.applyEQ() }
+
+            // Mega Bass Engine Mode Chips
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Mega Bass Engine",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White
+                    )
+                    Text(
+                        vm.bassEngineMode.label,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = VinColors.AccentLight
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    BassEngineMode.entries.forEach { mode ->
+                        val isSelected = vm.bassEngineMode == mode
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSelected) VinColors.Accent else Color.White.copy(alpha = 0.08f))
+                                .border(
+                                    0.5.dp,
+                                    if (isSelected) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable {
+                                    HapticHelper.click(context)
+                                    vm.updateBassEngineMode(mode)
+                                }
+                                .padding(vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = when (mode) {
+                                    BassEngineMode.NATURAL -> "Natural"
+                                    BassEngineMode.PUNCHY -> "Punchy"
+                                    BassEngineMode.SUBWOOFER -> "Sub 808"
+                                    BassEngineMode.THUNDER -> "Thunder"
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.75f)
+                            )
+                        }
+                    }
+                }
+            }
+
             EQSlider("Vocal & Clarity Exciter", vm.clarityStr, 0f, 1000f) { vm.clarityStr = it; vm.applyEQ() }
             EQSlider("Loudness Gain", vm.loudnessGain, 0f, 1000f) { vm.loudnessGain = it; vm.applyEQ() }
 
@@ -2560,6 +2690,120 @@ fun RemixPanel(vm: PlayerViewModel) {
                     )
                 )
             }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.06f), thickness = 0.5.dp)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Haptic Bass (Music Haptics)",
+                        fontSize = 13.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "Physical sub-bass kick vibrations synced to the beat",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
+                }
+                Switch(
+                    checked = vm.hapticBassEnabled,
+                    onCheckedChange = {
+                        HapticHelper.click(context)
+                        vm.setHapticBass(it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = VinColors.Accent,
+                        uncheckedThumbColor = Color.White.copy(alpha = 0.6f),
+                        uncheckedTrackColor = Color.White.copy(alpha = 0.12f)
+                    )
+                )
+            }
+
+            if (vm.hapticBassEnabled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val levels = listOf(1 to "Subtle", 2 to "Punchy", 3 to "Subwoofer")
+                    levels.forEach { (lvl, lbl) ->
+                        val isSelected = vm.hapticIntensity == lvl
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isSelected) VinColors.Accent else Color.White.copy(alpha = 0.08f))
+                                .border(
+                                    0.5.dp,
+                                    if (isSelected) Color.White.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    HapticHelper.click(context)
+                                    vm.updateHapticIntensity(lvl)
+                                }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = lbl,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) Color.White else Color.White.copy(alpha = 0.75f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.06f), thickness = 0.5.dp)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Analog Tape Warmth",
+                        fontSize = 13.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "Samsung Tube Amp Pro style warm analog harmonics & saturation",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.55f)
+                    )
+                }
+                Switch(
+                    checked = vm.tapeWarmthEnabled,
+                    onCheckedChange = {
+                        HapticHelper.click(context)
+                        vm.setTapeWarmth(it)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = VinColors.Accent,
+                        uncheckedThumbColor = Color.White.copy(alpha = 0.6f),
+                        uncheckedTrackColor = Color.White.copy(alpha = 0.12f)
+                    )
+                )
+            }
+
+
         }
 
         // ── Card 4: Speed & Pitch ──
@@ -2866,8 +3110,10 @@ fun EQGraph(
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { offset ->
+                        val paddingX = 14.dp.toPx()
                         val width = size.width.toFloat()
-                        val stepX = width / 5f
+                        val effectiveWidth = (width - 2 * paddingX).coerceAtLeast(1f)
+                        val stepX = effectiveWidth / 5f
                         val heights = listOf(subBass, bass, lowMid, mid, treble, air)
                         val midY = size.height / 2f
                         var closestIndex = -1
@@ -2875,7 +3121,7 @@ fun EQGraph(
                         heights.forEachIndexed { i, db ->
                             val fraction = db / 15f
                             val y = midY - (fraction * (size.height / 2.5f))
-                            val x = i * stepX
+                            val x = paddingX + i * stepX
                             val dx = (offset.x - x).toDouble()
                             val dy = (offset.y - y).toDouble()
                             val dist = kotlin.math.sqrt(dx * dx + dy * dy).toFloat()
@@ -2888,7 +3134,6 @@ fun EQGraph(
                     },
                     onDrag = { change, _ ->
                         if (activeDragIndex in 0..5) {
-                            val width = size.width.toFloat()
                             val height = size.height.toFloat()
                             val midY = height / 2f
                             val newY = change.position.y.coerceIn(8.dp.toPx(), height - 8.dp.toPx())
@@ -2906,7 +3151,9 @@ fun EQGraph(
         val height = size.height
         val midY = height / 2f
         val points = listOf(subBass, bass, lowMid, mid, treble, air)
-        val stepX = width / (points.size - 1)
+        val paddingX = 14.dp.toPx()
+        val effectiveWidth = (width - 2 * paddingX).coerceAtLeast(1f)
+        val stepX = effectiveWidth / (points.size - 1)
 
         val path = Path()
         val mappedPoints = points.map { db ->
@@ -2914,11 +3161,11 @@ fun EQGraph(
             midY - (fraction * (height / 2.5f))
         }
 
-        path.moveTo(0f, mappedPoints[0])
+        path.moveTo(paddingX, mappedPoints[0])
         for (i in 0 until points.size - 1) {
-            val startX = i * stepX
+            val startX = paddingX + (i * stepX)
             val startY = mappedPoints[i]
-            val endX = (i + 1) * stepX
+            val endX = paddingX + ((i + 1) * stepX)
             val endY = mappedPoints[i + 1]
 
             val controlX1 = startX + stepX / 2f
@@ -2931,8 +3178,8 @@ fun EQGraph(
 
         val fillPath = Path().apply {
             addPath(path)
-            lineTo(width, height)
-            lineTo(0f, height)
+            lineTo(width - paddingX, height)
+            lineTo(paddingX, height)
             close()
         }
 
@@ -2950,7 +3197,7 @@ fun EQGraph(
         )
 
         points.forEachIndexed { i, _ ->
-            val x = i * stepX
+            val x = paddingX + (i * stepX)
             val y = mappedPoints[i]
             drawCircle(
                 color = VinColors.AccentLight,
@@ -2966,8 +3213,8 @@ fun EQGraph(
 
         drawLine(
             color = VinColors.White20,
-            start = Offset(0f, midY),
-            end = Offset(width, midY),
+            start = Offset(paddingX, midY),
+            end = Offset(width - paddingX, midY),
             strokeWidth = 1.dp.toPx(),
             pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 12f), 0f)
         )
@@ -3167,13 +3414,42 @@ fun AboutArtistCard(artistName: String, onArtistNameClick: (String) -> Unit) {
     }
     
     val cachedInitial = remember(cleanName) { com.vinmusic.data.ArtistDataCache.get(cleanName) }
-    var isFollowing by remember { mutableStateOf(false) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val db = remember(ctx) { com.vinmusic.data.db.VinDatabase.getInstance(ctx) }
+    val scope = rememberCoroutineScope()
+    var artistChannelId by remember(cleanName) { mutableStateOf(cleanName) }
+    var isFollowing by remember(cleanName) { mutableStateOf(false) }
     var artistImageUrl by remember { mutableStateOf<String?>(cachedInitial?.avatarUrl?.takeIf { it.isNotBlank() }) }
     var bannerImageUrl by remember { mutableStateOf<String?>(cachedInitial?.bannerUrl?.takeIf { it.isNotBlank() }) }
     var officialAudience by remember { mutableStateOf(formatMonthlyListenersText(cachedInitial?.subscriberCount.orEmpty())) }
     var isVerifiedArtist by remember { mutableStateOf(cachedInitial?.isVerified ?: shouldShowVerifiedArtist(cleanName, "", "")) }
 
-    val ctx = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(cleanName, artistChannelId) {
+        val following = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            db.followedArtistDao().isFollowing(artistChannelId) || db.followedArtistDao().isFollowing(cleanName)
+        }
+        isFollowing = following
+    }
+
+    fun toggleFollow() {
+        val target = !isFollowing
+        isFollowing = target
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val id = artistChannelId.ifBlank { cleanName }
+            if (target) {
+                db.followedArtistDao().insert(
+                    com.vinmusic.data.db.FollowedArtist(
+                        channelId = id,
+                        name = cleanName,
+                        thumbnail = artistImageUrl.orEmpty()
+                    )
+                )
+            } else {
+                db.followedArtistDao().delete(id)
+                db.followedArtistDao().delete(cleanName)
+            }
+        }
+    }
 
     LaunchedEffect(cleanName) {
         if (cachedInitial == null || (cachedInitial.avatarUrl.isBlank() && cachedInitial.bannerUrl.isBlank())) {
@@ -3202,19 +3478,21 @@ fun AboutArtistCard(artistName: String, onArtistNameClick: (String) -> Unit) {
                     }
                 }
 
-                Triple(
+                listOf(
                     channelData?.avatarUrl.orEmpty().ifBlank { artist?.thumbnail.orEmpty() },
                     channelData?.bannerUrl.orEmpty(),
-                    formatMonthlyListenersText(artist?.subscriberCount?.ifBlank { channelData?.subscriberCount.orEmpty() }.orEmpty())
+                    formatMonthlyListenersText(artist?.subscriberCount?.ifBlank { channelData?.subscriberCount.orEmpty() }.orEmpty()),
+                    artist?.channelId.orEmpty().ifBlank { cleanName }
                 )
             }.getOrNull()
         }
         if (resolved != null) {
-            if (resolved.first.isNotBlank()) artistImageUrl = resolved.first
-            if (bannerImageUrl == null && resolved.second.isNotBlank()) {
-                bannerImageUrl = resolved.second
+            if (resolved[0].isNotBlank()) artistImageUrl = resolved[0]
+            if (bannerImageUrl == null && resolved[1].isNotBlank()) {
+                bannerImageUrl = resolved[1]
             }
-            if (resolved.third.isNotBlank()) officialAudience = resolved.third
+            if (resolved[2].isNotBlank()) officialAudience = resolved[2]
+            if (resolved[3].isNotBlank()) artistChannelId = resolved[3]
             isVerifiedArtist = shouldShowVerifiedArtist(cleanName, "", "")
         }
     }
@@ -3319,40 +3597,50 @@ fun AboutArtistCard(artistName: String, onArtistNameClick: (String) -> Unit) {
                 }
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(if (isFollowing) Color.White.copy(alpha = 0.2f) else Color.White)
-                        .border(1.dp, if (isFollowing) Color.White else Color.Transparent, RoundedCornerShape(22.dp))
-                        .clickable { isFollowing = !isFollowing }
-                        .padding(horizontal = 22.dp, vertical = 11.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (isFollowing) VinColors.Accent.copy(alpha = 0.18f) else VinColors.Accent)
+                        .border(1.dp, VinColors.Accent, RoundedCornerShape(20.dp))
+                        .clickable { toggleFollow() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
                     Text(
                         text = if (isFollowing) "Following" else "Follow",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = if (isFollowing) Color.White else Color.Black
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isFollowing) VinColors.AccentLight else Color.Black
                     )
                 }
             }
-            Row(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onArtistNameClick(cleanName) }
-                    .padding(horizontal = 18.dp, vertical = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))
+                        )
+                    )
             ) {
-                Text(
-                    text = "View Artist Profile",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = VinColors.AccentLight
-                )
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                    contentDescription = null,
-                    tint = VinColors.AccentLight,
-                    modifier = Modifier.size(12.dp)
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onArtistNameClick(cleanName) }
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "View Artist Profile",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = VinColors.AccentLight
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
+                        contentDescription = null,
+                        tint = VinColors.AccentLight,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
             }
         }
     }
@@ -3709,7 +3997,7 @@ fun SampleCard(
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "IS THERE A SAMPLE?",
+                    text = "SAMPLES & INTERPOLATIONS",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = VinColors.AccentLight,
@@ -4015,10 +4303,16 @@ fun buildFullSongCredits(author: String, description: String?): List<Pair<String
         credits.add((if (index == 0) "Main Artist" else "Featured Artist") to name)
     }
     credits.addAll(parseDescriptionCredits(description))
-    return credits
+    val cleaned = credits
         .map { cleanCreditRole(it.first) to cleanCreditName(it.second) }
         .filter { it.first.isNotBlank() && it.second.isNotBlank() }
         .distinctBy { "${normalizeCreditToken(it.first)}|${normalizeCreditToken(it.second)}" }
+
+    val specificPeople = cleaned.filter { it.first.lowercase() !in listOf("performer", "associated performer") }
+        .map { normalizeCreditToken(it.second) }.toSet()
+    return cleaned.filterNot { 
+        it.first.lowercase() in listOf("performer", "associated performer") && normalizeCreditToken(it.second) in specificPeople 
+    }
 }
 
 fun parseContributors(author: String): List<String> {
@@ -4071,12 +4365,36 @@ fun parseDescriptionCredits(description: String?): List<Pair<String, String>> {
     val roleSeparators = Regex("""\s*(?::|-|\u2013|\u2014|\u2022|·)\s*""")
     val nameSeparators = Regex("""\s*(?:&|,|;|\band\b)\s*""", RegexOption.IGNORE_CASE)
 
-    fun cleanRole(value: String): String =
-        value.trim()
+    fun formatReleaseDate(raw: String): String {
+        val dateRegex = Regex("""\b(\d{4})-(\d{2})-(\d{2})\b""")
+        val match = dateRegex.find(raw) ?: return raw
+        return try {
+            val inputFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            val outputFormat = java.text.SimpleDateFormat("MMMM d, yyyy", java.util.Locale.US)
+            inputFormat.parse(match.value)?.let { outputFormat.format(it) } ?: raw
+        } catch (_: Exception) {
+            raw
+        }
+    }
+
+    fun cleanRole(value: String): String {
+        val cleaned = value.trim()
             .removePrefix("•")
             .removePrefix("-")
             .trim()
             .replace(Regex("""\s+"""), " ")
+        return when {
+            cleaned.startsWith("Associated Performer,", ignoreCase = true) ->
+                cleaned.substringAfter(",").trim()
+            cleaned.startsWith("Associated Performer -", ignoreCase = true) ->
+                cleaned.substringAfter("-").trim()
+            cleaned.startsWith("Associated Performer:", ignoreCase = true) ->
+                cleaned.substringAfter(":").trim()
+            cleaned.equals("Associated Performer", ignoreCase = true) ->
+                "Performer"
+            else -> cleaned
+        }
+    }
 
     fun cleanName(value: String): String =
         value.trim()
@@ -4085,9 +4403,10 @@ fun parseDescriptionCredits(description: String?): List<Pair<String, String>> {
 
     fun addCredit(roleRaw: String, namesRaw: String) {
         val role = cleanRole(roleRaw)
-        val names = namesRaw
+        val rawNames = namesRaw
             .removePrefix(":")
             .trim()
+        val names = if (role.contains("released on", ignoreCase = true)) formatReleaseDate(rawNames) else rawNames
         if (role.isBlank() || names.isBlank()) return
         val isMusicCredit = creditKeywords.any { role.contains(it, ignoreCase = true) }
         if (!isMusicCredit) return

@@ -81,7 +81,11 @@ object ColorExtractor {
             (green * 255).toInt().coerceIn(0, 255),
             (blue * 255).toInt().coerceIn(0, 255)
         ), hsv)
-        hsv[1] = hsv[1].coerceAtLeast(0.28f)
+        // If the artwork is monochrome/grayscale, do not force artificial saturation
+        // which causes muddy olive/brown tints. Keep neutral tones elegant.
+        if (hsv[1] >= 0.08f) {
+            hsv[1] = hsv[1].coerceAtLeast(0.28f)
+        }
         hsv[2] = hsv[2].coerceIn(0.45f, 0.88f)
         return Color(android.graphics.Color.HSVToColor(hsv))
     }

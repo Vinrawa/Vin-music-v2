@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -480,7 +481,7 @@ fun PlaylistDetailScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ArrowBack,
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Back",
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
@@ -531,7 +532,7 @@ fun PlaylistDetailScreen(
                             )
                             DropdownMenuItem(
                                 text = { Text("Sort by", color = Color.White) },
-                                leadingIcon = { Icon(Icons.Default.Sort, null, tint = Color.White) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, null, tint = Color.White) },
                                 onClick = { showMenu = false }
                             )
                             DropdownMenuItem(
@@ -796,7 +797,7 @@ fun PlaylistDetailScreen(
                                         }
                                     } else if (isPlaying) {
                                         Icon(
-                                            imageVector = Icons.Default.VolumeUp,
+                                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                             contentDescription = null,
                                             tint = VinColors.AccentLight,
                                             modifier = Modifier.size(16.dp)
@@ -976,7 +977,7 @@ fun PlaylistDetailScreen(
                                                     .background(Color.Black.copy(0.45f)),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Icon(Icons.Default.VolumeUp, null, tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
+                                                Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = VinColors.AccentLight, modifier = Modifier.size(16.dp))
                                             }
                                         }
                                     }
@@ -1390,7 +1391,7 @@ fun RecommendedPlaylistCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.List,
+                        imageVector = Icons.AutoMirrored.Filled.List,
                         contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(12.dp)
