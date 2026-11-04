@@ -2002,7 +2002,7 @@ fun HomeScreen(
                                     customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
                                 )
                             }
-                            itemsIndexed(historySongs.take(8), key = { index, song -> "history_${song.videoId}_$index" }) { _, song ->
+                            items(historySongs.take(8), key = { "history_${it.videoId}" }) { song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, emptyList())
                                 }
@@ -2096,7 +2096,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            itemsIndexed(onRepeatTracks, key = { index, song -> "repeat_${song.videoId}_$index" }) { _, song ->
+                            items(onRepeatTracks, key = { "repeat_${it.videoId}" }) { song ->
                                 SmallRecentlyPlayedCard(song = song) {
                                     onSongClick(song, emptyList())
                                 }
@@ -2180,7 +2180,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            itemsIndexed(displayedRecommendations.radio, key = { index, song -> "radio_${song.videoId}_$index" }) { _, song ->
+                            items(displayedRecommendations.radio, key = { "radio_${it.videoId}" }) { song ->
                                 RecommendedRadioCard(song = song) {
                                     onSongClick(song, displayedRecommendations.radio)
                                 }
@@ -2341,7 +2341,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            itemsIndexed(similarToSongs, key = { index, song -> "similar_${song.videoId}_$index" }) { _, s ->
+                            items(similarToSongs, key = { "similar_${it.videoId}" }) { s ->
                                 RecommendedRadioCard(song = s) { onSongClick(s, similarToSongs) }
                             }
                         }
@@ -2361,7 +2361,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    itemsIndexed(section.songs, key = { index, song -> "yt_shelf_${song.videoId}_$index" }) { _, song ->
+                                    items(section.songs, key = { "yt_shelf_${it.videoId}" }) { song ->
                                         TrackCard(song = song) {
                                             onSongClick(song, section.songs)
                                         }
@@ -2396,7 +2396,7 @@ fun HomeScreen(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
-                                        itemsIndexed(recList.drop(1), key = { index, rec -> "side_a_${rec.videoItem.videoId}_$index" }) { _, rec ->
+                                        items(recList.drop(1), key = { "side_a_${it.videoItem.videoId}" }) { rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, heroItems)
                                             }
@@ -2413,7 +2413,7 @@ fun HomeScreen(
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
                                         val videoItems = recList.map { it.videoItem }
-                                        itemsIndexed(recList, key = { index, rec -> "recommendation_${rec.videoItem.videoId}_$index" }) { _, rec ->
+                                        items(recList, key = { "rec_${it.videoItem.videoId}" }) { rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, videoItems)
                                             }
@@ -2439,7 +2439,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             val downloadedSongs = downloads.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
-                            itemsIndexed(downloadedSongs.take(8), key = { index, song -> "download_${song.videoId}_$index" }) { _, song ->
+                            items(downloadedSongs.take(8), key = { "download_${it.videoId}" }) { song ->
                                 TrackCard(song = song) {
                                     onPlayQueue(song, downloadedSongs)
                                 }
@@ -2503,7 +2503,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    itemsIndexed(section.songs, key = { index, song -> "yt_shelf_${song.videoId}_$index" }) { _, song ->
+                                    items(section.songs, key = { "yt_shelf_${it.videoId}" }) { song ->
                                         TrackCard(song = song) {
                                             onSongClick(song, section.songs)
                                         }
@@ -2539,7 +2539,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
                         ) {
-                            itemsIndexed(displayedRecommendations.radio, key = { index, song -> "radio_${song.videoId}_$index" }) { _, song ->
+                            items(displayedRecommendations.radio, key = { "radio_${it.videoId}" }) { song ->
                                 RecommendedRadioCard(song = song) {
                                     onSongClick(song, displayedRecommendations.radio)
                                 }
@@ -2618,7 +2618,7 @@ fun HomeScreen(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
-                                        itemsIndexed(recList.drop(1), key = { index, rec -> "side_a_${rec.videoItem.videoId}_$index" }) { _, rec ->
+                                        items(recList.drop(1), key = { "side_a_${it.videoItem.videoId}" }) { rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, heroItems)
                                             }
@@ -2635,7 +2635,7 @@ fun HomeScreen(
                                         modifier = Modifier.padding(bottom = 24.dp)
                                     ) {
                                         val videoItems = recList.map { it.videoItem }
-                                        itemsIndexed(recList, key = { index, rec -> "recommendation_${rec.videoItem.videoId}_$index" }) { _, rec ->
+                                        items(recList, key = { "rec_${it.videoItem.videoId}" }) { rec ->
                                             RecommendedTrackCard(song = rec.videoItem, reason = rec.reason) {
                                                 onSongClick(rec.videoItem, videoItems)
                                             }
@@ -2739,7 +2739,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(playlists) { playlist ->
+                                    items(playlists, key = { it.playlistId }) { playlist ->
                                         RecommendedPlaylistCard(playlist = playlist) {
                                             selectedRecommendedPlaylist = playlist
                                         }
@@ -2855,7 +2855,7 @@ fun HomeScreen(
                                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
                             )
                         }
-                        itemsIndexed(longListens, key = { index, song -> "long_listen_${song.videoId}_$index" }) { _, song ->
+                        items(longListens, key = { "long_${it.videoId}" }) { song ->
                             SongListItem(
                                 song = song,
                                 isPlaying = vm.currentSong?.videoId == song.videoId,
@@ -2914,7 +2914,7 @@ fun HomeScreen(
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     modifier = Modifier.padding(bottom = 24.dp)
                                 ) {
-                                    items(playlists) { playlist ->
+                                    items(playlists, key = { it.playlistId }) { playlist ->
                                         RecommendedPlaylistCard(playlist = playlist) {
                                             selectedRecommendedPlaylist = playlist
                                         }
