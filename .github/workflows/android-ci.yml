@@ -39,44 +39,7 @@ jobs:
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
           else
-            cat << 'EOF' > app/google-services.json
-            {
-              "project_info": {
-                "project_number": "123456789012",
-                "project_id": "vin-music-ci",
-                "storage_bucket": "vin-music-ci.appspot.com"
-              },
-              "client": [
-                {
-                  "client_info": {
-                    "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef",
-                    "android_client_info": {
-                      "package_name": "com.vinmusic"
-                    }
-                  },
-                  "oauth_client": [],
-                  "api_key": [
-                    {
-                      "current_key": "fake_api_key_for_ci_build"
-                    }
-                  ],
-                  "services": {
-                    "analytics_service": {
-                      "status": 1
-                    },
-                    "appinvite_service": {
-                      "status": 1,
-                      "other_platform_oauth_client": []
-                    },
-                    "ads_service": {
-                      "status": 1
-                    }
-                  }
-                }
-              ],
-              "configuration_version": "1"
-            }
-            EOF
+            echo '{"project_info":{"project_number":"123456789012","project_id":"vin-music-ci","storage_bucket":"vin-music-ci.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789012:android:0123456789abcdef","android_client_info":{"package_name":"com.vinmusic"}},"oauth_client":[],"api_key":[{"current_key":"fake_api_key_for_ci_build"}],"services":{"analytics_service":{"status":1},"appinvite_service":{"status":1,"other_platform_oauth_client":[]},"ads_service":{"status":1}}}],"configuration_version":"1"}' > app/google-services.json
           fi
 
       - name: Run Unit Tests
