@@ -560,7 +560,7 @@ fun HomeScreen(
     ): List<Pair<String, List<com.vinmusic.recommendation.RecommendedSong>>> {
         // 1. Try disk cache first (instant sub-millisecond retrieval of all personalized shelves)
         val diskRecs = try {
-            com.vinmusic.recommendation.RecommendationManager.loadFromDisk(ctx, ignoreExpiry = true)
+            com.vinmusic.recommendation.RecommendationManager.loadFromDisk(ctx, ignoreExpiry = false)
         } catch (_: Exception) { null }
         if (!diskRecs.isNullOrEmpty()) {
             return diskRecs

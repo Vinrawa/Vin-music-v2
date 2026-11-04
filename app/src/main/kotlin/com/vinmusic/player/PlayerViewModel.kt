@@ -76,35 +76,40 @@ class PlayerViewModel @Inject constructor(
             _isHomeRefreshing.value = true
             try {
                 withContext(Dispatchers.IO) {
-                    val cache = getApplication<Application>()
-                        .getSharedPreferences("vin_music_repository_cache", Context.MODE_PRIVATE)
-                    cache.edit().remove("quick_picks").remove("youtube_home").apply()
+                    recommendationRepository.invalidateAllHomeCaches()
                     com.vinmusic.recommendation.RecommendationManager.invalidateCache(getApplication())
+                    com.vinmusic.innertube.InnerTube.clearSearchCache()
 
                     val payload = withTimeout(35_000L) {
                         coroutineScope {
                         val recs = async {
-                            com.vinmusic.recommendation.RecommendationManager
-                                .getRecommendations(getApplication(), forceRefresh = true)
+                            try {
+                                com.vinmusic.recommendation.RecommendationManager
+                                    .getRecommendations(getApplication(), forceRefresh = true)
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
                         }
                         val mixes = async {
-                            com.vinmusic.recommendation.RecommendationManager
-                                .getSpotifyMixes(getApplication(), forceRefresh = true)
+                            try {
+                                com.vinmusic.recommendation.RecommendationManager
+                                    .getSpotifyMixes(getApplication(), forceRefresh = true)
+                            } catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { emptyList() }
                         }
                         val quickPicks = async {
-                            try { recommendationRepository.getQuickPicks() }
+                            try { recommendationRepository.getQuickPicks(forceRefresh = true) }
                             catch (e: CancellationException) { throw e }
                             catch (_: Exception) { emptyList() }
                         }
                         val ytHome = async {
-                            try { recommendationRepository.getYouTubeMusicHomeSections() }
+                            try { recommendationRepository.getYouTubeMusicHomeSections(forceRefresh = true) }
                             catch (e: CancellationException) { throw e }
                             catch (_: Exception) { emptyList() }
                         }
                         val playlists = async {
                             try {
                                 if (com.vinmusic.innertube.YTMusicSession.hasCookie(getApplication())) {
-                                    recommendationRepository.getLibraryPlaylists()
+                                    recommendationRepository.getLibraryPlaylists(forceRefresh = true)
                                 } else emptyList()
                             } catch (e: CancellationException) { throw e }
                             catch (_: Exception) { emptyList() }

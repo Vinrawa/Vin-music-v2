@@ -978,6 +978,11 @@ object InnerTube {
     /** Search for music only. Hits YouTube Music API for 100% pure audio results. */
     private val searchCache = android.util.LruCache<String, Pair<Long, List<VideoItem>>>(50)
 
+    fun clearSearchCache() {
+        searchCache.evictAll()
+        searchAllCache.evictAll()
+    }
+
     fun search(query: String): List<VideoItem> {
         val normalizedQuery = query.trim()
         val cached = searchCache.get(normalizedQuery)

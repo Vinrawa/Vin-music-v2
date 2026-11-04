@@ -2303,14 +2303,7 @@ object RecommendationManager {
     suspend fun getRecommendations(ctx: Context, forceRefresh: Boolean = false): List<Pair<String, List<RecommendedSong>>> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         
-        // 1. Resolve current biological hour and expected time-of-day section key
-        val calendar = java.util.Calendar.getInstance()
-        val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
-        val expectedTimeSectionKey = when {
-            hour in 5..11 -> "Morning Acoustic Sunshine"
-            hour in 12..20 -> "Midday Chill & Focus"
-            else -> "Midnight Sanctuary"
-        }
+        // 1. Refresh state resolution
 
         // 2. Memory cache is stale-first. Only forceRefresh should replace it.
         synchronized(cachedSections) {
@@ -2334,7 +2327,7 @@ object RecommendationManager {
 
         // 3. Disk cache is also stale-first; manual pull refresh clears/replaces it.
         if (!forceRefresh) {
-            val disk = loadFromDisk(ctx, ignoreExpiry = false) ?: loadFromDisk(ctx, ignoreExpiry = true)
+            val disk = loadFromDisk(ctx, ignoreExpiry = false)
             if (disk != null && disk.isNotEmpty()) {
                 synchronized(cachedSections) {
                     cachedSections.clear()
@@ -2371,13 +2364,20 @@ object RecommendationManager {
 
         val tasks = ArrayList<CurationTask>()
 
-        // 0. Your Taste Mix — genre-based discovery via Every Noise, NOT artist-name echo
+        // 0. Your Taste Mix (Side A) — genre-based discovery via Every Noise with rotated query templates
         val topGenresForMix = profile.topGenres.map { it.first }.filter { it.isNotBlank() }.take(3)
         val mixQueries = mutableListOf<String>()
+        val querySuffixes = listOf(
+            "official hits $currentMusicYear",
+            "essential tracks $currentMusicYear",
+            "trending popular songs",
+            "acoustic live official hits"
+        )
+        val suffixOffset = refreshGeneration % querySuffixes.size
         for (genre in topGenresForMix) {
             val genreLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
-            mixQueries.add("$genreLower official hits $currentMusicYear")
-            mixQueries.add("$genreLower essential tracks $currentMusicYear")
+            mixQueries.add("$genreLower ${querySuffixes[suffixOffset]}")
+            mixQueries.add("$genreLower ${querySuffixes[(suffixOffset + 1) % querySuffixes.size]}")
             // Add Every Noise similar genres for cross-genre discovery
             val similarGenres = genreSimilarMap?.get(genreLower)?.take(1) ?: emptyList()
             for (sg in similarGenres) {
@@ -2398,7 +2398,7 @@ object RecommendationManager {
             sourceType = "your_taste_mix"
         ))
 
-        // 1. More from [ArtistName] — one shelf per top artist (up to 3)
+        // 1. More from [ArtistName] — 1-2 rotating top artists
         val historyList = try { db.historyDao().getAllHistory() } catch (_: Exception) { emptyList() }
         val interactionSignals = try { db.interactionSignalDao().getAll() } catch (_: Exception) { emptyList() }
         // Anything played very recently must not come back on discovery shelves —
@@ -2411,11 +2411,9 @@ object RecommendationManager {
         val topArtistsList = profile.topArtists.map { it.first }.filter { it.isNotBlank() }
 
         // Only show "More from artist" for artists the user has actually listened to
-        // For cold start (< 5 artists), use their top played artists instead of hardcoded fallback
-        val moreFromArtists = if (cleanListenedCount >= 5) {
+        val moreFromArtistsPool = if (cleanListenedCount >= 5) {
             topArtistsList.take(5)
         } else if (cleanListenedCount > 0) {
-            // Use top played artists from interaction signals
             interactionSignals.sortedByDescending { it.playCount }
                 .map { it.author.trim() }
                 .filter { it.isNotBlank() && !isCorporateOrDistributorChannel(it) }
@@ -2424,46 +2422,50 @@ object RecommendationManager {
         } else {
             emptyList()
         }
-        
-        // Add a separate CurationTask per artist
-        for (artistName in moreFromArtists) {
+
+        // Rotate 1-2 top artists per session/generation
+        val featuredArtists = if (moreFromArtistsPool.isNotEmpty()) {
+            val count = minOf(2, moreFromArtistsPool.size)
+            List(count) { i ->
+                moreFromArtistsPool[(rotationOffset + i) % moreFromArtistsPool.size]
+            }.distinct()
+        } else {
+            emptyList()
+        }
+
+        for (artistName in featuredArtists) {
+            val artistQueries = listOf(
+                "$artistName official audio popular",
+                "$artistName hit songs",
+                "$artistName deep cuts official",
+                "$artistName live session acoustic"
+            ).let { qList ->
+                val shift = (refreshGeneration % qList.size)
+                qList.drop(shift) + qList.take(shift)
+            }
             tasks.add(CurationTask(
                 sectionKey = "More from $artistName",
-                queries = listOf(
-                    "$artistName official audio popular",
-                    "$artistName hit songs",
-                    "$artistName deep cuts official",
-                    "$artistName live session acoustic"
-                ),
+                queries = artistQueries.take(3),
                 seedItem = null,
                 sourceType = "more_from_artist"
             ))
         }
 
-        // 2. Rewind: Listen Back
-        // Fetches from your history and highly played list - entirely offline seed!
-        val rewindQueries = emptyList<String>() // Rewind is handled offline from local DB candidates!
-        tasks.add(CurationTask("Rewind: Listen Back", rewindQueries, null, "rewind_listen_back"))
+        // 2. Rewind: Listen Back — offline history/likes
+        tasks.add(CurationTask("Rewind: Listen Back", emptyList(), null, "rewind_listen_back"))
 
-        // 4. Similar songs (dynamically seeded by most representative track)
-        // Uses weighted scoring: play count + recency + likes to find the best seed
-        val recentPlayed = historyList.firstOrNull()
-        val topPlayedList = interactionSignals.sortedByDescending { it.playCount }
-
+        // 3. Similar songs (dynamically seeded by most representative track)
         val similarSeed = if (cleanListenedCount >= 5) {
-            // Find the most representative seeds: combine play count, recency, and likes.
-            // Rotate through the top few across sessions so the "Similar songs" shelf
-            // explores different corners of the taste instead of one fixed track.
             val scoredTracks = interactionSignals
                 .filter { it.playCount > 0 }
                 .map { sig ->
                     val recencyScore = if (sig.lastPlayedAt > 0) {
                         val hoursAgo = (System.currentTimeMillis() - sig.lastPlayedAt) / (1000 * 60 * 60)
                         when {
-                            hoursAgo < 12 -> 70.0    // Played very recently
-                            hoursAgo < 24 -> 50.0    // Played today
-                            hoursAgo < 72 -> 30.0    // Played in last 3 days
-                            hoursAgo < 168 -> 10.0   // Played in last week
+                            hoursAgo < 12 -> 70.0
+                            hoursAgo < 24 -> 50.0
+                            hoursAgo < 72 -> 30.0
+                            hoursAgo < 168 -> 10.0
                             else -> 5.0
                         }
                     } else 0.0
@@ -2479,9 +2481,8 @@ object RecommendationManager {
         } else {
             null
         }
-        
-        val knownArtists = profile.topArtists.map { it.first }.toSet() +
-            profile.skippedArtists
+
+        val knownArtists = profile.topArtists.map { it.first }.toSet() + profile.skippedArtists
         val recDbInstance = try { RecommendationDatabase.getInstance(ctx) } catch (_: Exception) { null }
 
         val similarQueries = if (similarSeed != null && recDbInstance != null) {
@@ -2503,33 +2504,22 @@ object RecommendationManager {
         } else if (similarSeed != null) {
             val seedMetaFallback = inferMetadata(VideoItem(similarSeed.videoId, similarSeed.title, similarSeed.author, similarSeed.durationText))
             val genreLower = seedMetaFallback.genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
-            val artistName = similarSeed.author.trim()
-
-            // Build queries based on seed track's genre, mood, and artist
             val queries = mutableListOf<String>()
-
-            // Primary: genre + mood queries
             queries.add("$genreLower similar vibes official hits")
             queries.add("$genreLower ${seedMetaFallback.mood.lowercase()} songs official")
-
-            // Secondary: artist similarity queries
             val similarGenres = genreSimilarMap?.get(genreLower)?.take(2) ?: emptyList()
             for (sg in similarGenres) {
                 val sgDisplay = sg.replace(Regex("(?<=[a-z])(?=[A-Z])"), " ").lowercase()
                 queries.add("$sgDisplay official popular songs")
             }
-
-            // Tertiary: energy-based queries
             val energyTerm = when {
                 seedMetaFallback.energy < 0.35 -> "chill relaxed"
                 seedMetaFallback.energy > 0.75 -> "energetic upbeat"
                 else -> "mid tempo"
             }
             queries.add("$genreLower $energyTerm official audio")
-
             queries.take(5)
         } else {
-            // Cold start: no listening history — serve diverse genre discovery
             val coldStartGenres = listOf("hip hop", "pop", "indie", "r&b", "bollywood", "electronic")
             val selectedGenres = coldStartGenres.shuffled().take(3)
             selectedGenres.flatMap { g -> listOf("$g official hits $currentMusicYear", "$g top essential songs") }
@@ -2537,14 +2527,17 @@ object RecommendationManager {
         val seedVideo = similarSeed?.let { VideoItem(it.videoId, it.title, it.author, it.durationText) }
         tasks.add(CurationTask("Similar songs", similarQueries, seedVideo, "similar_songs"))
 
-        val topGenresForShelves = profile.topGenres.map { it.first }.filter { it.isNotBlank() }.take(4)
-        for (genre in topGenresForShelves) {
-            val genreLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
+        // 4. [Genre] for you — 1 rotating top genre
+        val topGenresForShelves = profile.topGenres.map { it.first }.filter { it.isNotBlank() }
+        val featuredGenre = if (topGenresForShelves.isNotEmpty()) {
+            topGenresForShelves[rotationOffset % topGenresForShelves.size]
+        } else null
+        if (featuredGenre != null) {
+            val genreLower = featuredGenre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
             val similarGenres = genreSimilarMap?.get(genreLower)?.take(1) ?: emptyList()
             val similarGenreQuery = similarGenres.firstOrNull()?.let { " $it" } ?: ""
-            
             tasks.add(CurationTask(
-                sectionKey = "$genre for you",
+                sectionKey = "$featuredGenre for you",
                 queries = listOf(
                     "$genreLower official hits $currentMusicYear",
                     "$genreLower fresh releases",
@@ -2556,11 +2549,15 @@ object RecommendationManager {
             ))
         }
 
-        val topMoodsForShelves = profile.topMoods.map { it.first }.filter { it.isNotBlank() }.take(3)
-        for (mood in topMoodsForShelves) {
-            val moodLower = mood.lowercase(Locale.ROOT)
+        // 5. [Mood] mood — 1 rotating top mood
+        val topMoodsForShelves = profile.topMoods.map { it.first }.filter { it.isNotBlank() }
+        val featuredMood = if (topMoodsForShelves.isNotEmpty()) {
+            topMoodsForShelves[rotationOffset % topMoodsForShelves.size]
+        } else null
+        if (featuredMood != null) {
+            val moodLower = featuredMood.lowercase(Locale.ROOT)
             tasks.add(CurationTask(
-                sectionKey = "$mood mood",
+                sectionKey = "$featuredMood mood",
                 queries = listOf(
                     "$moodLower music official songs",
                     "$moodLower playlist popular",
@@ -2571,190 +2568,6 @@ object RecommendationManager {
                 sourceType = "mood_for_you"
             ))
         }
-
-        val topLanguagesForShelves = profile.topLanguages.map { it.first }.filter { it.isNotBlank() }.take(3)
-        for (language in topLanguagesForShelves) {
-            val langLower = language.lowercase(Locale.ROOT)
-            tasks.add(CurationTask(
-                sectionKey = "$language picks",
-                queries = listOf(
-                    "$langLower songs latest hits $currentMusicYear",
-                    "$langLower music official audio",
-                    "$langLower indie pop playlist",
-                    "$langLower romantic energetic songs"
-                ),
-                seedItem = null,
-                sourceType = "language_for_you"
-            ))
-        }
-
-        // "Fans also like" — adjacent artists via the Every Noise genre graph,
-        // the Spotify cluster DB and the curated similar-artist map. The featured
-        // subset rotates per session so this shelf doesn't repeat one fixed trio.
-        val adjacentGenres = topGenresForShelves.flatMap { genre ->
-            val gLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop")
-            genreSimilarMap?.get(gLower)?.take(2) ?: emptyList()
-        }.distinct().take(6)
-
-        val adjacentArtistsFromGenres = adjacentGenres.flatMap { adjGenre ->
-            val adjLower = adjGenre.lowercase(Locale.ROOT)
-            // Find a few artists in this genre from the Spotify DB
-            try {
-                val recDbForAdjacent = recDbInstance ?: RecommendationDatabase.getInstance(ctx)
-                recDbForAdjacent.trackDao().getSimilarTracksInCluster(
-                    targetCluster = 0, targetEnergy = 50, targetValence = 50,
-                    targetDance = 50, targetAcoustic = 50, targetTempo = 120, limit = 5
-                ).filter { it.genre.lowercase(Locale.ROOT).contains(adjLower) || adjLower.contains(it.genre.lowercase(Locale.ROOT)) }
-                 .map { it.artist }.distinct().take(2)
-            } catch (_: Exception) { emptyList() }
-        }
-
-        val fanArtistPool = (
-            adjacentArtistsFromGenres +
-                profile.topArtists.flatMap { (artist, _) -> SIMILAR_ARTISTS_MAP[normalizeArtistName(artist)].orEmpty() }
-            )
-            .map { it.trim() }
-            .filter { it.isNotBlank() && !isCorporateOrDistributorChannel(it) }
-            .distinctBy { normalizeArtistName(it) }
-            .filter { adj -> moreFromArtists.none { normalizeArtistName(it) == normalizeArtistName(adj) } }
-
-        val fansAlsoLikeArtists = if (fanArtistPool.size <= 3) fanArtistPool
-            else List(3) { i -> fanArtistPool[(i * 2 + rotationOffset) % fanArtistPool.size] }.distinct()
-
-        if (fansAlsoLikeArtists.isNotEmpty()) {
-            tasks.add(CurationTask(
-                sectionKey = "Fans also like",
-                queries = fansAlsoLikeArtists.flatMap { artist -> listOf("$artist official songs", "$artist popular tracks") },
-                seedItem = null,
-                sourceType = "artists_like"
-            ))
-        }
-
-        tasks.add(CurationTask(
-            sectionKey = "Fresh finds",
-            queries = listOf(
-                "new music releases $currentMusicYear official audio",
-                "fresh indie pop songs $currentMusicYear",
-                "trending new singles $currentMusicYear",
-                "new music releases $currentMusicYear hits"
-            ),
-            seedItem = null,
-            sourceType = "fresh_finds"
-        ))
-
-        tasks.add(CurationTask(
-            sectionKey = "Deep cuts & hidden gems",
-            queries = listOf(
-                "indie songs acoustic session official audio",
-                "acoustic live sessions official",
-                "studio live session songs official",
-                "unplugged official audio tracks"
-            ),
-            seedItem = null,
-            sourceType = "hidden_gems"
-        ))
-
-        // Outside Your Lane — adjacent genres the profile barely touches.
-        // Deliberately NOT the user's core genres; exploration with a safety net.
-        val coreGenreTerms = topGenresForShelves.map { it.lowercase(Locale.ROOT) }
-        val laneGenrePool = (
-            adjacentGenres + listOf("jazz", "r&b soul", "electronic dance", "reggae", "afrobeat", "country folk", "synthwave", "bossa nova")
-            )
-            .map { it.lowercase(Locale.ROOT).trim() }
-            .distinct()
-            .filter { g ->
-                g.isNotBlank() && coreGenreTerms.none { core -> g.contains(core) || core.contains(g) }
-            }
-        val laneRotation = if (laneGenrePool.isEmpty()) emptyList()
-            else List(minOf(2, laneGenrePool.size)) { i -> laneGenrePool[(i * 2 + rotationOffset) % laneGenrePool.size] }.distinct()
-        if (laneRotation.isNotEmpty()) {
-            tasks.add(CurationTask(
-                sectionKey = "Outside Your Lane",
-                queries = laneRotation.flatMap { g -> listOf("$g official popular songs", "best $g classics official") },
-                seedItem = null,
-                sourceType = "outside_your_lane"
-            ))
-        }
-
-        // B-Sides — deep cuts from an artist the user already loves. The featured
-        // artist advances through their top list across sessions.
-        val bSideArtist = moreFromArtists.getOrNull(
-            if (moreFromArtists.isEmpty()) 0 else rotationOffset % moreFromArtists.size
-        )
-        if (bSideArtist != null) {
-            tasks.add(CurationTask(
-                sectionKey = "B-Sides",
-                queries = listOf(
-                    "$bSideArtist album deep cuts official",
-                    "$bSideArtist live session acoustic",
-                    "$bSideArtist live acoustic session"
-                ),
-                seedItem = null,
-                sourceType = "b_sides"
-            ))
-        }
-
-        // First Listen — brand-new releases from the user's artists and genres.
-        val yrNow = java.time.LocalDate.now().year
-        val firstListenQueries = mutableListOf<String>()
-        moreFromArtists.firstOrNull()?.let { artist ->
-            firstListenQueries.add("$artist new song $yrNow")
-            firstListenQueries.add("$artist latest release $yrNow")
-        }
-        topGenresForShelves.firstOrNull()?.let { genre ->
-            val genreLower = genre.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop").replace("punjabi folk", "punjabi")
-            firstListenQueries.add("$genreLower new releases $yrNow")
-        }
-        if (firstListenQueries.isNotEmpty()) {
-            tasks.add(CurationTask(
-                sectionKey = "First Listen",
-                queries = firstListenQueries,
-                seedItem = null,
-                sourceType = "first_listen"
-            ))
-        }
-
-        // 5. Dynamic Time-of-Day Curation Task — uses genre graph, NOT hardcoded artists
-        val topGenresForTime = profile.topGenres.map { it.first }.filter { it.isNotBlank() }.take(2)
-        val timeCuration = when (expectedTimeSectionKey) {
-            "Morning Acoustic Sunshine" -> {
-                val genreTerms = topGenresForTime.ifEmpty { listOf("acoustic", "indie folk") }
-                CurationTask(
-                    sectionKey = expectedTimeSectionKey,
-                    queries = genreTerms.flatMap { g ->
-                        val gLower = g.lowercase(Locale.ROOT)
-                        listOf("$gLower acoustic morning hits", "$gLower soft chill official")
-                    } + listOf("acoustic pop hits official", "fresh morning songs official audio"),
-                    seedItem = null,
-                    sourceType = "morning_vibe"
-                )
-            }
-            "Midday Chill & Focus" -> {
-                val genreTerms = topGenresForTime.ifEmpty { listOf("lofi", "indie") }
-                CurationTask(
-                    sectionKey = expectedTimeSectionKey,
-                    queries = genreTerms.flatMap { g ->
-                        val gLower = g.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop")
-                        listOf("$gLower chill focus official", "$gLower soft popular songs")
-                    } + listOf("chill ambient focus music official", "soft instrumental study songs"),
-                    seedItem = null,
-                    sourceType = "afternoon_vibe"
-                )
-            }
-            else -> {
-                val genreTerms = topGenresForTime.ifEmpty { listOf("indie", "r&b") }
-                CurationTask(
-                    sectionKey = expectedTimeSectionKey,
-                    queries = genreTerms.flatMap { g ->
-                        val gLower = g.lowercase(Locale.ROOT).replace("rap/hip-hop", "rap hip hop")
-                        listOf("$gLower romantic slow songs official", "$gLower sad emotional hits")
-                    } + listOf("late night chill emotional songs official", "romantic aesthetic night music"),
-                    seedItem = null,
-                    sourceType = "night_vibe"
-                )
-            }
-        }
-        tasks.add(timeCuration)
 
         val newSections = ArrayList<Pair<String, List<RecommendedSong>>>()
 
@@ -2966,11 +2779,11 @@ object RecommendationManager {
                         if (meta.energy <= 0.45 || meta.mood in listOf("Sad", "Romantic", "Chill", "Dark")) {
                             vibeBonus = 15.0
                         }
-                    } else if (task.sourceType == "first_listen" && meta.year >= yrNow - 1) {
+                    } else if (task.sourceType == "first_listen" && meta.year >= currentMusicYear - 1) {
                         vibeBonus = 12.0
                     }
 
-                    if (task.sourceType == "fresh_finds" && meta.year > 0 && meta.year < yrNow - 2) {
+                    if (task.sourceType == "fresh_finds" && meta.year > 0 && meta.year < currentMusicYear - 2) {
                         continue
                     }
 
@@ -3021,14 +2834,16 @@ object RecommendationManager {
                     // refresh visibly fresh without turning recommendations into
                     // random, lower-quality songs.
                     val selectionPool = if (forceRefresh && available.size > 1) {
-                        val offset = (refreshGeneration * 5 + (task.sectionKey.hashCode() and Int.MAX_VALUE)) % available.size
-                        available.drop(offset) + available.take(offset)
+                        val rng = java.util.Random(refreshGeneration.toLong() * 37L + (task.sectionKey.hashCode().toLong()))
+                        val topSlice = available.take(minOf(30, available.size))
+                        topSlice.shuffled(rng) + available.drop(30)
                     } else available
                     val chosen = ArrayList<RecommendedSong>()
 
                     if (task.sourceType == "more_from_artist") {
                         // Artist shelves can go deeper, but still never repeat a song from another shelf.
-                        selectionPool.take(24).shuffled().take(12).forEach { chosen.add(it) }
+                        val rng = java.util.Random(refreshGeneration.toLong() * 31L + (task.sectionKey.hashCode().toLong()))
+                        selectionPool.take(minOf(24, selectionPool.size)).shuffled(rng).take(12).forEach { chosen.add(it) }
                     } else {
                         for (rec in selectionPool) {
                             if (chosen.size >= 12) break

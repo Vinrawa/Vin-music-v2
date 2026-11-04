@@ -183,6 +183,23 @@ class RecommendationRepository @Inject constructor(
         }
     }
 
+    /**
+     * Clears all home screen disk caches for pull-to-refresh so fresh sections
+     * are fetched from network rather than stale disk cache.
+     */
+    fun invalidateAllHomeCaches() {
+        try {
+            prefs.edit()
+                .remove("quick_picks_v2").remove("quick_picks_v2_time")
+                .remove("yt_home_sections").remove("yt_home_sections_time")
+                .remove("library_playlists").remove("library_playlists_time")
+                .remove("genre_mixes").remove("genre_mixes_time")
+                .apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to invalidate home caches: ${e.message}")
+        }
+    }
+
     private fun saveArtistItems(key: String, list: List<ArtistItem>) {
         saveCacheStr(key, gson.toJson(list))
     }
@@ -199,13 +216,15 @@ class RecommendationRepository @Inject constructor(
      * Metrolist-style Quick Picks: local related_song_map + forgotten favorites + YouTube related().
      * Falls back to TasteDNA search when cache is empty.
      */
-    suspend fun getQuickPicks(): List<VideoItem> = withContext(Dispatchers.IO) {
+    suspend fun getQuickPicks(forceRefresh: Boolean = false): List<VideoItem> = withContext(Dispatchers.IO) {
         val cacheKey = "quick_picks_v2"
         // Strict TTL — stale Quick Picks would freeze the shelf on the same songs.
-        val cached = loadVideoItems(cacheKey, allowStale = false)
-        if (cached != null && cached.isNotEmpty()) {
-            Log.d(TAG, "Loaded getQuickPicks from disk cache.")
-            return@withContext cached
+        if (!forceRefresh) {
+            val cached = loadVideoItems(cacheKey, allowStale = false)
+            if (cached != null && cached.isNotEmpty()) {
+                Log.d(TAG, "Loaded getQuickPicks from disk cache.")
+                return@withContext cached
+            }
         }
 
         Log.d(TAG, "Generating Metrolist-style Quick Picks...")
@@ -298,10 +317,10 @@ class RecommendationRepository @Inject constructor(
         val pools = listOf(
             eligible(signals.sortedByDescending {
                 it.completeCount + it.repeatCount * 2 + if (it.isLiked) 3 else 0
-            }.map { it.videoId }).take(4),
-            eligible(liked.map { it.videoId }).take(3),
-            eligible(forgotten.map { it.videoId }).take(3),
-            eligible(history.map { it.videoId }).take(3),
+            }.map { it.videoId }).shuffled().take(4),
+            eligible(liked.map { it.videoId }).shuffled().take(3),
+            eligible(forgotten.map { it.videoId }).shuffled().take(3),
+            eligible(history.map { it.videoId }).shuffled().take(3),
         )
 
         // Round-robin across pools for behavioral diversity.
@@ -322,17 +341,19 @@ class RecommendationRepository @Inject constructor(
     }
 
     /** Official YouTube Music home shelves (FEmusic_home) — requires cookie for best results. */
-    suspend fun getYouTubeMusicHomeSections(): List<YTMusicHomeSection> = withContext(Dispatchers.IO) {
+    suspend fun getYouTubeMusicHomeSections(forceRefresh: Boolean = false): List<YTMusicHomeSection> = withContext(Dispatchers.IO) {
         val cacheKey = "yt_home_sections"
-        val cachedJson = loadCacheStr(cacheKey, allowStale = true)
-        if (cachedJson != null) {
-            try {
-                val type = object : TypeToken<List<YTMusicHomeSectionCache>>() {}.type
-                val list: List<YTMusicHomeSectionCache> = gson.fromJson(cachedJson, type)
-                if (list.isNotEmpty()) {
-                    return@withContext list.map { it.toSection() }
-                }
-            } catch (_: Exception) { }
+        if (!forceRefresh) {
+            val cachedJson = loadCacheStr(cacheKey, allowStale = false)
+            if (cachedJson != null) {
+                try {
+                    val type = object : TypeToken<List<YTMusicHomeSectionCache>>() {}.type
+                    val list: List<YTMusicHomeSectionCache> = gson.fromJson(cachedJson, type)
+                    if (list.isNotEmpty()) {
+                        return@withContext list.map { it.toSection() }
+                    }
+                } catch (_: Exception) { }
+            }
         }
 
         val profile = RecommendationManager.buildTasteProfile(db)
@@ -353,15 +374,17 @@ class RecommendationRepository @Inject constructor(
     }
 
     /** Official user library playlists (FEmusic_liked_playlists) — requires cookie. */
-    suspend fun getLibraryPlaylists(): List<com.vinmusic.innertube.AlbumItem> = withContext(Dispatchers.IO) {
+    suspend fun getLibraryPlaylists(forceRefresh: Boolean = false): List<com.vinmusic.innertube.AlbumItem> = withContext(Dispatchers.IO) {
         val cacheKey = "library_playlists"
-        val cached = loadCacheStr(cacheKey, allowStale = true)
-        if (cached != null) {
-            try {
-                val type = object : TypeToken<List<com.vinmusic.innertube.AlbumItem>>() {}.type
-                val list: List<com.vinmusic.innertube.AlbumItem> = gson.fromJson(cached, type)
-                if (list.isNotEmpty()) return@withContext list
-            } catch (_: Exception) {}
+        if (!forceRefresh) {
+            val cached = loadCacheStr(cacheKey, allowStale = false)
+            if (cached != null) {
+                try {
+                    val type = object : TypeToken<List<com.vinmusic.innertube.AlbumItem>>() {}.type
+                    val list: List<com.vinmusic.innertube.AlbumItem> = gson.fromJson(cached, type)
+                    if (list.isNotEmpty()) return@withContext list
+                } catch (_: Exception) {}
+            }
         }
         val result = YTMusicApi.getLibraryPlaylists()
         if (result.isNotEmpty()) {

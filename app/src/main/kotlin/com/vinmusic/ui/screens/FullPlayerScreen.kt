@@ -289,8 +289,7 @@ fun FullPlayerScreen(
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.88f)
+                    .fillMaxSize()
                     .graphicsLayer(alpha = 0.55f)
             )
         }
