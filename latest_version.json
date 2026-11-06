@@ -1,8 +1,8 @@
 {
-  "latestVersionCode": 25,
-  "latestVersionName": "2.3.2",
-  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/latest/download/app-release.apk",
-  "sha256": "1422c60f50ff5e89307e5a1e43c9d9b0a802db5c44a1069a8db40552ecb5afef",
+  "latestVersionCode": 26,
+  "latestVersionName": "2.3.3",
+  "apkUrl": "https://github.com/Vinrawa/Vin-music-v2/releases/download/v2.3.3/vin-music.apk",
+  "sha256": "5052396bcd30faa268e972320a1112925852a87b303cbf39f8e2ea5966510808",
   "forceUpdate": false,
-  "releaseNotes": "Downloads and Cache tab for offline music and stream caching, Discover screen with genre stations and curated spotlight, Anti-fatigue mixes with dynamic repetition penalties to eliminate repeat songs, Apple Music-inspired dynamic Liquid Aura Mesh ambient background, and Live animated Equalizer on Floating Mini-Player."
+  "releaseNotes": "Zero unofficial tracks in Smart Autoplay, Spotify Liked Songs 500-track pagination, Tidal UI normalized to champagne gold, artist diversity fixes in shelves, and system back gesture navigation hierarchy."
 }
