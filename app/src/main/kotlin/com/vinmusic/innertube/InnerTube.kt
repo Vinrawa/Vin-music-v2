@@ -3144,11 +3144,15 @@ data class VideoItem(
     val thumbnail: String
         get() = customThumbnailUrl
             ?: if (videoId.startsWith("sc:")) (com.vinmusic.soundcloud.SoundCloudApi.getArtwork(videoId) ?: "")
+               else if (videoId.startsWith("sp:")) (com.vinmusic.spotify.SpotifySession.getCachedArtwork(videoId) ?: "")
+               else if (videoId.startsWith("td:")) (com.vinmusic.tidal.TidalApi.getArtwork(videoId) ?: "")
                else "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
 
     val thumbnailHd: String
         get() = customThumbnailUrl
             ?: if (videoId.startsWith("sc:")) (com.vinmusic.soundcloud.SoundCloudApi.getArtwork(videoId) ?: "")
+               else if (videoId.startsWith("sp:")) (com.vinmusic.spotify.SpotifySession.getCachedArtwork(videoId) ?: "")
+               else if (videoId.startsWith("td:")) (com.vinmusic.tidal.TidalApi.getArtwork(videoId) ?: "")
                else (com.vinmusic.data.HighResArtHelper.getArtwork(videoId) ?: "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg")
 }
 

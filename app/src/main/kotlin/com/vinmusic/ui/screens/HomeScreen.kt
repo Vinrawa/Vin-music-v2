@@ -1,5 +1,6 @@
 package com.vinmusic.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -54,11 +55,13 @@ import androidx.compose.animation.core.*
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.res.painterResource
+import com.vinmusic.R
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
-private val CATEGORIES = listOf("All", "For You", "SoundCloud", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits", "Long Listens")
+private val CATEGORIES = listOf("All", "For You", "Tidal", "SoundCloud", "Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party", "Bollywood", "Lo-fi", "Rap", "Indie", "K-Pop", "90s Hits", "Long Listens")
 private val HOME_CURRENT_YEAR: Int get() = java.time.LocalDate.now().year
 
 private data class DedupedHomeRecommendations(
@@ -202,6 +205,7 @@ internal object HomeStateCache {
     var quickPicks: List<VideoItem> = emptyList()
     var ytMusicSections: List<com.vinmusic.innertube.YTMusicHomeSection> = emptyList()
     var ytLibraryPlaylists: List<com.vinmusic.innertube.AlbumItem> = emptyList()
+    var spotifyPlaylists: List<com.vinmusic.spotify.SpotifyUserPlaylist> = emptyList()
     var suggestedArtists: List<com.vinmusic.innertube.ArtistItem> = emptyList()
     var recommendedRadio: List<VideoItem> = emptyList()
     var radioSeedSong: VideoItem? = null
@@ -341,6 +345,8 @@ fun HomeScreen(
     var ytMusicConnected by remember { mutableStateOf(YTMusicSession.hasCookie(ctx)) }
     var ytLibraryPlaylists by remember { mutableStateOf(HomeStateCache.ytLibraryPlaylists) }
     var isLoadingYtPlaylists by remember { mutableStateOf(false) }
+    var spotifyPlaylists by remember { mutableStateOf(HomeStateCache.spotifyPlaylists) }
+    var isLoadingSpotifyPlaylists by remember { mutableStateOf(false) }
 
     // SoundCloud Recommendations
     val soundCloudCategories = remember { com.vinmusic.soundcloud.DEFAULT_SOUNDCLOUD_CATEGORIES }
@@ -348,6 +354,21 @@ fun HomeScreen(
     var soundCloudTracks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isSoundCloudLoading by remember { mutableStateOf(false) }
     val soundCloudCache = remember { HomeStateCache.soundCloudCache }
+
+    // Tidal Hi-Fi Recommendations
+    val tidalCategories = remember {
+        listOf(
+            "new_releases" to "New Releases",
+            "top_tracks" to "Top Tracks",
+            "bollywood" to "Bollywood",
+            "hip_hop" to "Hip-Hop",
+            "electronic" to "Electronic & Dance"
+        )
+    }
+    var selectedTidalCategory by remember { mutableStateOf(tidalCategories[0]) }
+    var tidalTracks by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var isTidalLoading by remember { mutableStateOf(false) }
+    val tidalCache = remember { java.util.concurrent.ConcurrentHashMap<String, List<VideoItem>>() }
 
     // Mood Deep Sections
     var moodSections by remember { mutableStateOf<List<Pair<String, List<AlbumItem>>>>(emptyList()) }
@@ -651,11 +672,21 @@ fun HomeScreen(
         val related = try {
             db.relatedSongDao().quickPickVideos(18)
         } catch (_: Exception) { emptyList() }
-        val forgotten = try {
+        val forgottenRaw = try {
             db.songCacheMetaDao().forgottenFavorites(
-                System.currentTimeMillis() - 86_400_000L * 14, 8
+                System.currentTimeMillis() - 86_400_000L * 14, 24
             )
         } catch (_: Exception) { emptyList() }
+        val forgotten = ArrayList<com.vinmusic.data.db.SongCacheMeta>()
+        val forgottenArtistCounts = HashMap<String, Int>()
+        for (f in forgottenRaw) {
+            val normArt = com.vinmusic.recommendation.RecommendationManager.normalizeArtistName(f.author)
+            val c = forgottenArtistCounts[normArt] ?: 0
+            if (c < 2) {
+                forgotten.add(f)
+                forgottenArtistCounts[normArt] = c + 1
+            }
+        }
 
         val picks = (
             related.map { VideoItem(it.videoId, it.title, it.author, it.durationText) } +
@@ -831,6 +862,26 @@ fun HomeScreen(
                 }
             }
         }
+        vm.viewModelScope.launch(Dispatchers.IO) {
+            if (com.vinmusic.spotify.SpotifySession.hasSession(ctx)) {
+                try {
+                    isLoadingSpotifyPlaylists = true
+                    val sp = com.vinmusic.spotify.SpotifySession.fetchPlaylists(ctx)
+                    withContext(Dispatchers.Main) {
+                        spotifyPlaylists = sp
+                        HomeStateCache.spotifyPlaylists = sp
+                        isLoadingSpotifyPlaylists = false
+                    }
+                } catch (e: Exception) {
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        android.util.Log.e("HomeScreen", "Failed to load Spotify playlists: ${e.message}")
+                    }
+                    withContext(Dispatchers.Main) {
+                        isLoadingSpotifyPlaylists = false
+                    }
+                }
+            }
+        }
     }
 
     DisposableEffect(prefs) {
@@ -931,11 +982,16 @@ fun HomeScreen(
             recommendedPlaylistSongs = emptyList()
             scope.launch(Dispatchers.IO) {
                 try {
-                    val (_, playlistSongs) = com.vinmusic.innertube.InnerTube.getPlaylistSongs(recommendedPl.playlistId)
-                    val filteredSongs = playlistSongs
-                        .filterNot { com.vinmusic.recommendation.RecommendationManager.isNonMusicVideo(it.title, it.author) }
-                        .filterNot { com.vinmusic.recommendation.RecommendationManager.isCompilationTrack(it.title, it.durationText) }
-                        .distinctBy { it.videoId.ifBlank { "${it.title}|${it.author}" } }
+                    val filteredSongs = if (recommendedPl.playlistId.startsWith("sp:")) {
+                        val spId = recommendedPl.playlistId.removePrefix("sp:")
+                        com.vinmusic.spotify.SpotifySession.fetchPlaylistTracks(ctx, spId)
+                    } else {
+                        val (_, playlistSongs) = com.vinmusic.innertube.InnerTube.getPlaylistSongs(recommendedPl.playlistId)
+                        playlistSongs
+                            .filterNot { com.vinmusic.recommendation.RecommendationManager.isNonMusicVideo(it.title, it.author) }
+                            .filterNot { com.vinmusic.recommendation.RecommendationManager.isCompilationTrack(it.title, it.durationText) }
+                            .distinctBy { it.videoId.ifBlank { "${it.title}|${it.author}" } }
+                    }
                     withContext(Dispatchers.Main) {
                         remotePlaylistSongsCache[cacheKey] = filteredSongs
                         recommendedPlaylistSongs = filteredSongs
@@ -950,6 +1006,17 @@ fun HomeScreen(
         } else {
             recommendedPlaylistSongs = emptyList()
             isLoadingPlaylistSongs = false
+        }
+    }
+
+    // Dismiss any active full-screen overlay before triggering root app exit dialog
+    BackHandler(
+        enabled = selectedArtist != null || selectedSpotifyMix != null || selectedRecommendedPlaylist != null
+    ) {
+        when {
+            selectedArtist != null -> selectedArtist = null
+            selectedSpotifyMix != null -> selectedSpotifyMix = null
+            selectedRecommendedPlaylist != null -> selectedRecommendedPlaylist = null
         }
     }
 
@@ -983,7 +1050,8 @@ fun HomeScreen(
                                     title = song.videoItem.title,
                                     author = song.videoItem.author,
                                     durationText = song.videoItem.durationText,
-                                    position = index
+                                    position = index,
+                                    thumbnailUrl = song.videoItem.thumbnail.ifBlank { song.videoItem.customThumbnailUrl }
                                 )
                             )
                         }
@@ -1017,7 +1085,8 @@ fun HomeScreen(
                                     title = song.title,
                                     author = song.author,
                                     durationText = song.durationText,
-                                    position = index
+                                    position = index,
+                                    thumbnailUrl = song.customThumbnailUrl ?: com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId) ?: song.thumbnail
                                 )
                             )
                         }
@@ -1274,7 +1343,17 @@ fun HomeScreen(
                                 val searchRes = InnerTube.searchAll(name)
                                 searchRes.artists.firstOrNull { artist ->
                                     artist.name.lowercase().contains(name.lowercase()) || name.lowercase().contains(artist.name.lowercase())
-                                } ?: searchRes.artists.firstOrNull()
+                                } ?: searchRes.artists.firstOrNull() ?: run {
+                                    val topSong = searchRes.songs.firstOrNull() ?: searchRes.videos.firstOrNull() ?: InnerTube.search("$name official").firstOrNull()
+                                    if (topSong != null) {
+                                        com.vinmusic.innertube.ArtistItem(
+                                            channelId = "",
+                                            name = name,
+                                            thumbnail = topSong.thumbnail,
+                                            isVerified = true
+                                        )
+                                    } else null
+                                }
                             } catch (_: Exception) { null } finally { semaphore.release() }
                         }
                     }
@@ -1337,8 +1416,35 @@ fun HomeScreen(
         isSoundCloudLoading = false
     }
 
+    LaunchedEffect(selectedTidalCategory.first, homeRefreshGeneration) {
+        val catId = selectedTidalCategory.first
+        val cached = tidalCache[catId]
+        if (cached != null && cached.isNotEmpty()) {
+            tidalTracks = cached
+            return@LaunchedEffect
+        }
+        isTidalLoading = true
+        val tracks = try {
+            when (catId) {
+                "new_releases" -> com.vinmusic.tidal.TidalApi.getFeaturedNewTracks(countryCode = "IN", limit = 30)
+                "top_tracks" -> com.vinmusic.tidal.TidalApi.searchTracks("Top Tracks", countryCode = "IN", limit = 30)
+                "bollywood" -> com.vinmusic.tidal.TidalApi.searchTracks("Bollywood Hits", countryCode = "IN", limit = 30)
+                "hip_hop" -> com.vinmusic.tidal.TidalApi.searchTracks("Hip Hop", countryCode = "IN", limit = 30)
+                "electronic" -> com.vinmusic.tidal.TidalApi.searchTracks("EDM Electronic", countryCode = "IN", limit = 30)
+                else -> com.vinmusic.tidal.TidalApi.getFeaturedNewTracks(countryCode = "IN", limit = 30)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (tracks.isNotEmpty()) {
+            tidalCache[catId] = tracks
+            tidalTracks = tracks
+        }
+        isTidalLoading = false
+    }
+
     LaunchedEffect(filter, categoryRefreshTrigger, homeRefreshGeneration) {
-        if (filter == "All" || filter == "For You" || filter == "SoundCloud") return@LaunchedEffect
+        if (filter == "All" || filter == "For You" || filter == "Tidal" || filter == "SoundCloud") return@LaunchedEffect
 
         val moodChips = setOf("Happy", "Sad", "Energize", "Sleep", "Focus", "Workout", "Party")
 
@@ -1388,6 +1494,21 @@ fun HomeScreen(
                     }
                     val moodLabel = filter.filter { it.isLetter() || it.isWhitespace() }.trim()
                     val sections = mutableListOf<Pair<String, List<AlbumItem>>>()
+
+                    // Load Spotify Curated editorial playlists for this mood
+                    try {
+                        val spotifyShelves = com.vinmusic.spotify.SpotifyCategoryCuration.getCuratedShelves(filter)
+                        for (shelf in spotifyShelves) {
+                            try {
+                                val results = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                                    com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(shelf.searchQuery)
+                                }.orEmpty().take(8)
+                                if (results.isNotEmpty()) {
+                                    sections.add(shelf.shelfTitle to results)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    } catch (_: Exception) {}
 
                     // Try official category sections first (preserves all named shelves from YTM)
                     val officialParams = MOOD_PARAMS_MAP[filter]
@@ -1528,6 +1649,21 @@ fun HomeScreen(
                     )
 
                     val sections = mutableListOf<Pair<String, List<AlbumItem>>>()
+
+                    // Load Spotify Curated editorial playlists for this genre
+                    try {
+                        val spotifyShelves = com.vinmusic.spotify.SpotifyCategoryCuration.getCuratedShelves(filter)
+                        for (shelf in spotifyShelves) {
+                            try {
+                                val results = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                                    com.vinmusic.innertube.InnerTube.searchCommunityPlaylists(shelf.searchQuery)
+                                }.orEmpty().take(8)
+                                if (results.isNotEmpty()) {
+                                    sections.add(shelf.shelfTitle to results)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    } catch (_: Exception) {}
                     val officialParams = MOOD_PARAMS_MAP[filter]
                     if (officialParams != null) {
                         try {
@@ -1693,20 +1829,36 @@ fun HomeScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(VinColors.BgColor)) {
-        val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-        val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
-        val isScreenActive = lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && !isPlayerOpen
+    val homeAccent by animateColorAsState(
+        targetValue = vm.currentPalette.accent,
+        animationSpec = tween(durationMillis = 1000, easing = LinearOutSlowInEasing),
+        label = "homeAccent"
+    )
 
-        if (isScreenActive) {
-            // ── Apple-Style Liquid Aura Mesh Dynamic Living Background ──
-            com.vinmusic.ui.components.LiquidAuraMesh(
-                palette = vm.currentPalette,
-                isPlaying = vm.isPlaying,
-                isScreenActive = isScreenActive,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // Fixed stars background (grayscale, clean 0.8f alpha)
+        Image(
+            painter = painterResource(id = R.drawable.stars_bg),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alpha = 0.8f,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Dynamic accent glow
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(420.dp)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(homeAccent.copy(alpha = 0.35f), Color.Transparent),
+                        center = Offset(540f, 0f),
+                        radius = 900f
+                    )
+                )
+        )
+
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             onRefresh = {
@@ -1714,39 +1866,34 @@ fun HomeScreen(
                 categoryRefreshTrigger++
                 com.vinmusic.soundcloud.SoundCloudApi.invalidateChartCache()
                 soundCloudCache.clear()
+                if (com.vinmusic.spotify.SpotifySession.hasSession(ctx)) {
+                    scope.launch(Dispatchers.IO) {
+                        val sp = runCatching { com.vinmusic.spotify.SpotifySession.fetchPlaylists(ctx) }.getOrDefault(emptyList())
+                        withContext(Dispatchers.Main) {
+                            spotifyPlaylists = sp
+                            HomeStateCache.spotifyPlaylists = sp
+                        }
+                    }
+                }
             },
             state = pullRefreshState,
             modifier = Modifier.fillMaxSize()
         ) {
-        val displayedRecommendations = remember(
-            ytMusicSections, quickPicks, recommendedRadio, recommendationSections
-        ) {
-            dedupeHomeRecommendations(
-                ytMusicSections = ytMusicSections,
-                quickPicks = quickPicks,
-                radio = recommendedRadio,
-                sections = recommendationSections,
-            )
-        }
-        // ✨ Top Ambient Atmosphere Mesh Fade ✨
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(360.dp)
-                .background(
-                    Brush.verticalGradient(
-                        0.0f to VinColors.Accent.copy(alpha = 0.16f),
-                        0.35f to VinColors.Accent.copy(alpha = 0.08f),
-                        0.75f to VinColors.Accent.copy(alpha = 0.02f),
-                        1.0f to Color.Transparent
-                    )
+            val displayedRecommendations = remember(
+                ytMusicSections, quickPicks, recommendedRadio, recommendationSections
+            ) {
+                dedupeHomeRecommendations(
+                    ytMusicSections = ytMusicSections,
+                    quickPicks = quickPicks,
+                    radio = recommendedRadio,
+                    sections = recommendationSections,
                 )
-        )
+            }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().background(Color.Transparent),
-            contentPadding = PaddingValues(bottom = 140.dp)
-        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().background(Color.Transparent),
+                contentPadding = PaddingValues(bottom = 140.dp)
+            ) {
 
             // ── Personalized Frosted Glass Top Header (Clean Minimal Profile Touchpoint) ──────
             item {
@@ -1810,39 +1957,6 @@ fun HomeScreen(
                 }
             }
 
-            if (!ytMusicConnected) {
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(VinColors.Accent.copy(alpha = 0.12f))
-                            .border(1.dp, VinColors.Accent.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
-                            .clickable { onSettingsClick() }
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(Icons.Default.MusicNote, null, tint = VinColors.AccentLight, modifier = Modifier.size(28.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "YouTube Music Connected Status",
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 14.sp,
-                                color = Color.White
-                            )
-                            Text(
-                                "Tap to connect YouTube Music for elite recommendations",
-                                fontSize = 12.sp,
-                                color = VinColors.Secondary
-                            )
-                        }
-                        Icon(Icons.Default.ChevronRight, null, tint = VinColors.AccentLight)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
 
 
 
@@ -1999,7 +2113,10 @@ fun HomeScreen(
                                     title = it.title,
                                     author = it.author,
                                     durationText = it.durationText,
-                                    customThumbnailUrl = it.thumbnailUrl ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId) else null
+                                    customThumbnailUrl = it.thumbnailUrl
+                                        ?: if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId)
+                                        else if (it.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(it.videoId)
+                                        else null
                                 )
                             }
                             items(historySongs.take(8), key = { "history_${it.videoId}" }) { song ->
@@ -2027,6 +2144,36 @@ fun HomeScreen(
                                 RecommendedPlaylistCard(
                                     playlist = pl,
                                     onClick = { selectedRecommendedPlaylist = pl }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 1.2. Your Spotify Playlists
+                if (spotifyPlaylists.isNotEmpty()) {
+                    item {
+                        SectionTitle("Your Spotify Playlists")
+                        Spacer(Modifier.height(10.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 24.dp)
+                        ) {
+                            items(spotifyPlaylists, key = { "sp_${it.id}" }) { pl ->
+                                SpotifyHomePlaylistCard(
+                                    playlist = pl,
+                                    onClick = {
+                                        selectedRecommendedPlaylist = com.vinmusic.innertube.AlbumItem(
+                                            playlistId = "sp:${pl.id}",
+                                            title = pl.name,
+                                            author = pl.ownerName,
+                                            thumbnail = pl.imageUrl ?: "",
+                                            songCount = if (pl.trackCount > 0) "${pl.trackCount} songs" else ""
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -2260,6 +2407,78 @@ fun HomeScreen(
                         }
                     }
                 }
+
+                // 1.8. Tidal Hi-Fi
+                item {
+                    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+                        SectionTitle("Tidal")
+                        Spacer(Modifier.height(10.dp))
+
+                        // Sub-category switcher chips
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        ) {
+                            items(tidalCategories, key = { it.first }) { cat ->
+                                val active = cat.first == selectedTidalCategory.first
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(
+                                            if (active) {
+                                                Brush.horizontalGradient(
+                                                    listOf(Color(0xFFC5A880), Color(0xFF8C7355))
+                                                )
+                                            } else {
+                                                Brush.verticalGradient(
+                                                    listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.02f))
+                                                )
+                                            }
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (active) Color.Transparent else Color.White.copy(alpha = 0.1f),
+                                            RoundedCornerShape(16.dp)
+                                        )
+                                        .clickable {
+                                            if (selectedTidalCategory.first != cat.first) {
+                                                selectedTidalCategory = cat
+                                            }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = cat.second,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (active) Color(0xFF141210) else Color.White.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Tracks Row
+                        if (isTidalLoading && tidalTracks.isEmpty()) {
+                            ShelfSkeleton()
+                        } else if (tidalTracks.isNotEmpty()) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 20.dp),
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                itemsIndexed(
+                                    tidalTracks,
+                                    key = { index, song -> "td_home_${selectedTidalCategory.first}_${song.videoId}_$index" }
+                                ) { _, song ->
+                                    TidalTrackCard(song = song) {
+                                        onSongClick(song, tidalTracks)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Custom Spotify-Style Mixes divided into premium distinct shelves (below Recommended Radio)
                 if (spotifyMixes.isNotEmpty()) {
                     val rewindMixes = spotifyMixes.filter { it.id == "repeat_rewind" }
@@ -2477,6 +2696,36 @@ fun HomeScreen(
                         ) {
                             CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(24.dp))
                             Text("Loading", color = VinColors.Secondary, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                // Your personal Spotify Playlists
+                if (spotifyPlaylists.isNotEmpty()) {
+                    item {
+                        SectionTitle("Your Spotify Playlists")
+                        Spacer(Modifier.height(10.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 24.dp)
+                        ) {
+                            items(spotifyPlaylists, key = { "sp_${it.id}" }) { pl ->
+                                SpotifyHomePlaylistCard(
+                                    playlist = pl,
+                                    onClick = {
+                                        selectedRecommendedPlaylist = com.vinmusic.innertube.AlbumItem(
+                                            playlistId = "sp:${pl.id}",
+                                            title = pl.name,
+                                            author = pl.ownerName,
+                                            thumbnail = pl.imageUrl ?: "",
+                                            songCount = if (pl.trackCount > 0) "${pl.trackCount} songs" else ""
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -2750,6 +2999,94 @@ fun HomeScreen(
                     }
                     if (rapSubSections.isEmpty() && !isRapSubLoading) {
                         item { EmptyScreenState("No playlists found for this sub-category.") }
+                    }
+                }
+            }
+            "Tidal" -> {
+                item {
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text(
+                            text = "Tidal",
+                            style = Vin.Text.sectionHeader
+                        )
+                    }
+                }
+
+                // Sub-category switcher chips
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    ) {
+                        items(tidalCategories, key = { it.first }) { cat ->
+                            val active = cat.first == selectedTidalCategory.first
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        if (active) {
+                                            Brush.horizontalGradient(
+                                                listOf(Color(0xFFC5A880), Color(0xFF8C7355))
+                                            )
+                                        } else {
+                                            Brush.verticalGradient(
+                                                listOf(Color.White.copy(alpha = 0.08f), Color.White.copy(alpha = 0.02f))
+                                            )
+                                        }
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (active) Color.Transparent else Color.White.copy(alpha = 0.1f),
+                                        RoundedCornerShape(16.dp)
+                                    )
+                                    .clickable {
+                                        if (selectedTidalCategory.first != cat.first) {
+                                            selectedTidalCategory = cat
+                                        }
+                                    }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = cat.second,
+                                    fontSize = 13.sp,
+                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (active) Color(0xFF141210) else Color.White.copy(alpha = 0.85f)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (isTidalLoading && tidalTracks.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(color = VinColors.Accent, modifier = Modifier.size(36.dp))
+                            Text("Loading Tidal tracks...", color = VinColors.Secondary, fontSize = 13.sp)
+                        }
+                    }
+                } else if (tidalTracks.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "${selectedTidalCategory.second} (${tidalTracks.size} tracks)",
+                            style = Vin.Text.sectionHeader,
+                            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
+                        )
+                    }
+                    itemsIndexed(
+                        tidalTracks,
+                        key = { index, song -> "td_dedicated_${selectedTidalCategory.first}_${song.videoId}_$index" }
+                    ) { _, song ->
+                        SongListItem(
+                            song = song,
+                            isPlaying = vm.currentSong?.videoId == song.videoId,
+                            onClick = { onSongClick(song, tidalTracks) },
+                            onMore = { onSongMore(song) }
+                        )
                     }
                 }
             }
@@ -4050,6 +4387,7 @@ fun SoundCloudTrackCard(song: VideoItem, onClick: () -> Unit) {
         label = "sc_card_scale"
     )
     val context = LocalContext.current
+    var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -4070,13 +4408,15 @@ fun SoundCloudTrackCard(song: VideoItem, onClick: () -> Unit) {
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
                 .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                .shimmerEffect()
+                .then(if (!isImageLoaded && song.thumbnail.isNotBlank()) Modifier.shimmerEffect() else Modifier)
         ) {
             AsyncImage(
                 model = song.thumbnail,
                 contentDescription = null,
                 placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
                 error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                onSuccess = { isImageLoaded = true },
+                onError = { isImageLoaded = true },
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
@@ -4148,6 +4488,101 @@ fun SoundCloudTrackCard(song: VideoItem, onClick: () -> Unit) {
 }
 
 @Composable
+fun TidalTrackCard(song: VideoItem, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.95f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "td_card_scale"
+    )
+    val context = LocalContext.current
+    var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                HapticHelper.click(context)
+                onClick()
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+                .clip(RoundedCornerShape(14.dp))
+                .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
+                .then(if (!isImageLoaded && song.thumbnail.isNotBlank()) Modifier.shimmerEffect() else Modifier)
+        ) {
+            AsyncImage(
+                model = song.thumbnail,
+                contentDescription = null,
+                placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                onSuccess = { isImageLoaded = true },
+                onError = { isImageLoaded = true },
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.35f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.65f)
+                            )
+                        )
+                    )
+            )
+            // Duration pill bottom-end
+            if (song.durationText.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = song.durationText,
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = song.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardTitleSmall
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = song.author,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Vin.Text.cardSubtitle
+        )
+    }
+}
+
+@Composable
 fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -4159,7 +4594,12 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
     val context = LocalContext.current
     var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
     var artworkUrl by remember(song.videoId, song.thumbnail) {
-        mutableStateOf(song.thumbnail.takeIf { it.isNotBlank() })
+        mutableStateOf(
+            song.thumbnail.takeIf { it.isNotBlank() }
+                ?: if (song.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId)
+                else if (song.videoId.startsWith("td:")) com.vinmusic.tidal.TidalApi.getArtwork(song.videoId)
+                else null
+        )
     }
 
     LaunchedEffect(song.videoId) {
@@ -4167,6 +4607,20 @@ fun SmallRecentlyPlayedCard(song: VideoItem, onClick: () -> Unit) {
             val fetched = com.vinmusic.soundcloud.SoundCloudApi.fetchTrackArtwork(song.videoId)
             if (fetched != null) {
                 artworkUrl = fetched
+            } else {
+                isImageLoaded = true
+            }
+        } else if (artworkUrl.isNullOrBlank() && song.videoId.startsWith("sp:")) {
+            val cached = com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId)
+            if (cached != null) {
+                artworkUrl = cached
+            } else {
+                isImageLoaded = true
+            }
+        } else if (artworkUrl.isNullOrBlank() && song.videoId.startsWith("td:")) {
+            val cached = com.vinmusic.tidal.TidalApi.getArtwork(song.videoId)
+            if (cached != null) {
+                artworkUrl = cached
             } else {
                 isImageLoaded = true
             }
@@ -4317,6 +4771,7 @@ fun RecommendedTrackCard(song: com.vinmusic.innertube.VideoItem, reason: String,
         label = "rec_card_scale"
     )
     val context = LocalContext.current
+    var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -4337,13 +4792,15 @@ fun RecommendedTrackCard(song: com.vinmusic.innertube.VideoItem, reason: String,
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
                 .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                .shimmerEffect()
+                .then(if (!isImageLoaded && song.thumbnail.isNotBlank()) Modifier.shimmerEffect() else Modifier)
         ) {
             AsyncImage(
                 model = song.thumbnail,
                 contentDescription = null,
                 placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
                 error = androidx.compose.ui.graphics.painter.ColorPainter(Color.White.copy(alpha = 0.08f)),
+                onSuccess = { isImageLoaded = true },
+                onError = { isImageLoaded = true },
                 modifier = Modifier.fillMaxSize().scale(1.35f),
                 contentScale = ContentScale.Crop
             )
@@ -4383,6 +4840,7 @@ fun ArtistCircleCard(
         label = "artist_scale"
     )
     val context = LocalContext.current
+    var isImageLoaded by remember(artist.channelId) { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -4411,11 +4869,13 @@ fun ArtistCircleCard(
                     .fillMaxSize()
                     .clip(CircleShape)
                     .background(VinColors.Surface2)
-                    .shimmerEffect()
+                    .then(if (!isImageLoaded && artist.thumbnail.isNotBlank()) Modifier.shimmerEffect() else Modifier)
             ) {
                 AsyncImage(
                     model = artist.thumbnail,
                     contentDescription = artist.name,
+                    onSuccess = { isImageLoaded = true },
+                    onError = { isImageLoaded = true },
                     modifier = Modifier.fillMaxSize().clip(CircleShape),
                     contentScale = ContentScale.Crop
                 )
@@ -4570,6 +5030,7 @@ fun SpotifyMixCompactCard(
     val isPressed by interactionSource.collectIsPressedAsState()
     val context = LocalContext.current
     val coverUrl = mix.songs.firstOrNull()?.videoItem?.thumbnail
+    var isImageLoaded by remember(coverUrl) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -4593,12 +5054,14 @@ fun SpotifyMixCompactCard(
                 .size(48.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(VinColors.Surface)
-                .shimmerEffect()
+                .then(if (!isImageLoaded && !coverUrl.isNullOrBlank()) Modifier.shimmerEffect() else Modifier)
         ) {
             if (coverUrl != null) {
                 AsyncImage(
                     model = coverUrl,
                     contentDescription = mix.title,
+                    onSuccess = { isImageLoaded = true },
+                    onError = { isImageLoaded = true },
                     modifier = Modifier.fillMaxSize().scale(1.35f),
                     contentScale = ContentScale.Crop
                 )
@@ -4639,6 +5102,7 @@ fun QuickPickRow(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "qp_row_scale"
     )
+    var isImageLoaded by remember(song.videoId) { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -4655,11 +5119,13 @@ fun QuickPickRow(
                 .clip(RoundedCornerShape(10.dp))
                 .background(VinColors.Surface)
                 .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                .shimmerEffect()
+                .then(if (!isImageLoaded && song.thumbnail.isNotBlank()) Modifier.shimmerEffect() else Modifier)
         ) {
             AsyncImage(
                 model = song.thumbnail,
                 contentDescription = null,
+                onSuccess = { isImageLoaded = true },
+                onError = { isImageLoaded = true },
                 modifier = Modifier.fillMaxSize().scale(1.35f),
                 contentScale = ContentScale.Crop
             )
@@ -4806,6 +5272,7 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
         label = "rec_playlist_scale"
     )
     val context = LocalContext.current
+    var isImageLoaded by remember(playlist.playlistId) { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -4823,12 +5290,14 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
                 .clip(RoundedCornerShape(14.dp))
                 .background(VinColors.Surface)
                 .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                .shimmerEffect()
+                .then(if (!isImageLoaded && !playlist.thumbnail.isNullOrBlank()) Modifier.shimmerEffect() else Modifier)
         ) {
             AsyncImage(
                 model = playlist.thumbnail,
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                onSuccess = { isImageLoaded = true },
+                onError = { isImageLoaded = true },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -4848,3 +5317,78 @@ fun RecommendedPlaylistCard(playlist: com.vinmusic.innertube.AlbumItem, modifier
         )
     }
 }
+
+@Composable
+fun SpotifyHomePlaylistCard(
+    playlist: com.vinmusic.spotify.SpotifyUserPlaylist,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.96f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "sp_home_playlist_scale"
+    )
+    val context = LocalContext.current
+    var isImageLoaded by remember(playlist.id) { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier
+            .width(140.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clickable(interactionSource = interactionSource, indication = null) {
+                HapticHelper.click(context)
+                onClick()
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .size(140.dp)
+                .graphicsLayer(shadowElevation = 6.dp.value, shape = RoundedCornerShape(14.dp), clip = false)
+                .clip(RoundedCornerShape(14.dp))
+                .background(VinColors.Surface)
+                .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                .then(if (!isImageLoaded && !playlist.imageUrl.isNullOrBlank()) Modifier.shimmerEffect() else Modifier)
+        ) {
+            if (!playlist.imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = playlist.imageUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    onSuccess = { isImageLoaded = true },
+                    onError = { isImageLoaded = true },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(VinColors.Surface2),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QueueMusic,
+                        contentDescription = null,
+                        tint = VinColors.Accent,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = playlist.name,
+            style = Vin.Text.cardTitleSmall.copy(letterSpacing = (-0.2).sp, color = Color.White),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = if (playlist.trackCount > 0) "${playlist.trackCount} tracks" else playlist.ownerName,
+            style = Vin.Text.cardSubtitle.copy(color = Color.White.copy(alpha = 0.65f)),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+

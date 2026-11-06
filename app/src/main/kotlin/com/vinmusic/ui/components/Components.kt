@@ -152,12 +152,14 @@ fun MiniPlayer(
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
 
-    // Dynamic dominant color extraction for progress bar
+    // Dynamic dominant and secondary harmonic color extraction
     var dominantColor by remember(song.videoId) { mutableStateOf(Color(0xFF6EA8FF)) }
+    var secondaryColor by remember(song.videoId) { mutableStateOf(Color(0xFF7C3AED)) }
     LaunchedEffect(song.thumbnail) {
         try {
             val palette = ColorExtractor.extractColorsFromUrl(ctx, song.thumbnail)
             dominantColor = palette.accent
+            secondaryColor = palette.secondary
         } catch (_: Exception) {}
     }
 
@@ -264,7 +266,7 @@ fun MiniPlayer(
                     lineTo(width, height)
                     close()
                 }
-                drawPath(path1, color = dominantColor.copy(alpha = 0.2f))
+                drawPath(path1, color = secondaryColor.copy(alpha = 0.25f))
 
                 // Wave 2: Middle Accent wave (flowing opposite)
                 val path2 = Path().apply {
@@ -294,7 +296,7 @@ fun MiniPlayer(
                     lineTo(width, height)
                     close()
                 }
-                drawPath(path3, color = dominantColor.copy(alpha = 0.5f))
+                drawPath(path3, color = dominantColor.copy(alpha = 0.55f))
             }
 
             // Glowing Razor-thin Progress Wire at bottom
@@ -311,7 +313,7 @@ fun MiniPlayer(
                         .fillMaxHeight()
                         .background(
                             Brush.horizontalGradient(
-                                listOf(dominantColor.copy(alpha = 0.7f), dominantColor, Color.White.copy(alpha = 0.95f))
+                                listOf(secondaryColor.copy(alpha = 0.7f), dominantColor, Color.White.copy(alpha = 0.95f))
                             )
                         )
                 )

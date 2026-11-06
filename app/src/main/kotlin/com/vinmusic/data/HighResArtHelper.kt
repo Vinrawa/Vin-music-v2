@@ -59,6 +59,9 @@ object HighResArtHelper {
      * Returns null if not cached or if verified as not in official catalog (so caller uses YT native HD).
      */
     fun getArtwork(videoId: String): String? {
+        if (videoId.startsWith("td:")) {
+            return com.vinmusic.tidal.TidalApi.getArtwork(videoId)
+        }
         val cached = memoryCache[videoId] ?: return null
         return if (cached == SENTINEL_NOT_FOUND) null else cached
     }
@@ -67,7 +70,7 @@ object HighResArtHelper {
      * Asynchronously prefetch high-res artwork for a track and cache it.
      */
     fun prefetch(videoId: String, title: String, artist: String) {
-        if (videoId.isBlank() || videoId.startsWith("sc:")) return
+        if (videoId.isBlank() || videoId.startsWith("sc:") || videoId.startsWith("td:")) return
         if (memoryCache.containsKey(videoId)) return
 
         scope.launch {
@@ -80,6 +83,7 @@ object HighResArtHelper {
      */
     fun fetchArtwork(videoId: String, title: String, artist: String): String? {
         if (videoId.isBlank() || videoId.startsWith("sc:")) return null
+        if (videoId.startsWith("td:")) return com.vinmusic.tidal.TidalApi.getArtwork(videoId)
 
         val cached = memoryCache[videoId]
         if (cached != null) {

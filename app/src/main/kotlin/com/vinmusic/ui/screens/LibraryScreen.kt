@@ -1,5 +1,6 @@
 package com.vinmusic.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -41,9 +42,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.ui.viewinterop.AndroidView
 import android.webkit.CookieManager
 import android.widget.Toast
+import com.vinmusic.spotify.SpotifySession
+import com.vinmusic.spotify.SpotifyUserPlaylist
 
 private fun libraryMonthlyListenersText(source: String): String {
     val compact = source
@@ -81,11 +83,21 @@ fun LibraryScreen(
     var playlistSubTab by rememberSaveable { mutableStateOf("Local") }
     var ytPlaylists by remember { mutableStateOf<List<com.vinmusic.innertube.AlbumItem>>(emptyList()) }
     var isLoadingYtPlaylists by remember { mutableStateOf(false) }
-    val ytMusicConnected = remember { com.vinmusic.innertube.YTMusicSession.hasCookie(ctx) }
+    val ytMusicConnected = com.vinmusic.innertube.YTMusicSession.hasCookie(ctx)
 
     var selectedYtPlaylist by remember { mutableStateOf<com.vinmusic.innertube.AlbumItem?>(null) }
     var ytPlaylistSongs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoadingYtPlaylistSongs by remember { mutableStateOf(false) }
+
+    val spotifyConnected = SpotifySession.hasSession(ctx)
+    var spotifyRefreshTrigger by remember { mutableStateOf(0) }
+    var spotifyPlaylists by remember { mutableStateOf<List<SpotifyUserPlaylist>>(emptyList()) }
+    var isLoadingSpotifyPlaylists by remember { mutableStateOf(false) }
+
+    var selectedSpotifyPlaylist by remember { mutableStateOf<SpotifyUserPlaylist?>(null) }
+    var isSelectedSpotifyLiked by remember { mutableStateOf(false) }
+    var spotifyPlaylistSongs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var isLoadingSpotifyPlaylistSongs by remember { mutableStateOf(false) }
 
     // New playlist dialog
     var showNewPlaylist by remember { mutableStateOf(false) }
@@ -123,6 +135,25 @@ fun LibraryScreen(
         }
     }
 
+    LaunchedEffect(spotifyConnected, spotifyRefreshTrigger) {
+        if (SpotifySession.hasSession(ctx)) {
+            isLoadingSpotifyPlaylists = true
+            launch(Dispatchers.IO) {
+                try {
+                    val pl = SpotifySession.fetchPlaylists(ctx)
+                    withContext(Dispatchers.Main) {
+                        spotifyPlaylists = pl
+                        isLoadingSpotifyPlaylists = false
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        isLoadingSpotifyPlaylists = false
+                    }
+                }
+            }
+        }
+    }
+
     LaunchedEffect(selectedYtPlaylist) {
         val ytPl = selectedYtPlaylist
         if (ytPl != null) {
@@ -141,6 +172,41 @@ fun LibraryScreen(
             }
         } else {
             ytPlaylistSongs = emptyList()
+        }
+    }
+
+    LaunchedEffect(selectedSpotifyPlaylist, isSelectedSpotifyLiked) {
+        val pl = selectedSpotifyPlaylist
+        if (pl != null) {
+            spotifyPlaylistSongs = emptyList()
+            isLoadingSpotifyPlaylistSongs = true
+            try {
+                val songs = SpotifySession.fetchPlaylistTracks(ctx, pl.id)
+                withContext(Dispatchers.Main) {
+                    spotifyPlaylistSongs = songs
+                    isLoadingSpotifyPlaylistSongs = false
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isLoadingSpotifyPlaylistSongs = false
+                }
+            }
+        } else if (isSelectedSpotifyLiked) {
+            spotifyPlaylistSongs = emptyList()
+            isLoadingSpotifyPlaylistSongs = true
+            try {
+                val songs = SpotifySession.fetchLikedTracks(ctx)
+                withContext(Dispatchers.Main) {
+                    spotifyPlaylistSongs = songs
+                    isLoadingSpotifyPlaylistSongs = false
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isLoadingSpotifyPlaylistSongs = false
+                }
+            }
+        } else {
+            spotifyPlaylistSongs = emptyList()
         }
     }
 
@@ -331,6 +397,7 @@ fun LibraryScreen(
                     val subTabs = remember(ytMusicConnected) {
                         val list = mutableListOf("Local")
                         if (ytMusicConnected) list.add("YouTube Music")
+                        list.add("Spotify")
                         list
                     }
 
@@ -432,6 +499,169 @@ fun LibraryScreen(
                                         playlist = pl,
                                         onClick = { selectedYtPlaylist = pl }
                                     )
+                                }
+                            }
+                        }
+                    } else if (playlistSubTab == "Spotify") {
+                        // Spotify Playlists & Liked
+                        if (!spotifyConnected) {
+                            EmptyState(Icons.Default.CloudQueue, "Spotify Not Connected", "Connect Spotify in Settings to sync your personal playlists and liked songs")
+                        } else if (isLoadingSpotifyPlaylists) {
+                            Box(modifier = Modifier.fillMaxSize().padding(bottom = 100.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = Color(0xFF1DB954))
+                            }
+                        } else {
+                            LazyColumn(contentPadding = PaddingValues(bottom = 220.dp)) {
+                                // 1. Liked Songs Item
+                                item {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedSpotifyPlaylist = null
+                                                isSelectedSpotifyLiked = true
+                                            }
+                                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(54.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        listOf(Color(0xFF450AF5), Color(0xFF8E8EE5))
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                                        }
+
+                                        Spacer(Modifier.width(16.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Liked Songs",
+                                                color = Color.White,
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Spacer(Modifier.height(2.dp))
+                                            Text(
+                                                text = "Spotify Auto Playlist",
+                                                color = Color(0xFF1DB954),
+                                                fontSize = 13.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = null,
+                                            tint = VinColors.Secondary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+
+                                // 2. User Spotify Playlists
+                                if (isLoadingSpotifyPlaylists) {
+                                    item {
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                CircularProgressIndicator(
+                                                    color = Color(0xFF1DB954),
+                                                    modifier = Modifier.size(20.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                                Text("Syncing Spotify playlists...", color = VinColors.Secondary, fontSize = 13.sp)
+                                            }
+                                        }
+                                    }
+                                } else if (spotifyPlaylists.isEmpty()) {
+                                    item {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Text("No personal playlists found on Spotify", color = VinColors.Secondary, fontSize = 13.sp)
+                                            Button(
+                                                onClick = { spotifyRefreshTrigger++ },
+                                                colors = ButtonDefaults.buttonColors(containerColor = VinColors.White10),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = Color(0xFF1DB954), modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text("Sync Playlists", fontSize = 12.sp, color = Color(0xFF1DB954))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    items(spotifyPlaylists, key = { it.id }) { pl ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    isSelectedSpotifyLiked = false
+                                                    selectedSpotifyPlaylist = pl
+                                                }
+                                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(54.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(VinColors.White10)
+                                            ) {
+                                                coil3.compose.AsyncImage(
+                                                    model = pl.imageUrl,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                                )
+                                            }
+
+                                            Spacer(Modifier.width(16.dp))
+
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = pl.name,
+                                                    color = Color.White,
+                                                    fontSize = 16.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Spacer(Modifier.height(2.dp))
+                                                Text(
+                                                    text = if (pl.trackCount > 0) "${pl.trackCount} tracks • By ${pl.ownerName}" else "Playlist • By ${pl.ownerName}",
+                                                    color = VinColors.Secondary,
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            Icon(
+                                                imageVector = Icons.Default.ChevronRight,
+                                                contentDescription = null,
+                                                tint = VinColors.Secondary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -819,7 +1049,8 @@ fun LibraryScreen(
                                                         title = bestSong.title,
                                                         author = bestSong.author,
                                                         durationText = bestSong.durationText,
-                                                        position = resolvedSongs.size - 1
+                                                        position = resolvedSongs.size - 1,
+                                                        thumbnailUrl = bestSong.thumbnail
                                                     )
                                                 )
                                             }
@@ -860,7 +1091,8 @@ fun LibraryScreen(
                                                     title = song.title,
                                                     author = song.author,
                                                     durationText = song.durationText,
-                                                    position = index
+                                                    position = index,
+                                                    thumbnailUrl = song.thumbnail
                                                 )
                                             )
                                         }
@@ -979,7 +1211,8 @@ fun LibraryScreen(
                                             title = song.title,
                                             author = song.author,
                                             durationText = song.durationText,
-                                            position = index
+                                            position = index,
+                                            thumbnailUrl = song.thumbnail
                                         )
                                     )
                                 }
@@ -1030,6 +1263,211 @@ fun LibraryScreen(
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
                                         .clickable { onSongClick(song, ytPlaylistSongs) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Text(
+                                        text = (index + 1).toString(),
+                                        color = VinColors.Secondary,
+                                        fontSize = 13.sp,
+                                        modifier = Modifier.width(24.dp)
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(VinColors.White10)
+                                    ) {
+                                        coil3.compose.AsyncImage(
+                                            model = song.thumbnail,
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                        )
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = song.title,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = song.author,
+                                            color = VinColors.Secondary,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (song.durationText.isNotEmpty()) {
+                                        Text(
+                                            text = song.durationText,
+                                            color = VinColors.Secondary,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
+    // ── Spotify Playlist Details Sheet ──────────────────────────────────
+    if (selectedSpotifyPlaylist != null || isSelectedSpotifyLiked) {
+        val sheetTitle = selectedSpotifyPlaylist?.name ?: "Liked Songs"
+        val sheetAuthor = selectedSpotifyPlaylist?.ownerName?.let { "Created by $it" } ?: "Spotify Liked Tracks"
+        val sheetImage = selectedSpotifyPlaylist?.imageUrl
+
+        ModalBottomSheet(
+            onDismissRequest = {
+                selectedSpotifyPlaylist = null
+                isSelectedSpotifyLiked = false
+            },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = VinColors.Surface2,
+            dragHandle = { BottomSheetDefaults.DragHandle(color = VinColors.GlassBorder) }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Playlist Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(80.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSelectedSpotifyLiked) {
+                                    Brush.linearGradient(listOf(Color(0xFF450AF5), Color(0xFF8E8EE5)))
+                                } else {
+                                    Brush.linearGradient(listOf(VinColors.White10, VinColors.White10))
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelectedSpotifyLiked) {
+                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                        } else {
+                            coil3.compose.AsyncImage(
+                                model = sheetImage,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                            )
+                        }
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = sheetTitle,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = sheetAuthor,
+                            fontSize = 13.sp,
+                            color = VinColors.Secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${spotifyPlaylistSongs.size} tracks total",
+                            fontSize = 12.sp,
+                            color = Color(0xFF1DB954),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // Import Button
+                Button(
+                    onClick = {
+                        if (spotifyPlaylistSongs.isNotEmpty()) {
+                            scope.launch(Dispatchers.IO) {
+                                val playlistDbId = db.playlistDao().insertPlaylist(PlaylistEntity(name = sheetTitle))
+                                spotifyPlaylistSongs.forEachIndexed { index, song ->
+                                    val thumb = song.customThumbnailUrl ?: com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId)
+                                    db.playlistDao().insertSong(
+                                        PlaylistSongEntity(
+                                            playlistId = playlistDbId,
+                                            videoId = song.videoId,
+                                            title = song.title,
+                                            author = song.author,
+                                            durationText = song.durationText,
+                                            position = index,
+                                            thumbnailUrl = thumb
+                                        )
+                                    )
+                                }
+                                withContext(Dispatchers.Main) {
+                                    android.widget.Toast.makeText(ctx, "Imported '$sheetTitle' to library!", android.widget.Toast.LENGTH_LONG).show()
+                                    selectedSpotifyPlaylist = null
+                                    isSelectedSpotifyLiked = false
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DB954)),
+                    enabled = !isLoadingSpotifyPlaylistSongs && spotifyPlaylistSongs.isNotEmpty(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Default.CloudDownload, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Import to Offline Library", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                HorizontalDivider(color = VinColors.GlassBorder.copy(alpha = 0.3f))
+
+                Spacer(Modifier.height(12.dp))
+
+                // Scrollable preview tracks
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 350.dp)
+                ) {
+                    if (isLoadingSpotifyPlaylistSongs) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = Color(0xFF1DB954))
+                        }
+                    } else if (spotifyPlaylistSongs.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No tracks found", color = VinColors.Secondary)
+                        }
+                    } else {
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            itemsIndexed(spotifyPlaylistSongs, key = { index, song -> song.videoId + "_" + index }) { index, song ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { onSongClick(song, spotifyPlaylistSongs) }
                                         .padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1279,6 +1717,9 @@ private fun LocalMusicSection(
     var scanResult by remember { mutableStateOf<com.vinmusic.data.LocalScanResult?>(null) }
     var isScanning by remember { mutableStateOf(false) }
     var selectedFolder by remember { mutableStateOf<com.vinmusic.data.LocalFolder?>(null) }
+    BackHandler(enabled = selectedFolder != null) {
+        selectedFolder = null
+    }
     var subTab by rememberSaveable { mutableStateOf("Folders") }
     var filterText by remember { mutableStateOf("") }
 

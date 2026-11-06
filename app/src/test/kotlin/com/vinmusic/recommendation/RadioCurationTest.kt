@@ -53,7 +53,9 @@ class RadioCurationTest {
         val candidates = listOf(
             song("c1", "Other Song Slowed Reverb", "fan channel"),
             song("c2", "Other Song Nightcore", "someone"),
-            song("c3", "Real Similar Song", "Baby Keem"),
+            // Real official release: curateRadioCandidates now hard-requires an official channel,
+            // so the survivor fixture must be a genuine verified uploader.
+            song("c3", "Real Similar Song", "Baby Keem - Topic"),
         )
         val result = RecommendationManager.curateRadioCandidates(seed, candidates)
         assertEquals(listOf("c3"), result.map { it.videoId })
@@ -83,7 +85,7 @@ class RadioCurationTest {
     }
 
     @Test
-    fun `caps other artists at two tracks each`() {
+    fun `caps other artists at one track each`() {
         val seed = song("seed", "Seed Song", "J. Cole")
         val candidates = listOf(
             song("c1", "Track One", "Drake"),
@@ -91,7 +93,8 @@ class RadioCurationTest {
             song("c3", "Track Three", "Drake"),
         )
         val result = RecommendationManager.curateRadioCandidates(seed, candidates)
-        assertEquals(2, result.size)
+        // Radio quality rule: never repeat an artist back-to-back in the queue.
+        assertEquals(1, result.size)
     }
 
     @Test
@@ -109,8 +112,10 @@ class RadioCurationTest {
     @Test
     fun `respects maxItems limit`() {
         val seed = song("seed", "Seed Song", "J. Cole")
+        // Official-channel fixtures: the official-only gate rejects unknown third-party
+        // uploaders, so each candidate must look like a verified release.
         val candidates = (1..12).map { i ->
-            song("c$i", "Unique Song Number $i", "Artist $i")
+            song("c$i", "Unique Song Number $i", "Artist $i - Topic")
         }
         val result = RecommendationManager.curateRadioCandidates(seed, candidates, maxItems = 5)
         assertEquals(5, result.size)

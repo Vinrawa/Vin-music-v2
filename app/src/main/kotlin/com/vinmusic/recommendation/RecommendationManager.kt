@@ -152,7 +152,14 @@ object RecommendationManager {
         ),
         "Rap/Hip-Hop" to GenreMixConfig(
             description = "Get moving with high-tempo rap, energetic workout tracks, and modern hip hop.",
-            queries = listOf("energetic rap hip hop hits", "modern trending rap playlist", "underground hip hop gym workout"),
+            queries = listOf(
+                "energetic rap hip hop hits official",
+                "modern trending rap official audio",
+                "desi hip hop rap hits official",
+                "kendrick cole drake travis rap official",
+                "underground hip hop workout tracks",
+                "seedhe maut divine aujla rap official"
+            ),
             gradientStartHex = "0xFFB39873", // Goldish Light Brown
             gradientEndHex = "0xFF191612",   // Dark Charcoal
             targetMood = "Energetic"
@@ -355,7 +362,12 @@ object RecommendationManager {
         "dave" to listOf("little simz", "loyle carner", "stormzy", "ghetts", "kano", "knucks"),
         "black thought" to listOf("danger mouse", "lupe fiasco", "the roots", "mos def", "common", "mf doom", "jay electronica"),
         "earl sweatshirt" to listOf("navy blue", "mike", "mavi", "mach-hommy", "the alchemist", "billy woods", "ab-soul"),
-        "mf doom" to listOf("madvillain", "danger mouse", "black thought", "quasimoto", "mos def", "lupe fiasco"),
+        "mf doom" to listOf("madvillain", "madlib", "danger mouse", "black thought", "quasimoto", "mos def", "lupe fiasco"),
+        "madvillain" to listOf("mf doom", "madlib", "quasimoto", "freddie gibbs", "earl sweatshirt", "j dilla", "the alchemist", "black thought", "danger mouse", "mos def"),
+        "madlib" to listOf("madvillain", "mf doom", "quasimoto", "freddie gibbs", "j dilla", "the alchemist", "earl sweatshirt", "black thought"),
+        "quasimoto" to listOf("madlib", "madvillain", "mf doom", "j dilla", "earl sweatshirt"),
+        "j dilla" to listOf("madlib", "madvillain", "mf doom", "quasimoto", "the roots", "common", "black thought"),
+        "the alchemist" to listOf("freddie gibbs", "earl sweatshirt", "boldy james", "benny the butcher", "conway the machine", "westside gunn", "madlib", "mf doom"),
         "21 savage" to listOf("metro boomin", "future", "travis scott", "drake", "lil baby", "gunna"),
         "travis scott" to listOf("metro boomin", "don toliver", "kid cudi", "kanye west"),
         "drake" to listOf("partynextdoor", "the weeknd", "future", "lil baby", "travis scott"),
@@ -639,6 +651,16 @@ object RecommendationManager {
         
         val list2 = SIMILAR_ARTISTS_MAP[norm2]
         if (list2 != null && list2.any { normalizeArtistName(it) == norm1 }) return true
+
+        // Split collaboration check (e.g., "Madvillain, Madlib & MF Doom" vs "MF Doom" or "Madlib")
+        val artists1 = splitArtists(artist1).map { normalizeArtistName(it) }
+        val artists2 = splitArtists(artist2).map { normalizeArtistName(it) }
+        if (artists1.any { it in artists2 }) return true
+
+        for (a1 in artists1) {
+            val sim1 = SIMILAR_ARTISTS_MAP[a1]
+            if (sim1 != null && artists2.any { a2 -> sim1.any { normalizeArtistName(it) == a2 } }) return true
+        }
         
         return false
     }
@@ -828,7 +850,8 @@ object RecommendationManager {
             "joey bada\$\$", "ab-soul", "daylyt", "saba", "mick jenkins", "isaiah rashad",
             "dave", "black thought", "danger mouse", "earl sweatshirt", "smino", "noname",
             "common", "mos def", "yasiin bey", "talib kweli", "mckinley dixon",
-            "jay electronica", "mf doom", "madvillain", "navy blue", "mavi", "mike",
+            "jay electronica", "mf doom", "madvillain", "madlib", "quasimoto", "j dilla", "the alchemist",
+            "viktor vaughn", "king geedorah", "boldy james", "navy blue", "mavi", "mike",
             "mach-hommy", "billy woods", "loyle carner", "ka", "elzhi", "nas", "cordae",
             "vince staples", "mac miller", "pusha t", "freddie gibbs", "benny the butcher",
             "conway the machine", "westside gunn", "metro boomin", "future", "gunna",
@@ -904,7 +927,12 @@ object RecommendationManager {
             "capitol records", "virgin records", "mass appeal", "ovo sound", "cactus jack", "dreamville",
             "bad boy records", "death row", "aftermath", "roc nation", "top dawg entertainment",
             "hybe labels", "big hit music", "sm entertainment", "jyp entertainment", "yg entertainment",
-            "panj-aab records", "vehli janta records", "saga music", "speed records bhojpuri", "mango music"
+            "panj-aab records", "vehli janta records", "saga music", "speed records bhojpuri", "mango music",
+            "stones throw", "stonesthrow", "stones throw records", "rhymesayers", "duck down", "brainfeeder",
+            "alchemist records", "alcrecords", "griselda records", "tde", "sub pop", "xl recordings",
+            "4ad", "warp records", "ninja tune", "rough trade", "domino recording", "young records",
+            "jagjaguwar", "shady records", "strange music", "no limit records", "cash money", "quality control",
+            "motown", "blue note", "fool's gold", "foolsgold"
         )
         return corporateLabels.any { authorLow.contains(it) }
     }
@@ -917,10 +945,10 @@ object RecommendationManager {
         // Universal non-music and modified titles (blocked even if uploaded by corporate channels)
         val universalBlockPhrases = listOf(
             "slowed reverb", "slowed + reverb", "slowed and reverb", "slowed & reverb",
-            "slow+reverb", "slow & reverb", "slowed down", "slowed version",
+            "slow+reverb", "slow & reverb", "slowed down", "slowed version", "slowed",
             "sped up", "speed up", "speedup", "spedup", "sped-up", "sped_up", "fast version", "speed audio",
             "nightcore", "daycore", "vaporwave",
-            "fan made", "fan-made", "fanmade", "fan edit", "fan-edit", "fanedit", "fan version",
+            "fan made", "fan-made", "fanmade", "fan edit", "fan-edit", "fanedit", "fan version", "fan mix",
             "type beat", "typebeat", "type-beat", "free beat", "beat remake",
             "rap beat", "trap beat", "boom bap beat", "hip hop beat", "lofi beat", "soul beat",
             "drill beat", "freestyle beat", "instrumental beat", "beat instrumental",
@@ -934,7 +962,9 @@ object RecommendationManager {
             "whatsapp status", "fullscreen status", "status video", "sad status", "attitude status",
             "clean audio", "lyrics video", "lyrics only", "color coded lyrics",
             "reaction video", "reacts to", "piano tutorial", "guitar tutorial", "synthesia",
-            "pitch shifted", "pitched audio"
+            "radio edit", "explicit edit", "clean edit", "short version", "hq edit",
+            "pitch shifted", "pitched audio", "cover version", "acoustic cover", "guitar cover",
+            "vocal cover", "fan recreation", "remake audio", "bedroom pop remake"
         )
         if (universalBlockPhrases.any { fullText.contains(it) }) return true
 
@@ -980,6 +1010,64 @@ object RecommendationManager {
         return false
     }
 
+    /**
+     * Channel trust tiers for recommendation gating:
+     *  2 = verified (Topic / VEVO / corporate label / known-artist whitelist)
+     *  1 = clean unknown channel (no fan/reupload signals, title-author story consistent)
+     *  0 = blocked (fan uploads, reuploaders, lyric/mashup channels, inconsistent story)
+     *
+     * Verified channels pass everywhere. Clean-unknown channels are the ONLY way the
+     * catalog stays wider than the ~400-artist whitelist — they are admitted into
+     * discovery surfaces with a scoring penalty instead of being hard-rejected.
+     */
+    const val CHANNEL_TRUST_VERIFIED = 2
+    const val CHANNEL_TRUST_CLEAN = 1
+    const val CHANNEL_TRUST_BLOCKED = 0
+
+    fun classifyChannelTrust(title: String, author: String): Int {
+        if (isOfficialArtistChannel(title, author)) return CHANNEL_TRUST_VERIFIED
+        val authorClean = author.trim()
+        if (authorClean.isBlank()) return CHANNEL_TRUST_BLOCKED
+        val authorLow = authorClean.lowercase(Locale.ROOT)
+
+        // Re-run the same blocker signals isOfficialArtistChannel uses before its
+        // default-reject: any hit means this channel is not a legitimate uploader.
+        val uploaderBlocklistRegex = Regex(
+            "\\b(" +
+            "lyrics?|karaoke|nightcore|tribute|fanmade|fanpage|fanclub|fans?|uploader|uploads?|" +
+            "edits?|editor|reverb|slowed|status|leaks?|unreleased|vault|archive|media|station|" +
+            "producer|producers|zone|hub|bootleg|mashup|remix|remixes|mix|dj|trap|nation|city|" +
+            "gang|squad|army|community|club|vibes?|sound|sounds|soundz|audios?|tunes?|wave|waves|" +
+            "bass|bassboost|boosted|beats?|typebeat|lofi|lo-fi|daycore|8d|16d|3d|spatial|" +
+            "central|network|portal|channel|universe|planet|promotions?|promoter|blog|arena|" +
+            "records?|recordings?|studios?|productions?|creations?|films?|entertainment|" +
+            "vlog|vlogs|daily|world|swag|bhangra|desi|punjabi|bollywood|hollywood" +
+            ")\\b"
+        )
+        if (uploaderBlocklistRegex.containsMatchIn(authorLow)) return CHANNEL_TRUST_BLOCKED
+
+        // Title vs author consistency: fan channels title videos "Artist - Title" while the
+        // channel itself is someone else. Same guard as the verified path.
+        val titleSeparators = listOf(" - ", " – ", " — ", " : ", " | ")
+        for (sep in titleSeparators) {
+            if (title.contains(sep)) {
+                val candidateArtistInTitle = title.substringBefore(sep).trim().lowercase(Locale.ROOT)
+                    .replace(Regex("""\([^)]*\)|\[[^]]*]"""), "").trim()
+                if (candidateArtistInTitle.isNotBlank() && candidateArtistInTitle.length >= 3 && isKnownArtist(candidateArtistInTitle)) {
+                    val matches = authorLow == candidateArtistInTitle ||
+                                  authorLow.contains(candidateArtistInTitle) ||
+                                  candidateArtistInTitle.contains(authorLow)
+                    if (!matches) return CHANNEL_TRUST_BLOCKED
+                }
+            }
+        }
+        return CHANNEL_TRUST_CLEAN
+    }
+
+    /** True when the channel is verified OR a clean unknown uploader (trust >= 1). */
+    fun isCleanChannel(title: String, author: String): Boolean =
+        classifyChannelTrust(title, author) >= CHANNEL_TRUST_CLEAN
+
     fun isOfficialArtistChannel(title: String, author: String): Boolean {
         val authorClean = author.trim()
         if (authorClean.isBlank()) return false
@@ -1000,7 +1088,14 @@ object RecommendationManager {
             return true
         }
 
-        // 4. Check for Third-Party Channel Indicators
+        // 4. Whitelist of Known Artists (checking split collaboration artists too)
+        val normAuthor = normalizeArtistName(authorClean)
+        val authors = splitArtists(authorClean)
+        if (isKnownArtist(normAuthor) || isKnownArtist(authorClean) || authors.any { isKnownArtist(it) }) {
+            return true
+        }
+
+        // 5. Check for Third-Party Channel Indicators
         val uploaderBlocklistRegex = Regex(
             "\\b(" +
             "lyrics?|karaoke|nightcore|tribute|fanmade|fanpage|fanclub|fans?|uploader|uploads?|" +
@@ -1015,13 +1110,6 @@ object RecommendationManager {
         )
         if (uploaderBlocklistRegex.containsMatchIn(authorLow)) {
             return false
-        }
-
-        // 5. Whitelist of Known Artists (checking split collaboration artists too)
-        val normAuthor = normalizeArtistName(authorClean)
-        val authors = splitArtists(authorClean)
-        if (isKnownArtist(normAuthor) || isKnownArtist(authorClean) || authors.any { isKnownArtist(it) }) {
-            return true
         }
 
         // 6. Title vs Author Consistency Check for unknown 3rd-party channels:
@@ -1080,7 +1168,10 @@ object RecommendationManager {
             return false
         }
         if (allowUnknown && cand.equals("Unknown", ignoreCase = true)) {
-            // When target is English, Hindi, or Regional Indian, NEVER allow Unknown tracks
+            // An unknown-language candidate is only tolerated for languages whose inference is
+            // weak (no script markers, no reliable keyword set). For every language we can
+            // detect with confidence - English and the Indian languages included - an unknown
+            // candidate must never enter the queue.
             return target !in nonEnglishLanguages && !target.equals("English", ignoreCase = true)
         }
         return false
@@ -2261,10 +2352,11 @@ object RecommendationManager {
      * - removes near-duplicate titles (same song, different upload)
      * - keeps at most [maxItems] entries
      */
-    fun curateRadioCandidates(seed: VideoItem, candidates: List<VideoItem>, maxItems: Int = 20): List<VideoItem> {
+    fun curateRadioCandidates(seed: VideoItem, candidates: List<VideoItem>, maxItems: Int = 25): List<VideoItem> {
         val selected = ArrayList<VideoItem>(maxItems)
         val artistCounts = HashMap<String, Int>()
         val seedArtist = normalizeArtistName(seed.author)
+        val seedArtists = (splitArtists(seed.author).map { normalizeArtistName(it) } + seedArtist).filter { it.isNotBlank() }.toSet()
         val seedMeta = inferMetadata(seed)
 
         for (item in candidates) {
@@ -2276,15 +2368,22 @@ object RecommendationManager {
             if (isCompilationTrack(title, item.durationText)) continue
             if (isNonMusicVideo(title, author)) continue
             if (isUnofficialContent(title, author)) continue
-            // Strict Language Gate: Never allow foreign language bleed into fast-path radio
+            if (!isCleanChannel(title, author)) continue
+            // Allow unknown language candidates so genuine related recommendations survive
             val candMeta = inferMetadata(item)
-            if (!isCompatibleQueueLanguage(candMeta.language, seedMeta.language, allowUnknown = false)) {
+            if (!candMeta.isOfficial) continue
+            if (!isCompatibleQueueLanguage(candMeta.language, seedMeta.language, allowUnknown = true)) {
                 continue
             }
 
             val artistKey = normalizeArtistName(author)
-            val cap = if (artistKey.isNotBlank() && artistKey == seedArtist) 1 else 2
+            val candArtists = splitArtists(author).map { normalizeArtistName(it) }
+            // Fast-path radio: ONE track per artist, seed artist included. Repeats are
+            // what make the queue feel like "same artist again?".
+            val cap = 1
             if ((artistCounts[artistKey] ?: 0) >= cap) continue
+            if (candArtists.any { (artistCounts[it] ?: 0) >= 1 }) continue
+
             val recentArtists = selected.takeLast(2).map { normalizeArtistName(it.author) }
             if (artistKey in recentArtists && candidates.any {
                 val candidateKey = normalizeArtistName(it.author)
@@ -2294,6 +2393,11 @@ object RecommendationManager {
             if (selected.any { normalizeArtistName(it.author) == artistKey && isTooSimilar(it.title, title) }) continue
             selected.add(item)
             artistCounts[artistKey] = (artistCounts[artistKey] ?: 0) + 1
+            for (ca in candArtists) {
+                if (ca != artistKey) {
+                    artistCounts[ca] = (artistCounts[ca] ?: 0) + 1
+                }
+            }
         }
         return selected
     }
@@ -2703,7 +2807,11 @@ object RecommendationManager {
                     }
                     if (isNonMusicVideo(title, author)) continue
                     if (isUnofficialContent(title, author)) continue
-                    if (!isOfficialArtistChannel(title, author)) continue
+                    // Two-tier gate: verified channels pass; CLEAN unknown channels pass
+                    // (they rank lower via the meta.isOfficial scoring bonus); fan/reupload
+                    // channels stay blocked. The old hard-reject shrank the catalog to the
+                    // ~400-artist whitelist and starved every shelf.
+                    if (!isCleanChannel(title, author)) continue
 
                     // Filter out songs that are literally named "deep cut" or "hidden gem"
                     if (task.sourceType == "hidden_gems") {
@@ -2845,28 +2953,44 @@ object RecommendationManager {
                         val rng = java.util.Random(refreshGeneration.toLong() * 31L + (task.sectionKey.hashCode().toLong()))
                         selectionPool.take(minOf(24, selectionPool.size)).shuffled(rng).take(12).forEach { chosen.add(it) }
                     } else {
+                        // Artist identity MUST be normalized + split, not the raw channel string.
+                        // "Arijit Singh", "Arijit Singh - Topic", "Arijit Singh feat. X" and
+                        // "A, X & Arijit Singh" are the same artist for diversity purposes —
+                        // counting raw strings let one artist flood a shelf through variants.
+                        val shelfArtistCounts = HashMap<String, Int>()
                         for (rec in selectionPool) {
                             if (chosen.size >= 12) break
-                            val artist = rec.videoItem.author.lowercase(Locale.ROOT)
-                            if ((globalArtistCounts[artist] ?: 0) < 2) {
+                            val artistTokens = splitArtists(rec.videoItem.author)
+                            val primary = artistTokens.firstOrNull() ?: normalizeArtistName(rec.videoItem.author)
+                            val collabs = artistTokens.drop(1)
+                            val shelfCount = shelfArtistCounts[primary] ?: 0
+                            val globalCount = globalArtistCounts[primary] ?: 0
+                            val collabBlocked = collabs.any { (globalArtistCounts[it] ?: 0) >= 4 }
+                            if (shelfCount < 2 && globalCount < 4 && !collabBlocked) {
                                 chosen.add(rec)
-                                globalArtistCounts[artist] = (globalArtistCounts[artist] ?: 0) + 1
+                                shelfArtistCounts[primary] = shelfCount + 1
+                                globalArtistCounts[primary] = globalCount + 1
+                                for (ca in collabs) globalArtistCounts[ca] = (globalArtistCounts[ca] ?: 0) + 1
                             }
                         }
                     }
 
                     // Use a single exploration slot across all shelves, never a duplicate.
+                    // Pick from the UPPER-middle of the pool (top 25-50%), not the tail: the
+                    // lowest-scored candidate is "worst match", not "novel" — that slot used
+                    // to serialize the exact junk the exploration was meant to avoid.
                     if (shouldExplore && !explorationUsed && chosen.size >= 3) {
                         val userGenres = dna.preferredGenres.keys.map { it.lowercase(Locale.ROOT) }
                         val chosenVideoIds = chosen.mapTo(HashSet()) { it.videoItem.videoId }
-                        val exploration = available.lastOrNull { rec ->
+                        val pool = available.filter { rec ->
                             rec.videoItem.videoId !in chosenVideoIds &&
                                 inferMetadata(rec.videoItem).genre.lowercase(Locale.ROOT) !in userGenres
                         }
+                        val exploration = pool.getOrNull((pool.size * 0.30).toInt().coerceIn(0, (pool.size - 1).coerceAtLeast(0)))
                         if (exploration != null) {
                             chosen[chosen.lastIndex] = RecommendedSong(
                                 exploration.videoItem,
-                                exploration.score * 0.5,
+                                exploration.score * 0.75,
                                 "exploration",
                                 "Discovering something new for you"
                             )

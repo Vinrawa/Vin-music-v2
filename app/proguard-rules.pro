@@ -18,6 +18,7 @@
 -keep class com.vinmusic.lyrics.** { *; }
 -keep class com.vinmusic.innertube.** { *; }
 -keep class com.vinmusic.recommendation.** { *; }
+-keep class com.vinmusic.spotify.** { *; }
 -keep class com.vinmusic.update.** { *; }
 -keep class com.vinmusic.config.** { *; }
 

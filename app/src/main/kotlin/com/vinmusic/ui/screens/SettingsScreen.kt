@@ -38,15 +38,19 @@ import com.vinmusic.recommendation.RecommendationManager
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.Toast
+import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.vinmusic.player.AuthViewModel
+import com.vinmusic.spotify.SpotifySession
 
 
 
@@ -77,6 +81,27 @@ fun SettingsScreen(
 
     var showProfileDialog by remember { mutableStateOf(false) }
     var editName by remember { mutableStateOf(userName) }
+    var customPhotoPath by remember { mutableStateOf(prefs.getString("custom_profile_image_path", null)) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                customPhotoPath?.let { oldPath ->
+                    try { java.io.File(oldPath).delete() } catch (_: Exception) {}
+                }
+                val file = java.io.File(ctx.filesDir, "user_custom_avatar_${System.currentTimeMillis()}.jpg")
+                ctx.contentResolver.openInputStream(uri)?.use { input ->
+                    file.outputStream().use { output -> input.copyTo(output) }
+                }
+                prefs.edit().putString("custom_profile_image_path", file.absolutePath).apply()
+                customPhotoPath = file.absolutePath
+            } catch (e: Exception) {
+                Log.e("SettingsScreen", "Failed to save custom profile image: ${e.message}")
+            }
+        }
+    }
 
     // Login dialog states
     var showLoginDialog by remember { mutableStateOf(false) }
@@ -101,6 +126,25 @@ fun SettingsScreen(
     var ytCookieConnected by remember { mutableStateOf(YTMusicSession.hasCookie(ctx)) }
     var showYtLoginOptionsDialog by remember { mutableStateOf(false) }
     var showYtWebViewLogin by remember { mutableStateOf(false) }
+
+    var isSpotifyConnected by remember { mutableStateOf(SpotifySession.hasSession(ctx)) }
+    var spotifyUserName by remember { mutableStateOf(SpotifySession.getUserName(ctx)) }
+    var spotifyUserEmail by remember { mutableStateOf(SpotifySession.getUserEmail(ctx)) }
+    var spotifyCookieDraft by remember { mutableStateOf(SpotifySession.getSpDc(ctx).orEmpty()) }
+    var showSpotifyWebViewLogin by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isSpotifyConnected) {
+        if (isSpotifyConnected) {
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                SpotifySession.fetchProfile(ctx)?.let { profile ->
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        spotifyUserName = profile.displayName
+                        spotifyUserEmail = profile.email
+                    }
+                }
+            }
+        }
+    }
 
     // YTM login flow has two modes:
     //   LANDING  — native Google account picker card (no password yet)
@@ -342,15 +386,17 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // Avatar Frame
-                UserAvatar(
-                    avatarIndex = avatarIndex,
-                    size = 68.dp,
-                    name = userName,
-                    onClick = {
-                        avatarIndex = (avatarIndex + 1) % 4
-                        prefs.edit().putInt("user_avatar_idx", avatarIndex).apply()
-                    }
-                )
+                key(customPhotoPath) {
+                    UserAvatar(
+                        avatarIndex = avatarIndex,
+                        size = 68.dp,
+                        name = userName,
+                        onClick = {
+                            editName = userName
+                            showProfileDialog = true
+                        }
+                    )
+                }
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -700,6 +746,188 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(14.dp))
 
+        // ── Connect to Spotify Card ─────────────
+        var showAdvancedSpotifyCookie by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(Color(0xFF0F2617), Color(0xFF0A0F0C))
+                    )
+                )
+                .border(1.dp, Color(0xFF1DB954).copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                .padding(18.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF1DB954).copy(alpha = 0.25f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.GraphicEq, null, tint = Color(0xFF1DB954), modifier = Modifier.size(28.dp))
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Connect to Spotify",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VinColors.Primary
+                        )
+                        val subtitle = if (isSpotifyConnected) {
+                            val emailPart = if (spotifyUserEmail.isNotBlank()) " • $spotifyUserEmail" else ""
+                            "Connected as $spotifyUserName$emailPart"
+                        } else {
+                            "Sync your personal playlists and liked songs"
+                        }
+                        Text(
+                            subtitle,
+                            fontSize = 12.sp,
+                            color = VinColors.Secondary,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+
+                if (!isSpotifyConnected) {
+                    Button(
+                        onClick = {
+                            showSpotifyWebViewLogin = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DB954)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text("Connect", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = {
+                                SpotifySession.clearSession(ctx)
+                                isSpotifyConnected = false
+                                spotifyCookieDraft = ""
+                                Toast.makeText(ctx, "Disconnected Spotify", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = VinColors.White10),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("Disconnect", fontSize = 12.sp, color = VinColors.Primary)
+                        }
+                        Button(
+                            onClick = {
+                                scope.launch(Dispatchers.IO) {
+                                    val prof = SpotifySession.fetchProfile(ctx)
+                                    withContext(Dispatchers.Main) {
+                                        if (prof != null) {
+                                            spotifyUserName = prof.displayName
+                                            spotifyUserEmail = prof.email
+                                        }
+                                        Toast.makeText(ctx, "Spotify synced successfully", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = VinColors.White10),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text("Sync Now", fontSize = 12.sp, color = Color(0xFF1DB954))
+                        }
+                    }
+                }
+
+                // Advanced disclosure: manual sp_dc cookie paste
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showAdvancedSpotifyCookie = !showAdvancedSpotifyCookie }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        if (showAdvancedSpotifyCookie) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        null, tint = VinColors.Secondary, modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        if (showAdvancedSpotifyCookie) "Hide advanced" else "Advanced (paste sp_dc cookie or Bearer token)",
+                        fontSize = 12.sp, color = VinColors.Secondary
+                    )
+                }
+                if (showAdvancedSpotifyCookie) {
+                    OutlinedTextField(
+                        value = spotifyCookieDraft,
+                        onValueChange = { spotifyCookieDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = {
+                            Text("Paste sp_dc cookie or Bearer access token...", color = VinColors.Secondary, fontSize = 12.sp)
+                        },
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = VinColors.Primary),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF1DB954),
+                            unfocusedBorderColor = VinColors.GlassBorder,
+                            focusedContainerColor = VinColors.White10,
+                            unfocusedContainerColor = VinColors.White10
+                        )
+                    )
+                    Button(
+                        onClick = {
+                            val input = spotifyCookieDraft.trim()
+                            if (input.isNotBlank()) {
+                                if (input.startsWith("BQ", ignoreCase = false) || (input.length > 100 && !input.contains("sp_dc"))) {
+                                    val tokenClean = input.removePrefix("Bearer ").trim()
+                                    SpotifySession.saveAccessToken(ctx, tokenClean)
+                                    isSpotifyConnected = true
+                                    scope.launch(Dispatchers.IO) {
+                                        val prof = SpotifySession.fetchProfile(ctx)
+                                        withContext(Dispatchers.Main) {
+                                            if (prof != null) {
+                                                spotifyUserName = prof.displayName
+                                                spotifyUserEmail = prof.email
+                                            }
+                                            Toast.makeText(ctx, "Spotify connected: ${prof?.displayName ?: "User"}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } else {
+                                    val cleanVal = if (input.contains("sp_dc=")) {
+                                        Regex("""sp_dc=([^;]+)""").find(input)?.groupValues?.get(1)?.trim() ?: input
+                                    } else input
+                                    SpotifySession.saveSession(ctx, cleanVal)
+                                    isSpotifyConnected = true
+                                    scope.launch(Dispatchers.IO) {
+                                        val prof = SpotifySession.fetchProfile(ctx)
+                                        withContext(Dispatchers.Main) {
+                                            if (prof != null) {
+                                                spotifyUserName = prof.displayName
+                                                spotifyUserEmail = prof.email
+                                            }
+                                            Toast.makeText(ctx, "Spotify connected: ${prof?.displayName ?: "User"}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1DB954)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text("Save token / cookie", fontSize = 12.sp, color = Color.White)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
         // ── Google Cloud Sync Card ──
         val currentUser = authVm.currentUser
         val cloudConnected = currentUser != null || authVm.authState is AuthViewModel.AuthState.Authenticated
@@ -872,6 +1100,9 @@ fun SettingsScreen(
         var blurBackgroundEnabled by remember {
             mutableStateOf(prefs.getBoolean("player_background_blur", true))
         }
+        var canvasBackgroundEnabled by remember {
+            mutableStateOf(prefs.getBoolean("player_spotify_canvas", true))
+        }
 
         CollapsibleSection(
             title = "Appearance",
@@ -906,6 +1137,20 @@ fun SettingsScreen(
                     com.vinmusic.ui.theme.PlayerBackgroundState.blurEnabled.value = it
                 }
             )
+            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
+            SettingsToggle(
+                title = "Spotify Canvas (Motion Artwork)",
+                subtitle = if (canvasBackgroundEnabled)
+                    "Immersive looping video background for supported tracks"
+                else
+                    "Disabled — always use static album art",
+                checked = canvasBackgroundEnabled,
+                onChanged = {
+                    canvasBackgroundEnabled = it
+                    prefs.edit().putBoolean("player_spotify_canvas", it).apply()
+                    com.vinmusic.ui.theme.PlayerBackgroundState.canvasEnabled.value = it
+                }
+            )
         }
 
         // 1. Playback Settings
@@ -922,15 +1167,6 @@ fun SettingsScreen(
                 onChanged = { 
                     audioNorm = it 
                     prefs.edit().putBoolean("audio_normalization", it).apply()
-                }
-            )
-            HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
-            SettingsToggle(
-                title = "Smart Autoplay", 
-                subtitle = "Seamlessly play similar tracks when queue finishes", 
-                checked = vm.smartAutoplayEnabled, 
-                onChanged = { 
-                    vm.setSmartAutoplay(it)
                 }
             )
             HorizontalDivider(color = VinColors.GlassBorder, modifier = Modifier.padding(vertical = 4.dp))
@@ -1184,13 +1420,48 @@ fun SettingsScreen(
         Spacer(Modifier.height(220.dp))
     }
 
-    // ── Edit Profile Name Dialog ──────────────────────────────────────────────
+    // ── Edit Profile Dialog ──────────────────────────────────────────────
     if (showProfileDialog) {
+        val hasCustomPhoto = customPhotoPath?.let { java.io.File(it).exists() } == true
+
         AlertDialog(
             onDismissRequest = { showProfileDialog = false },
-            title = { Text("Edit Profile Name", color = VinColors.Primary) },
+            title = { Text("Edit Profile", color = VinColors.Primary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    key(customPhotoPath) {
+                        UserAvatar(avatarIndex = avatarIndex, size = 64.dp, name = editName)
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { photoPickerLauncher.launch("image/*") },
+                            colors = ButtonDefaults.buttonColors(containerColor = VinColors.Accent, contentColor = Color.White),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Change Photo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        if (hasCustomPhoto) {
+                            OutlinedButton(
+                                onClick = {
+                                    customPhotoPath?.let { path ->
+                                        try { java.io.File(path).delete() } catch (_: Exception) {}
+                                    }
+                                    prefs.edit().remove("custom_profile_image_path").apply()
+                                    customPhotoPath = null
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
+                            ) {
+                                Text("Remove", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
                     OutlinedTextField(
                         value = editName,
                         onValueChange = { editName = it },
@@ -1204,7 +1475,8 @@ fun SettingsScreen(
                             focusedContainerColor = VinColors.White10, 
                             unfocusedContainerColor = VinColors.White10
                         ),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
@@ -1531,6 +1803,99 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showSpotifyWebViewLogin) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showSpotifyWebViewLogin = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = VinColors.BgColor
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Header Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(VinColors.Surface)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(onClick = { showSpotifyWebViewLogin = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                        }
+
+                        Text(
+                            text = "Connect Spotify",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VinColors.Primary
+                        )
+
+                        TextButton(
+                            onClick = {
+                                val cm = CookieManager.getInstance()
+                                val c1 = cm.getCookie("https://open.spotify.com")
+                                val c2 = cm.getCookie("https://accounts.spotify.com")
+                                val all = "${c1.orEmpty()}; ${c2.orEmpty()}"
+                                val spDc = if (all.contains("sp_dc=")) {
+                                    Regex("""sp_dc=([^;]+)""").find(all)?.groupValues?.get(1)?.trim()
+                                } else null
+                                if (!spDc.isNullOrBlank()) {
+                                    val sessionCookie = if (!c1.isNullOrBlank() && c1.contains("sp_dc=")) c1 else spDc
+                                    SpotifySession.saveSession(ctx, sessionCookie)
+                                    isSpotifyConnected = true
+                                    spotifyCookieDraft = spDc
+                                    scope.launch(Dispatchers.IO) {
+                                        val prof = SpotifySession.fetchProfile(ctx)
+                                        withContext(Dispatchers.Main) {
+                                            if (prof != null) {
+                                                spotifyUserName = prof.displayName
+                                                spotifyUserEmail = prof.email
+                                            }
+                                            showSpotifyWebViewLogin = false
+                                            Toast.makeText(ctx, "Spotify connected: ${prof?.displayName ?: "User"}", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                } else {
+                                    showSpotifyWebViewLogin = false
+                                }
+                            }
+                        ) {
+                            Text("Done", color = Color(0xFF1DB954), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                    }
+
+                    HorizontalDivider(color = VinColors.GlassBorder, thickness = 1.dp)
+
+                    SpotifyLoginWebView(
+                        onConnected = { spDc, accessToken ->
+                            SpotifySession.saveSession(ctx, spDc)
+                            if (!accessToken.isNullOrBlank()) {
+                                SpotifySession.saveAccessToken(ctx, accessToken)
+                            }
+                            isSpotifyConnected = true
+                            spotifyCookieDraft = spDc
+                            scope.launch(Dispatchers.IO) {
+                                val prof = SpotifySession.fetchProfile(ctx)
+                                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                    if (prof != null) {
+                                        spotifyUserName = prof.displayName
+                                        spotifyUserEmail = prof.email
+                                    }
+                                    showSpotifyWebViewLogin = false
+                                    Toast.makeText(ctx, "Spotify connected: ${prof?.displayName ?: "User"}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
     if (showSleepTimerDialog) {
         AlertDialog(
             onDismissRequest = { showSleepTimerDialog = false },
@@ -1987,3 +2352,143 @@ private fun YtLoginWebView(
         }
     }
 }
+
+@Composable
+fun SpotifyLoginWebView(
+    onConnected: (String, String?) -> Unit
+) {
+    var webViewLoading by remember { mutableStateOf(true) }
+    var captured by remember { mutableStateOf(false) }
+    var capturedToken by remember { mutableStateOf<String?>(null) }
+    var capturedSpDc by remember { mutableStateOf<String?>(null) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldInterceptRequest(
+                            view: WebView?,
+                            request: android.webkit.WebResourceRequest?
+                        ): android.webkit.WebResourceResponse? {
+                            try {
+                                val auth = request?.requestHeaders?.get("Authorization")
+                                    ?: request?.requestHeaders?.get("authorization")
+                                if (!auth.isNullOrBlank() && auth.startsWith("Bearer ", ignoreCase = true)) {
+                                    val token = auth.substring(7).trim()
+                                    if (token.isNotBlank() && token != capturedToken) {
+                                        capturedToken = token
+                                        android.util.Log.i("SpotifyWebView", "Captured Bearer token from WebView network request")
+                                        val sp = capturedSpDc
+                                        if (!captured && !sp.isNullOrBlank()) {
+                                            captured = true
+                                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                                onConnected(sp, token)
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                            return super.shouldInterceptRequest(view, request)
+                        }
+
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                            super.onPageStarted(view, url, favicon)
+                            webViewLoading = true
+                            checkCookies(view, url)
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            webViewLoading = false
+                            checkCookies(view, url)
+                        }
+
+                        private fun checkCookies(view: WebView?, url: String?) {
+                            if (captured) return
+                            val cm = CookieManager.getInstance()
+                            val cookies1 = cm.getCookie("https://open.spotify.com")
+                            val cookies2 = cm.getCookie("https://accounts.spotify.com")
+                            val cookies3 = if (url != null) cm.getCookie(url) else null
+                            val allCookies = "${cookies1.orEmpty()}; ${cookies2.orEmpty()}; ${cookies3.orEmpty()}"
+
+                            if (allCookies.contains("sp_dc=")) {
+                                val match = Regex("""sp_dc=([^;]+)""").find(allCookies)
+                                val spDc = match?.groupValues?.get(1)?.trim()
+                                if (!spDc.isNullOrBlank()) {
+                                    val sessionCookie = if (!cookies1.isNullOrBlank() && cookies1.contains("sp_dc=")) cookies1 else spDc
+                                    capturedSpDc = sessionCookie
+
+                                    val isOnOpenSpotify = url != null && url.contains("open.spotify.com")
+                                    if (isOnOpenSpotify) {
+                                        view?.evaluateJavascript(
+                                            """(function(){
+                                                try {
+                                                    var s = document.getElementById('session');
+                                                    if (s && s.textContent) return s.textContent;
+                                                    for (var k in window) {
+                                                        if (window[k] && window[k].accessToken) return JSON.stringify(window[k]);
+                                                    }
+                                                } catch(e){}
+                                                return '';
+                                            })()""".trimIndent()
+                                        ) { result ->
+                                            if (!result.isNullOrBlank() && result != "\"\"" && result != "null") {
+                                                try {
+                                                    val clean = if (result.startsWith("\"") && result.endsWith("\"")) {
+                                                        result.substring(1, result.length - 1).replace("\\\"", "\"").replace("\\\\", "\\")
+                                                    } else result
+                                                    val jobj = com.google.gson.JsonParser.parseString(clean).asJsonObject
+                                                    val token = jobj.get("accessToken")?.asString
+                                                    if (!token.isNullOrBlank()) {
+                                                        capturedToken = token
+                                                    }
+                                                } catch (_: Exception) {}
+                                            }
+                                            if (!captured) {
+                                                captured = true
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    onConnected(sessionCookie, capturedToken)
+                                                }, 1000)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    loadUrl("https://accounts.spotify.com/en/login?continue=https%3A%2F%2Fopen.spotify.com%2F")
+                }
+            }
+        )
+
+        if (webViewLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(VinColors.BgColor.copy(alpha = 0.7f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Color(0xFF1DB954))
+            }
+        }
+    }
+}
+

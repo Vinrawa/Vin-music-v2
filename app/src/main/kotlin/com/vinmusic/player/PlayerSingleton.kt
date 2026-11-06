@@ -70,6 +70,9 @@ object PlayerSingleton {
     private var _smartShuffle by mutableStateOf(false)
     val smartShuffle get() = _smartShuffle
     private var smartShufflePlaysSinceInject = 0
+    @Volatile
+    private var prefetchedDiscoveryCandidate: VideoItem? = null
+    private var prefetchDiscoveryJob: Job? = null
     var smartAutoplayEnabled by mutableStateOf(true)
     var isAutoplayLoading by mutableStateOf(false)
     private var isExtendingQueue = false
@@ -112,13 +115,18 @@ object PlayerSingleton {
         // Never drop the track the user has already skipped onto mid-tail.
         val currentId = currentSong?.videoId
         val effectiveRemoved = if (currentId != null) removed - currentId else removed
-        if (effectiveRemoved.isNotEmpty()) currentQueue.removeAll { it.videoId in effectiveRemoved }
-        val existingIds = currentQueue.map { it.videoId }.toSet()
+
+        // Remove the old unranked fast-path tail items first
+        if (effectiveRemoved.isNotEmpty()) {
+            currentQueue.removeAll { it.videoId in effectiveRemoved }
+        }
+
+        val keptIds = currentQueue.map { it.videoId }.toSet()
         val uniqueRecs = rankedRecommendations
             .distinctBy { it.videoId }
-            .filter { it.videoId !in existingIds }
+            .filter { it.videoId !in keptIds }
         if (uniqueRecs.isEmpty()) {
-            if (effectiveRemoved.isNotEmpty()) queue = currentQueue // tail removed but nothing to insert
+            // Keep current tail if new ranking returned no tracks
             return
         }
 
@@ -130,6 +138,8 @@ object PlayerSingleton {
             addAll(uniqueRecs)
             addAll(currentQueue.subList(insertAt, currentQueue.size))
         }
+        markAutoplayTail(insertAt, uniqueRecs.map { it.videoId })
+
         // queueIndex follows the currently playing song; recompute after the splice
         val newIdx = queue.indexOfFirst { it.videoId == currentSong?.videoId }
         if (newIdx >= 0) queueIndex = newIdx
@@ -292,7 +302,10 @@ object PlayerSingleton {
                 val recDb = com.vinmusic.recommendation.RecommendationDatabase.getInstance(ctx)
                 recommendationRepository = RecommendationRepository(ctx, databaseInstance, recDb)
                 prefs = ctx.getSharedPreferences("vin_music_prefs", Context.MODE_PRIVATE)
-                smartAutoplayEnabled = prefs?.getBoolean("smart_autoplay", true) ?: true
+                // Smart Autoplay is now always-on: previous "false" choices are upgraded,
+                // and the saved pref is kept in sync so other surfaces read a consistent value.
+                smartAutoplayEnabled = true
+                prefs?.edit()?.putBoolean("smart_autoplay", true)?.apply()
                 _smartShuffle = prefs?.getBoolean("smart_shuffle", false) ?: false
 
                 val hapticPref = prefs?.getBoolean("haptic_bass_enabled", false) ?: false
@@ -831,6 +844,7 @@ object PlayerSingleton {
         playStartTime = System.currentTimeMillis()
         recordPlay(song)
         checkAndClaimFeatures(song)
+        prefetchDiscoveryIfNeeded()
 
         val database = db ?: run {
             // Without this reset the spinner set above would spin forever.
@@ -851,7 +865,9 @@ object PlayerSingleton {
 
         if (song.videoId.startsWith("sc:") && !song.customThumbnailUrl.isNullOrBlank()) {
             com.vinmusic.soundcloud.SoundCloudApi.cacheArtwork(song.videoId, song.customThumbnailUrl)
-        } else if (!song.videoId.startsWith("sc:")) {
+        } else if (song.videoId.startsWith("td:") && !song.customThumbnailUrl.isNullOrBlank()) {
+            com.vinmusic.tidal.TidalApi.cacheArtwork(song.videoId, song.customThumbnailUrl)
+        } else if (!song.videoId.startsWith("sc:") && !song.videoId.startsWith("td:")) {
             scope.launch(Dispatchers.IO) {
                 val highRes = com.vinmusic.data.HighResArtHelper.fetchArtwork(song.videoId, song.title, song.author)
                 if (highRes != null && currentSong?.videoId == song.videoId) {
@@ -868,7 +884,11 @@ object PlayerSingleton {
         // Only record history for fresh song plays (not error retries / seek resumptions)
         if (safeStartPositionMs == 0L) {
             scope.launch(Dispatchers.IO) {
-                val thumb = song.customThumbnailUrl ?: if (song.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId) else null
+                val thumb = song.customThumbnailUrl
+                    ?: if (song.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId)
+                       else if (song.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId)
+                       else if (song.videoId.startsWith("td:")) com.vinmusic.tidal.TidalApi.getArtwork(song.videoId)
+                       else "https://i.ytimg.com/vi/${song.videoId}/hqdefault.jpg"
                 database.historyDao().deleteByVideoId(song.videoId)
                 database.historyDao().insert(
                     HistoryEntry(
@@ -887,13 +907,64 @@ object PlayerSingleton {
 
         fetchJob = scope.launch(Dispatchers.IO) {
             try {
-                Log.d(TAG, "Fetching stream/download for videoId=${song.videoId}")
-                ReliabilityDiagnostics.record("playback", "resolve_start", song.videoId, status = "started")
+                var currentPlaySong = song
+                var effectiveVideoId = song.videoId
+                if (effectiveVideoId.startsWith("sp:") || effectiveVideoId.startsWith("td:")) {
+                    val isSpotify = effectiveVideoId.startsWith("sp:")
+                    val provider = if (isSpotify) "Spotify" else "Tidal"
+                    Log.d(TAG, "Resolving $provider track to a YouTube stream: ${song.title} - ${song.author}")
+
+                    val resolved = com.vinmusic.spotify.SpotifySession.resolveTrackDirect(song.title, song.author)
+                    if (resolved == null) {
+                        // A `sp:`/`td:` id is a provider catalog id, not a playable stream. If it cannot be
+                        // matched to a YouTube video there is nothing to resolve, so fail loudly instead of
+                        // leaving `effectiveVideoId` as the catalog id and hanging on the loading spinner.
+                        ReliabilityDiagnostics.record(
+                            "playback", "resolve_track", song.videoId,
+                            status = "unresolved", details = provider
+                        )
+                        Log.w(TAG, "$provider track not matched to any stream: ${song.title} - ${song.author}")
+                        withContext(Dispatchers.Main) {
+                            if (currentSong?.videoId == song.videoId) {
+                                isLoading = false
+                                errorMessage = "This $provider track isn't available for streaming. Try another song."
+                            }
+                        }
+                        return@launch
+                    }
+
+                    effectiveVideoId = resolved.videoId
+                    val resolvedThumb = song.customThumbnailUrl
+                        ?: resolved.customThumbnailUrl
+                        ?: if (isSpotify) com.vinmusic.spotify.SpotifySession.getCachedArtwork(song.videoId)
+                           else com.vinmusic.tidal.TidalApi.getArtwork(song.videoId)
+                    if (resolvedThumb != null) {
+                        if (isSpotify) {
+                            com.vinmusic.spotify.SpotifySession.cacheArtwork(effectiveVideoId, resolvedThumb)
+                            com.vinmusic.spotify.SpotifySession.cacheArtwork(song.videoId, resolvedThumb)
+                        } else {
+                            com.vinmusic.tidal.TidalApi.cacheArtwork(effectiveVideoId, resolvedThumb)
+                            com.vinmusic.tidal.TidalApi.cacheArtwork(song.videoId, resolvedThumb)
+                        }
+                    }
+                    // Keep the queue identity (`sp:`/`td:` id) intact — the queue, history and
+                    // `indexOfFirst { it.videoId == currentSong?.videoId }` lookups all key on it.
+                    // Swapping in the YouTube id here desynchronised queueIndex from the queue.
+                    currentPlaySong = song.copy(customThumbnailUrl = resolvedThumb)
+                    withContext(Dispatchers.Main) {
+                        if (currentSong?.videoId == song.videoId) {
+                            currentSong = currentPlaySong
+                        }
+                    }
+                }
+
+                Log.d(TAG, "Fetching stream/download for videoId=$effectiveVideoId")
+                ReliabilityDiagnostics.record("playback", "resolve_start", effectiveVideoId, status = "started")
 
                 // 1. Check cache on Dispatchers.IO
                 val cacheResult = run {
                     val ctx = context ?: return@run PlayerCacheManager.CacheCheckResult(false, false, false, 0L, false)
-                    PlayerCacheManager.checkCacheStatus(ctx, database, song.videoId)
+                    PlayerCacheManager.checkCacheStatus(ctx, database, effectiveVideoId)
                 }
 
                 val isDownloadCacheValid = cacheResult.isDownloadCacheValid
@@ -902,7 +973,7 @@ object PlayerSingleton {
                 var totalCachedBytes = cacheResult.totalCachedBytes
                 val isDeviceOnline = cacheResult.isDeviceOnline
 
-                if (song.videoId.startsWith("sc:")) {
+                if (effectiveVideoId.startsWith("sc:")) {
                     isCachedComplete = false
                     totalCachedBytes = 0L
                 }
@@ -917,17 +988,17 @@ object PlayerSingleton {
                 if (ctx != null) {
                     try {
                         val database = com.vinmusic.data.db.VinDatabase.getInstance(ctx)
-                        val dl = database.downloadDao().get(song.videoId)
+                        val dl = database.downloadDao().get(effectiveVideoId)
                         if (dl?.thumbnailPath != null) {
                             val file = java.io.File(dl.thumbnailPath)
                             if (file.exists() && file.length() > 0) artBytes = file.readBytes()
                         }
                         if (artBytes == null) {
-                            val cachePath = java.io.File(ctx.filesDir, "thumbnails/${song.videoId}.jpg")
+                            val cachePath = java.io.File(ctx.filesDir, "thumbnails/${effectiveVideoId}.jpg")
                             if (cachePath.exists() && cachePath.length() > 0) artBytes = cachePath.readBytes()
                         }
                         if (artBytes == null) {
-                            artBytes = loadArtBytesFromCoilCache(ctx, song.videoId, song.thumbnail, song.thumbnailHd)
+                            artBytes = loadArtBytesFromCoilCache(ctx, effectiveVideoId, currentPlaySong.thumbnail, currentPlaySong.thumbnailHd)
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Local artwork load failed: ${e.message}")
@@ -937,40 +1008,40 @@ object PlayerSingleton {
                 // Update notification with artwork bytes if we found them locally
                 if (artBytes != null) {
                     withContext(Dispatchers.Main) {
-                        if (currentSong?.videoId == song.videoId) {
-                            notificationMediaItem = buildMediaItem(song, null, artBytes)
+                        if (currentSong?.videoId == currentPlaySong.videoId || currentSong?.videoId == effectiveVideoId) {
+                            notificationMediaItem = buildMediaItem(currentPlaySong, null, artBytes)
                         }
                     }
                     if (ctx != null) {
-                        saveArtBytesToLocal(ctx, song.videoId, artBytes)
+                        saveArtBytesToLocal(ctx, effectiveVideoId, artBytes)
                     }
                 }
 
                 // 0. Local Device Audio (0ms instant playback via ContentResolver)
-                if (song.localUriString != null || song.videoId.startsWith("local_") || song.videoId.startsWith("content://") || song.videoId.startsWith("file://")) {
+                if (song.localUriString != null || effectiveVideoId.startsWith("local_") || effectiveVideoId.startsWith("content://") || effectiveVideoId.startsWith("file://")) {
                     // A bare `local_<id>` is not a playable URI — rebuild the MediaStore URI.
                     val localUri = song.localUriString ?: when {
-                        song.videoId.startsWith("local_") -> {
-                            val mediaStoreId = song.videoId.removePrefix("local_").toLongOrNull()
+                        effectiveVideoId.startsWith("local_") -> {
+                            val mediaStoreId = effectiveVideoId.removePrefix("local_").toLongOrNull()
                             if (mediaStoreId != null) {
                                 android.content.ContentUris.withAppendedId(
                                     android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                                     mediaStoreId
                                 ).toString()
-                            } else song.videoId
+                            } else effectiveVideoId
                         }
-                        else -> song.videoId
+                        else -> effectiveVideoId
                     }
                     Log.d(TAG, "Playing local device audio track directly: $localUri")
                     url = localUri
                     onlineAndCached = false
                 } else if (isDownloadCacheValid) {
-                    Log.d(TAG, "Playing fully downloaded song instantly from local cache: videoId=${song.videoId}")
-                    url = "https://music.youtube.com/cache/${song.videoId}"
+                    Log.d(TAG, "Playing fully downloaded song instantly from local cache: videoId=$effectiveVideoId")
+                    url = "https://music.youtube.com/cache/$effectiveVideoId"
                     onlineAndCached = false
                 } else if (!isDeviceOnline && isPlayerCached) {
-                    Log.d(TAG, "Device offline: Playing cached bytes from PlayerCache: videoId=${song.videoId}")
-                    url = "https://music.youtube.com/cache/${song.videoId}"
+                    Log.d(TAG, "Device offline: Playing cached bytes from PlayerCache: videoId=$effectiveVideoId")
+                    url = "https://music.youtube.com/cache/$effectiveVideoId"
                     onlineAndCached = false
                 } else {
                     withContext(Dispatchers.Main) { errorMessage = null }
@@ -978,22 +1049,22 @@ object PlayerSingleton {
                     var fetchedUrl: String? = null
                     isSoundCloudHls = false
                     
-                    if (!forceFresh && prefetchedUrlDeferred != null && prefetchedUrlDeferred.first == song.videoId) {
+                    if (!forceFresh && prefetchedUrlDeferred != null && prefetchedUrlDeferred.first == effectiveVideoId) {
                         fetchedUrl = prefetchedUrlDeferred.second.await()
-                        if (song.videoId.startsWith("sc:") && fetchedUrl != null) {
+                        if (effectiveVideoId.startsWith("sc:") && fetchedUrl != null) {
                             isSoundCloudHls = fetchedUrl.contains(".m3u8") || fetchedUrl.contains("media-streaming.soundcloud.cloud")
                         }
                         ReliabilityDiagnostics.record(
-                            "playback", "resolve_prefetch", song.videoId,
+                            "playback", "resolve_prefetch", effectiveVideoId,
                             status = if (fetchedUrl != null) "ok" else "empty"
                         )
                     }
                     
                     if (fetchedUrl == null) {
-                        if (song.videoId.startsWith("sc:")) {
-                            ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = 1, status = "started_soundcloud")
+                        if (effectiveVideoId.startsWith("sc:")) {
+                            ReliabilityDiagnostics.record("playback", "resolve_attempt", effectiveVideoId, attempt = 1, status = "started_soundcloud")
                             val scStream = try {
-                                val rawId = song.videoId.removePrefix("sc:")
+                                val rawId = effectiveVideoId.removePrefix("sc:")
                                 com.vinmusic.soundcloud.SoundCloudApi.getStream(rawId)
                             } catch (e: Exception) {
                                 Log.e(TAG, "SoundCloud stream fetch failed: ${e.message}")
@@ -1001,31 +1072,31 @@ object PlayerSingleton {
                             }
                             fetchedUrl = scStream?.url
                             isSoundCloudHls = scStream?.isHls ?: false
-                            val scArtwork = com.vinmusic.soundcloud.SoundCloudApi.getArtwork(song.videoId)
-                            if (scArtwork != null && currentSong?.videoId == song.videoId && currentSong?.customThumbnailUrl == null) {
+                            val scArtwork = com.vinmusic.soundcloud.SoundCloudApi.getArtwork(effectiveVideoId)
+                            if (scArtwork != null && (currentSong?.videoId == effectiveVideoId || currentSong?.videoId == song.videoId) && currentSong?.customThumbnailUrl == null) {
                                 withContext(Dispatchers.Main) {
-                                    if (currentSong?.videoId == song.videoId && currentSong?.customThumbnailUrl == null) {
+                                    if ((currentSong?.videoId == effectiveVideoId || currentSong?.videoId == song.videoId) && currentSong?.customThumbnailUrl == null) {
                                         currentSong = currentSong?.copy(customThumbnailUrl = scArtwork)
                                     }
                                 }
                             }
                             ReliabilityDiagnostics.record(
-                                "playback", "resolve_attempt", song.videoId,
+                                "playback", "resolve_attempt", effectiveVideoId,
                                 attempt = 1, status = if (fetchedUrl != null) "ok" else "empty"
                             )
                         } else {
                             val quality = prefs?.getString("streaming_quality", "High (256kbps)") ?: "High (256kbps)"
                             // Retry up to 2 times with 1-second delay for resilient playback
                             for (attempt in 1..2) {
-                                ReliabilityDiagnostics.record("playback", "resolve_attempt", song.videoId, attempt = attempt, status = "started")
+                                ReliabilityDiagnostics.record("playback", "resolve_attempt", effectiveVideoId, attempt = attempt, status = "started")
                                 fetchedUrl = try {
-                                    InnerTube.getStreamUrl(song.videoId, quality, forceFresh = forceFresh)
+                                    InnerTube.getStreamUrl(effectiveVideoId, quality, forceFresh = forceFresh)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Stream URL fetch attempt $attempt failed: ${e.message}")
                                     null
                                 }
                                 ReliabilityDiagnostics.record(
-                                    "playback", "resolve_attempt", song.videoId,
+                                    "playback", "resolve_attempt", effectiveVideoId,
                                     attempt = attempt, status = if (fetchedUrl != null) "ok" else "empty"
                                 )
                                 if (fetchedUrl != null) break
@@ -1057,6 +1128,7 @@ object PlayerSingleton {
                 }
 
                 // Resolve SimpleCache on IO
+                val cacheKey = effectiveVideoId
                 val resolvedCache = if (isCachedComplete) {
                     val c = context
                     if (c != null) {
@@ -1076,7 +1148,9 @@ object PlayerSingleton {
 
                     val isSoundCloud = song.videoId.startsWith("sc:")
                     val isHlsStream = isSoundCloudHls || url.contains(".m3u8") || url.contains("/hls") || url.contains("media-streaming.soundcloud.cloud")
-                    val mediaItem = buildMediaItem(song, url, artBytes, isHls = isHlsStream)
+                    // Cache reads/writes are keyed on the resolved stream id so they line up with
+                    // downloads and prefetched bytes; only the queue keeps the `sp:`/`td:` id.
+                    val mediaItem = buildMediaItem(currentPlaySong, url, artBytes, isHls = isHlsStream)
                     notificationMediaItem = mediaItem
 
                     Log.d(TAG, "Setting media source: isSoundCloud=$isSoundCloud isHls=$isHlsStream ${url.take(80)}")
@@ -1106,21 +1180,21 @@ object PlayerSingleton {
                         val cache = resolvedCache
                         if (cache != null) {
                             if (onlineAndCached) {
-                                Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=${song.videoId}")
+                                Log.d(TAG, "Online Cached playback: prioritizing local cache with network fallback for videoId=$cacheKey")
                                 val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
                                     .setCache(cache)
                                     .setUpstreamDataSourceFactory(dynamicHttpFactory) // Dynamic UA for network fallback!
                                     .setCacheKeyFactory { dataSpec ->
-                                        dataSpec.key ?: song.videoId
+                                        dataSpec.key ?: cacheKey
                                     }
                                     .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                                 createTargetMediaSource(cacheFactory)
                             } else {
-                                Log.d(TAG, "Offline playback: using cache=${if (isDownloadCacheValid) "download" else "player"}, totalCachedBytes=$totalCachedBytes for videoId=${song.videoId}")
+                                Log.d(TAG, "Offline playback: using cache=${if (isDownloadCacheValid) "download" else "player"}, totalCachedBytes=$totalCachedBytes for videoId=$cacheKey")
                                 val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
                                     .setCache(cache)
                                     .setCacheKeyFactory { dataSpec ->
-                                        dataSpec.key ?: song.videoId
+                                        dataSpec.key ?: cacheKey
                                     }
                                     .setUpstreamDataSourceFactory {
                                         // Fixed upstream that reports bytesRemaining correctly relative to requested position
@@ -1168,7 +1242,7 @@ object PlayerSingleton {
                             val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
                                 .setCache(pCache)
                                 .setUpstreamDataSourceFactory(dynamicHttpFactory)
-                                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: song.videoId }
+                                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: cacheKey }
                                 .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                             createTargetMediaSource(cacheFactory)
                         } else {
@@ -1304,63 +1378,73 @@ object PlayerSingleton {
                 try {
                     val currentQueueCopy = queue.toList()
                     val recommended = recommendationRepository?.getSongRadio(seedSong.videoId, seedSong.title, seedSong.author, currentQueueCopy)
-                    if (!recommended.isNullOrEmpty()) {
-                        val newQueue = queue.toMutableList()
-                        val existingIds = newQueue.map { it.videoId }.toSet()
-                        val uniqueRecs = recommended.filter { it.videoId !in existingIds }
-                        
-                        if (uniqueRecs.isNotEmpty()) {
-                            newQueue.addAll(uniqueRecs)
-                        }
+                    val newQueue = queue.toMutableList()
+                    val existingIds = newQueue.map { it.videoId }.toSet()
+                    val uniqueRecs = recommended?.filter { it.videoId !in existingIds }.orEmpty()
+
+                    if (uniqueRecs.isNotEmpty()) {
+                        newQueue.addAll(uniqueRecs)
                         queue = newQueue
-                        
                         queueIndex++
                         withContext(Dispatchers.Main) {
                             playSong(queue[queueIndex])
                         }
                     } else {
-                        // Online recommendations empty — try local fallback
-                        val localFallback = getLocalQueueFallback()
-                        if (localFallback.isNotEmpty()) {
-                            val newQueue = queue.toMutableList()
-                            newQueue.addAll(localFallback)
+                        // Online recommendations empty or already in queue — try emergency search
+                        var emergencyRecs = emptyList<VideoItem>()
+                        try {
+                            val seedMeta = com.vinmusic.recommendation.RecommendationManager.inferMetadata(seedSong)
+                            val q = if (seedSong.author.isNotBlank() && seedSong.author != "Unknown") "${seedSong.author} songs official" else "${seedMeta.genre} songs official"
+                            val searchItems = InnerTube.search(q).take(30).filter {
+                                !com.vinmusic.recommendation.RecommendationManager.isUnofficialContent(it.title, it.author) &&
+                                com.vinmusic.recommendation.RecommendationManager.isCleanChannel(it.title, it.author)
+                            }
+                            val curated = com.vinmusic.recommendation.RecommendationManager
+                                .curateRadioCandidates(seedSong, searchItems)
+                                .let { recommendationRepository?.dropRecentlySuggested(it) ?: it }
+                            emergencyRecs = curated.filter { it.videoId !in existingIds }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Emergency search in playNext failed: ${e.message}")
+                        }
+
+                        if (emergencyRecs.isNotEmpty()) {
+                            newQueue.addAll(emergencyRecs)
                             queue = newQueue
-                            Log.d(TAG, "Queue auto-filled with ${localFallback.size} songs from local history")
                             queueIndex++
-                            withContext(Dispatchers.Main) { playSong(queue[queueIndex]) }
-                        } else if (!repeat && queueIndex == queue.size - 1) {
-                            withContext(Dispatchers.Main) { _player?.pause() }
-                            return@launch
+                            withContext(Dispatchers.Main) {
+                                playSong(queue[queueIndex])
+                            }
                         } else {
-                            val next = if (shuffle) {
-                                if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
-                            } else 0
-                            if (next < 0 || next >= queue.size) return@launch
-                            queueIndex = next
-                            withContext(Dispatchers.Main) { playSong(queue[next]) }
+                            // Try local fallback
+                            val localFallback = getLocalQueueFallback().filter { it.videoId !in existingIds }
+                            if (localFallback.isNotEmpty()) {
+                                newQueue.addAll(localFallback)
+                                queue = newQueue
+                                Log.d(TAG, "Queue auto-filled with ${localFallback.size} songs from local history")
+                                queueIndex++
+                                withContext(Dispatchers.Main) { playSong(queue[queueIndex]) }
+                            } else {
+                                // Never loop back to index 0 when smartAutoplayEnabled is active!
+                                Log.w(TAG, "Autoplay queue exhausted; pausing playback.")
+                                withContext(Dispatchers.Main) { _player?.pause() }
+                                return@launch
+                            }
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to fetch autoplay recommendations: ${e.message}")
-                    // Fallback to local history when online fails
-                    val localFallback = getLocalQueueFallback()
+                    val newQueue = queue.toMutableList()
+                    val existingIds = newQueue.map { it.videoId }.toSet()
+                    val localFallback = getLocalQueueFallback().filter { it.videoId !in existingIds }
                     if (localFallback.isNotEmpty()) {
-                        val newQueue = queue.toMutableList()
                         newQueue.addAll(localFallback)
                         queue = newQueue
                         Log.d(TAG, "Queue auto-filled with ${localFallback.size} songs from local history (after error)")
                         queueIndex++
                         withContext(Dispatchers.Main) { playSong(queue[queueIndex]) }
-                    } else if (!repeat && queueIndex == queue.size - 1) {
+                    } else {
                         withContext(Dispatchers.Main) { _player?.pause() }
                         return@launch
-                    } else {
-                        val next = if (shuffle) {
-                            if (smartShuffle) getSmartShuffleNextIndex() else queue.indices.random()
-                        } else 0
-                        if (next < 0 || next >= queue.size) return@launch
-                        queueIndex = next
-                        withContext(Dispatchers.Main) { playSong(queue[next]) }
                     }
                 } finally {
                     isAutoplayLoading = false
@@ -1373,37 +1457,27 @@ object PlayerSingleton {
             scope.launch {
                 smartShufflePlaysSinceInject++
                 // Spotify True Smart Shuffle: Inject an external discovery recommendation every 3 tracks
-                if (smartShufflePlaysSinceInject >= 3 && recommendationRepository != null) {
-                    val currentTrack = currentSong ?: (if (queueIndex in queue.indices) queue[queueIndex] else null)
-                    if (currentTrack != null) {
-                        try {
-                            val currentQueueCopy = queue.toList()
-                            val recs = withContext(Dispatchers.IO) {
-                                recommendationRepository?.getSongRadio(
-                                    currentTrack.videoId,
-                                    currentTrack.title,
-                                    currentTrack.author,
-                                    currentQueueCopy
-                                )
-                            }
-                            val existingIds = queue.map { it.videoId }.toSet()
-                            val discoveryCandidate = recs?.firstOrNull { it.videoId !in existingIds }
-                            if (discoveryCandidate != null) {
-                                withContext(Dispatchers.Main) {
-                                    val newQueue = queue.toMutableList()
-                                    val insertIdx = (queueIndex + 1).coerceAtMost(newQueue.size)
-                                    newQueue.add(insertIdx, discoveryCandidate)
-                                    queue = newQueue
-                                    queueIndex = insertIdx
-                                    smartShufflePlaysSinceInject = 0
-                                    Log.d(TAG, "Smart Shuffle injected discovery candidate: '${discoveryCandidate.title}' by ${discoveryCandidate.author}")
-                                    playSong(discoveryCandidate)
-                                }
-                                return@launch
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Smart Shuffle discovery injection failed: ${e.message}")
+                if (smartShufflePlaysSinceInject >= 3) {
+                    val candidate = prefetchedDiscoveryCandidate
+                    if (candidate != null) {
+                        prefetchedDiscoveryCandidate = null
+                        smartShufflePlaysSinceInject = 0
+                        withContext(Dispatchers.Main) {
+                            val newQueue = queue.toMutableList()
+                            val insertIdx = (queueIndex + 1).coerceAtMost(newQueue.size)
+                            newQueue.add(insertIdx, candidate)
+                            queue = newQueue
+                            // playSong() does not touch queueIndex, so point it at the injected
+                            // track explicitly or every later "next" replays from the old position.
+                            queueIndex = insertIdx
+                            Log.d(TAG, "Smart Shuffle injected discovery candidate with 0ms lag: '${candidate.title}' by ${candidate.author}")
+                            playSong(candidate)
                         }
+                        prefetchDiscoveryIfNeeded()
+                        return@launch
+                    } else {
+                        // Prefetch not ready yet — don't block playback! Trigger prefetch and advance smoothly
+                        prefetchDiscoveryIfNeeded()
                     }
                 }
 
@@ -1413,6 +1487,7 @@ object PlayerSingleton {
                     queueIndex = next
                     playSong(queue[next])
                 }
+                prefetchDiscoveryIfNeeded()
             }
             return
         }
@@ -1465,9 +1540,40 @@ object PlayerSingleton {
         prefs?.edit()?.putBoolean("smart_autoplay", enabled)?.apply()
     }
 
+    fun prefetchDiscoveryIfNeeded() {
+        if (!shuffle || !_smartShuffle) return
+        if (prefetchedDiscoveryCandidate != null || prefetchDiscoveryJob?.isActive == true) return
+        val currentTrack = currentSong ?: (if (queueIndex in queue.indices) queue[queueIndex] else null) ?: return
+        val repo = recommendationRepository ?: return
+
+        prefetchDiscoveryJob = scope.launch(Dispatchers.IO) {
+            try {
+                val currentQueueCopy = queue.toList()
+                val recs = repo.getSongRadio(
+                    currentTrack.videoId,
+                    currentTrack.title,
+                    currentTrack.author,
+                    currentQueueCopy
+                )
+                val existingIds = queue.map { it.videoId }.toSet()
+                val candidate = recs?.firstOrNull { it.videoId !in existingIds }
+                if (candidate != null) {
+                    prefetchedDiscoveryCandidate = candidate
+                    Log.d(TAG, "Smart Shuffle prefetched discovery candidate in advance: '${candidate.title}' by ${candidate.author}")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Smart Shuffle prefetch error: ${e.message}")
+            }
+        }
+    }
+
     fun setSmartShuffle(enabled: Boolean) {
         _smartShuffle = enabled
         smartShufflePlaysSinceInject = 0
+        prefetchedDiscoveryCandidate = null
+        if (enabled && shuffle) {
+            prefetchDiscoveryIfNeeded()
+        }
         prefs?.edit()?.putBoolean("smart_shuffle", enabled)?.apply()
     }
 

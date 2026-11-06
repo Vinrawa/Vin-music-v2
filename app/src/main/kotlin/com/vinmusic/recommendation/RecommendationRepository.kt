@@ -42,24 +42,66 @@ class RecommendationRepository @Inject constructor(
         private val suggestedHistory = java.util.concurrent.ConcurrentHashMap<String, Long>()
         /** Maps normalized artist name → list of timestamps when they were suggested. */
         private val suggestedArtists = java.util.concurrent.ConcurrentHashMap<String, MutableList<Long>>()
+        @Volatile private var store: android.content.SharedPreferences? = null
+
+        /**
+         * Backs the in-memory maps with SharedPreferences so the 90-minute fatigue
+         * window SURVIVES app restarts. Previously everything was RAM-only: relaunch
+         * wiped the history and the same rotation came straight back.
+         */
+        fun init(context: android.content.Context) {
+            if (store != null) return
+            synchronized(this) {
+                if (store != null) return
+                val sp = context.applicationContext.getSharedPreferences(
+                    "vin_recently_suggested", android.content.Context.MODE_PRIVATE
+                )
+                val now = System.currentTimeMillis()
+                val cutoff = now - 2 * 60 * 60 * 1000L
+                val entries = sp.all.filterKeys { it.startsWith("t_") }
+                for ((k, v) in entries) {
+                    val ts = (v as? Long) ?: (v as? Int)?.toLong() ?: continue
+                    if (ts > cutoff) suggestedHistory[k.removePrefix("t_")] = ts
+                }
+                for ((k, v) in sp.all.filterKeys { it.startsWith("a_") }) {
+                    val ts = (v as? Long) ?: (v as? Int)?.toLong() ?: continue
+                    if (ts > cutoff) {
+                        val artist = k.removePrefix("a_")
+                        suggestedArtists.getOrPut(artist) { mutableListOf() }.add(ts)
+                    }
+                }
+                store = sp
+            }
+        }
 
         fun recordSuggestions(songs: List<VideoItem>) {
             val now = System.currentTimeMillis()
             val cutoff = now - 2 * 60 * 60 * 1000L // 2 hours
+            val editor = store?.edit()
             for (song in songs) {
                 suggestedHistory[song.videoId] = now
-                val normArt = RecommendationManager.normalizeArtistName(song.author)
+                editor?.putLong("t_${song.videoId}", now)
+                val normArt = RecommendationManager.splitArtists(song.author).firstOrNull()
+                    ?: RecommendationManager.normalizeArtistName(song.author)
                 if (normArt.isNotBlank()) {
                     suggestedArtists.getOrPut(normArt) { mutableListOf() }.add(now)
+                    editor?.putLong("a_$normArt", now)
                 }
             }
-            // Cleanup entries older than 2 hours
-            suggestedHistory.entries.removeIf { now - it.value > cutoff }
-            // Time-based eviction for artist fatigue (remove timestamps > 2h old)
+            // Cleanup entries older than 2 hours (memory + persisted store)
+            suggestedHistory.entries.removeIf { e ->
+                val stale = now - e.value > cutoff
+                if (stale) editor?.remove("t_${e.key}")
+                stale
+            }
             for ((key, timestamps) in suggestedArtists) {
                 timestamps.removeAll { now - it > cutoff }
-                if (timestamps.isEmpty()) suggestedArtists.remove(key)
+                if (timestamps.isEmpty()) {
+                    suggestedArtists.remove(key)
+                    editor?.remove("a_$key")
+                }
             }
+            editor?.apply()
         }
 
         fun isRecentlySuggested(videoId: String): Boolean {
@@ -73,6 +115,16 @@ class RecommendationRepository @Inject constructor(
             val cutoff = System.currentTimeMillis() - 2 * 60 * 60 * 1000L
             return timestamps.count { it > cutoff }
         }
+    }
+
+    /**
+     * Drops tracks suggested within the fatigue window (90 min) so fast-path radio
+     * tails do not re-serve the same rotation the user just heard. Falls back to the
+     * input list only when everything is fatigued, to avoid a playback gap.
+     */
+    fun dropRecentlySuggested(items: List<VideoItem>): List<VideoItem> {
+        val fresh = items.filter { !RecentlySuggestedTracker.isRecentlySuggested(it.videoId) }
+        return if (fresh.isNotEmpty()) fresh else items
     }
 
     private suspend fun fetchLastFmSimilarTracks(artist: String, title: String): List<Pair<String, String>> = withContext(Dispatchers.IO) {
@@ -123,7 +175,9 @@ class RecommendationRepository @Inject constructor(
             true
         }
     }
-    private val prefs = context.getSharedPreferences("vin_music_repository_cache", Context.MODE_PRIVATE)
+    // Bump the suffix whenever filter/curation rules change so caches written by an
+    // older (looser) build are orphaned instead of served with the new rules.
+    private val prefs = context.getSharedPreferences("vin_music_repository_cache_r3", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val CACHE_EXPIRY_MS = 15 * 60 * 1000L // 15 minutes
 
@@ -237,16 +291,24 @@ class RecommendationRepository @Inject constructor(
             addFilteredQuickPick(combined, VideoItem(row.videoId, row.title, row.author, row.durationText), profile, languageOverflow)
         }
 
-        // 2) Forgotten favorites — played before but not in last 14 days (small cap
-        //    so resurfaced history never dominates the shelf)
+        // 2) Forgotten favorites — played before but not in last 14 days with artist diversity
         val twoWeeksAgo = System.currentTimeMillis() - 86400000L * 14
-        db.songCacheMetaDao().forgottenFavorites(twoWeeksAgo, 5).forEach { meta ->
-            addFilteredQuickPick(
-                combined,
-                VideoItem(meta.videoId, meta.title, meta.author, meta.durationText),
-                profile,
-                languageOverflow,
-            )
+        val forgottenCandidates = db.songCacheMetaDao().forgottenFavorites(twoWeeksAgo, 30)
+        val forgottenArtistCounts = mutableMapOf<String, Int>()
+        for (meta in forgottenCandidates) {
+            // Count feat/collab variants as the SAME artist: primary token decides.
+            val normArt = RecommendationManager.splitArtists(meta.author).firstOrNull()
+                ?: RecommendationManager.normalizeArtistName(meta.author)
+            val count = forgottenArtistCounts.getOrDefault(normArt, 0)
+            if (count < 2) {
+                forgottenArtistCounts[normArt] = count + 1
+                addFilteredQuickPick(
+                    combined,
+                    VideoItem(meta.videoId, meta.title, meta.author, meta.durationText),
+                    profile,
+                    languageOverflow,
+                )
+            }
         }
 
         // 3) YouTube Music related() for diversified seeds, interleaved round-robin
@@ -452,7 +514,7 @@ class RecommendationRepository @Inject constructor(
         if (RecommendationManager.isCompilationTrack(item.title, item.durationText)) return
         if (RecommendationManager.isNonMusicVideo(item.title, item.author)) return
         if (RecommendationManager.isUnofficialContent(item.title, item.author)) return
-        if (!RecommendationManager.isOfficialArtistChannel(item.title, item.author)) return
+        if (!RecommendationManager.isCleanChannel(item.title, item.author)) return
         if (profile.skippedTracks.contains(item.videoId) || profile.skippedArtists.contains(author)) return
         val meta = RecommendationManager.inferMetadata(item)
         if (!meta.isOfficial) return
@@ -615,7 +677,7 @@ class RecommendationRepository @Inject constructor(
                     !profile.skippedTracks.contains(item.videoId)
             }.mapNotNull { item ->
                 val meta = RecommendationManager.inferMetadata(item)
-                if (!meta.isOfficial) return@mapNotNull null
+                if (!meta.isOfficial && !RecommendationManager.isCleanChannel(item.title, item.author)) return@mapNotNull null
                 if (topLang != null && !RecommendationManager.isCompatibleQueueLanguage(meta.language, topLang, allowUnknown = true)) return@mapNotNull null
                 item
             }.distinctBy { it.videoId }
@@ -629,7 +691,7 @@ class RecommendationRepository @Inject constructor(
      */
     suspend fun getRelatedSongs(videoId: String): List<VideoItem> = withContext(Dispatchers.IO) {
         val cacheKey = "related_songs_v2_$videoId"
-        val cached = loadVideoItems(cacheKey)
+        val cached = loadVideoItems(cacheKey, allowStale = false)
         if (cached != null && cached.isNotEmpty()) {
             return@withContext cached
         }
@@ -790,7 +852,22 @@ class RecommendationRepository @Inject constructor(
             val currentQueueIds = currentQueue.map { it.videoId }.toSet()
             val unplayedFromCache = cached.filter { it.videoId !in currentQueueIds }
             if (unplayedFromCache.size >= 8) {
-                return@withContext unplayedFromCache
+                // The cache stores the ranked list, but suggestion fatigue is time-based:
+                // a cached track suggested in the last 90 minutes must not re-enter the
+                // queue, otherwise users hear the same rotation on every seed change.
+                val fresh = unplayedFromCache.filter { !RecentlySuggestedTracker.isRecentlySuggested(it.videoId) }
+                if (fresh.size >= 8) return@withContext fresh
+                // Everything is fatigued: hard cap per-artist to at most 1 track so the
+                // tail still fills without a same-artist run.
+                val fatigued = LinkedHashMap<String, Int>()
+                val capped = unplayedFromCache.filter { item ->
+                    val artist = RecommendationManager.normalizeArtistName(item.author)
+                    val n = fatigued[artist] ?: 0
+                    if (n >= 1) return@filter false
+                    fatigued[artist] = n + 1
+                    true
+                }
+                if (capped.isNotEmpty()) return@withContext capped
             }
         }
 
@@ -1002,6 +1079,16 @@ class RecommendationRepository @Inject constructor(
         val signals = db.interactionSignalDao().getAll().associateBy { it.videoId }
         val currentQueueArtists = currentQueue.map { normalizeQueueArtist(it.author) }.toSet()
         val seedAuthorLower = normalizeQueueArtist(seedAuthor)
+        val seedArtistTokens = (RecommendationManager.splitArtists(seedAuthor).map { normalizeQueueArtist(it) } + seedAuthorLower)
+            .filter { it.isNotBlank() }
+            .toSet()
+
+        fun isSeedArtistMatch(author: String): Boolean {
+            val candNorm = normalizeQueueArtist(author)
+            if (candNorm == seedAuthorLower || candNorm in seedArtistTokens) return true
+            val candTokens = RecommendationManager.splitArtists(author).map { normalizeQueueArtist(it) }
+            return candTokens.any { it in seedArtistTokens }
+        }
 
         val contextTracks = if (currentQueue.size > 1) {
             currentQueue
@@ -1009,7 +1096,7 @@ class RecommendationRepository @Inject constructor(
             listOf(VideoItem(videoId, seedTitle, seedAuthor))
         }
         val sessionCentroid = RecommendationManager.computeDnaCentroid(contextTracks).let { centroid ->
-            centroid.copy(saturatedArtists = centroid.saturatedArtists - seedAuthorLower - normalizeQueueArtist(seedAuthor))
+            centroid.copy(saturatedArtists = centroid.saturatedArtists - seedAuthorLower - normalizeQueueArtist(seedAuthor) - seedArtistTokens)
         }
 
         // De-duplicate before ranking. A related track can arrive from YTM,
@@ -1038,17 +1125,15 @@ class RecommendationRepository @Inject constructor(
         }
         val afterUnofficialContentCount = officialContent.size
 
-        // Stage 4: isOfficial & metadata extraction (expanded upfront pool to 50 to guarantee deep variety)
-        val initialCandidates = officialContent.take(50)
-        var officialMetaPairs = initialCandidates.map { item ->
+        // Stage 4: Strict isOfficial & metadata extraction (pure official guarantee)
+        val initialCandidates = officialContent.take(100)
+        val officialMetaPairs = initialCandidates.map { item ->
             val meta = RecommendationManager.getCachedOrInferredMetadata(db, item, context)
             item to meta
-        }.filter { (_, meta) ->
-            meta.isOfficial
-        }
-        if (false) { // Never relax isOfficial: pure official artist releases strictly guaranteed
-            Log.d(TAG, "SmartQueue: Relaxing isOfficial filter (yielded ${officialMetaPairs.size}/${initialCandidates.size})")
-            officialMetaPairs = initialCandidates.map { it to RecommendationManager.getCachedOrInferredMetadata(db, it, context) }
+        // Blocked channels never pass; clean unknown channels survive Stage 4 and
+        // rank below verified ones via the meta.isOfficial scoring bonus downstream.
+        }.filter { (item, meta) ->
+            meta.isOfficial || RecommendationManager.isCleanChannel(item.title, item.author)
         }
         val afterOfficialCount = officialMetaPairs.size
 
@@ -1065,7 +1150,7 @@ class RecommendationRepository @Inject constructor(
             }
 
             val candNormAuthor = normalizeQueueArtist(item.author)
-            val isSeedArtist = candNormAuthor == seedAuthorLower || normalizeQueueArtist(seedAuthor) == candNormAuthor
+            val isSeedArtist = isSeedArtistMatch(item.author)
             if (!isSeedArtist && sessionCentroid.saturatedArtists.contains(candNormAuthor)) {
                 return@filter false
             }
@@ -1091,7 +1176,7 @@ class RecommendationRepository @Inject constructor(
             afterUserFilters = officialMetaPairs.filter { (item, meta) ->
                 val candArtist = normalizeQueueArtist(item.author)
                 val candArtists = RecommendationManager.splitArtists(item.author)
-                val isSeedArtist = candArtist == seedAuthorLower || candArtists.any { normalizeQueueArtist(it) == seedAuthorLower }
+                val isSeedArtist = isSeedArtistMatch(item.author)
                 item.videoId != videoId &&
                 !profile.skippedTracks.contains(item.videoId) &&
                 !profile.skippedArtists.contains(candArtist) &&
@@ -1135,8 +1220,15 @@ class RecommendationRepository @Inject constructor(
         var languageFilteredPairs = if (queueLanguage == "Unknown") {
             afterSimilarity
         } else {
-            afterSimilarity.filter { (_, meta) ->
+            val strict = afterSimilarity.filter { (_, meta) ->
                 RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = false)
+            }
+            if (strict.size >= 12) {
+                strict
+            } else {
+                afterSimilarity.filter { (_, meta) ->
+                    RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = true)
+                }
             }
         }
 
@@ -1247,15 +1339,16 @@ class RecommendationRepository @Inject constructor(
             val eligible = remaining.filter { candidate ->
                 val artist = normalizeQueueArtist(candidate.item.author)
                 val candArtists = RecommendationManager.splitArtists(candidate.item.author).map { normalizeQueueArtist(it) }
+                val isSeed = isSeedArtistMatch(candidate.item.author)
                 val count = artistCount[artist] ?: 0
-                val cap = if (artist == seedAuthorLower) 2 else 1
+                val cap = if (isSeed) 2 else 1
                 val lastIndex = sequenced.indexOfLast { 
                     val seqArtist = normalizeQueueArtist(it.author)
                     seqArtist == artist || seqArtist in candArtists
                 }
                 val gap = if (lastIndex < 0) Int.MAX_VALUE else sequenced.size - lastIndex
                 count < cap &&
-                    candArtists.all { (artistCount[it] ?: 0) < (if (it == seedAuthorLower) 2 else 1) } &&
+                    candArtists.all { (artistCount[it] ?: 0) < (if (it in seedArtistTokens) 2 else 1) } &&
                     gap >= 2 && artist != lastArtist &&
                     sequenced.none { RecommendationManager.isTooSimilar(it.title, candidate.item.title) }
             }
@@ -1267,7 +1360,7 @@ class RecommendationRepository @Inject constructor(
             val next = if (isExplorationSlot) {
                 val exploreCandidates = eligible.filter { cand ->
                     val candArtist = normalizeQueueArtist(cand.item.author)
-                    candArtist != seedAuthorLower &&
+                    !isSeedArtistMatch(cand.item.author) &&
                         !RecommendationManager.isSimilarArtist(seedAuthor, cand.item.author) &&
                         (artistCount[candArtist] ?: 0) == 0
                 }
@@ -1312,7 +1405,9 @@ class RecommendationRepository @Inject constructor(
             lastArtist = artist
             artistCount[artist] = (artistCount[artist] ?: 0) + 1
             for (ca in RecommendationManager.splitArtists(next.item.author).map { normalizeQueueArtist(it) }) {
-                artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                if (ca != artist) {
+                    artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                }
             }
             remaining.remove(next)
             remaining.removeAll {
@@ -1327,10 +1422,13 @@ class RecommendationRepository @Inject constructor(
                 val eligible = remaining.filter { candidate ->
                     val artist = normalizeQueueArtist(candidate.item.author)
                     val candArtists = RecommendationManager.splitArtists(candidate.item.author).map { normalizeQueueArtist(it) }
+                    val isSeed = isSeedArtistMatch(candidate.item.author)
                     val count = artistCount[artist] ?: 0
-                    val cap = if (artist == seedAuthorLower) 2 else 1
+                    // Tighter caps: seed artist max 2, every other artist max 1 —
+                    // a radio queue should introduce new artists, not repeat them.
+                    val cap = if (isSeed) 2 else 1
                     count < cap &&
-                        candArtists.all { (artistCount[it] ?: 0) < (if (it == seedAuthorLower) 2 else 1) } &&
+                        candArtists.all { (artistCount[it] ?: 0) < (if (it in seedArtistTokens) 2 else 1) } &&
                         artist != lastArtist &&
                         sequenced.none { RecommendationManager.isTooSimilar(it.title, candidate.item.title) }
                 }
@@ -1350,7 +1448,9 @@ class RecommendationRepository @Inject constructor(
                 lastArtist = artist
                 artistCount[artist] = (artistCount[artist] ?: 0) + 1
                 for (ca in RecommendationManager.splitArtists(next.item.author).map { normalizeQueueArtist(it) }) {
-                    artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                    if (ca != artist) {
+                        artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                    }
                 }
                 remaining.remove(next)
                 remaining.removeAll {
@@ -1364,15 +1464,18 @@ class RecommendationRepository @Inject constructor(
             for (candidate in remaining.toList()) {
                 val artist = normalizeQueueArtist(candidate.item.author)
                 val candArtists = RecommendationManager.splitArtists(candidate.item.author).map { normalizeQueueArtist(it) }
+                val isSeed = isSeedArtistMatch(candidate.item.author)
                 val count = artistCount[artist] ?: 0
-                val cap = if (artist == seedAuthorLower) 2 else 1
-                if (count < cap && candArtists.all { (artistCount[it] ?: 0) < (if (it == seedAuthorLower) 2 else 1) } && artist != lastArtist) {
+                val cap = if (isSeed) 2 else 1
+                if (count < cap && candArtists.all { (artistCount[it] ?: 0) < (if (it in seedArtistTokens) 2 else 1) } && artist != lastArtist) {
                     if (sequenced.none { RecommendationManager.isTooSimilar(it.title, candidate.item.title) }) {
                         sequenced.add(candidate.item)
                         lastArtist = artist
                         artistCount[artist] = count + 1
                         for (ca in candArtists) {
-                            artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                            if (ca != artist) {
+                                artistCount[ca] = (artistCount[ca] ?: 0) + 1
+                            }
                         }
                         remaining.remove(candidate)
                     }
@@ -1381,32 +1484,34 @@ class RecommendationRepository @Inject constructor(
             }
         }
 
-        // Fallback 1: Direct search for seed artist / title with strict language and artist checks
-        if (sequenced.isEmpty() && online) {
-            Log.d(TAG, "SmartQueue: Candidate pool empty, executing seed-aware direct search fallback...")
+        // Fallback 1: Direct search for seed artist / title with language and artist checks
+        if (sequenced.size < 10 && online) {
+            Log.d(TAG, "SmartQueue: Candidate pool sparse (${sequenced.size}), executing seed-aware direct search fallback...")
             try {
                 val isRegional = queueLanguage in listOf("Regional Indian", "Garhwali/Pahari") || seedMeta?.genre == "Regional Folk"
+                val primaryArtist = RecommendationManager.splitArtists(seedAuthor).firstOrNull() ?: seedAuthor
                 val query = when {
                     isRegional && seedAuthor.isNotBlank() && seedAuthor != "Artist" -> "$seedAuthor garhwali pahadi songs official"
                     isRegional -> "top garhwali pahadi folk songs official"
                     queueLanguage == "Hindi" && seedAuthor.isNotBlank() -> "$seedAuthor official hindi songs"
                     queueLanguage == "Punjabi" && seedAuthor.isNotBlank() -> "$seedAuthor official punjabi songs"
-                    seedAuthor.isNotBlank() && seedAuthor != "Artist" -> "$seedAuthor official music"
+                    seedMeta?.genre == "Rap/Hip-Hop" && primaryArtist.isNotBlank() -> "$primaryArtist hip hop official tracks"
+                    seedAuthor.isNotBlank() && seedAuthor != "Artist" -> "$primaryArtist official music"
                     seedTitle.isNotBlank() && seedTitle != "Track" -> "$seedTitle songs"
                     else -> "trending music official"
                 }
-                val directResults = InnerTube.search(query).take(20)
+                val directResults = InnerTube.search(query).take(25)
                 for (item in directResults) {
                     if (item.videoId == videoId) continue
                     if (RecommendationManager.isCompilationTrack(item.title, item.durationText)) continue
                     if (RecommendationManager.isNonMusicVideo(item.title, item.author)) continue
                     if (RecommendationManager.isUnofficialContent(item.title, item.author)) continue
                     val meta = RecommendationManager.getCachedOrInferredMetadata(db, item, context)
-                    if (!meta.isOfficial) continue
-                    if (!RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = false)) continue
+                    if (!RecommendationManager.isCompatibleQueueLanguage(meta.language, queueLanguage, allowUnknown = true)) continue
                     val artist = normalizeQueueArtist(item.author)
                     val count = artistCount[artist] ?: 0
-                    val cap = if (artist == seedAuthorLower) 2 else 1
+                    val isSeed = isSeedArtistMatch(item.author)
+                    val cap = if (isSeed) 2 else 1
                     if (count < cap && artist != lastArtist && sequenced.none { it.videoId == item.videoId || RecommendationManager.isTooSimilar(it.title, item.title) }) {
                         sequenced.add(item)
                         lastArtist = artist
@@ -1844,10 +1949,17 @@ class RecommendationRepository @Inject constructor(
                     // Score candidates
                     val scored = filteredCandidates.mapNotNull { item ->
                         val meta = RecommendationManager.inferMetadata(item)
-                        val isGenreMatch = meta.genre.lowercase(Locale.ROOT) == genreName.lowercase(Locale.ROOT)
+                        val candGenre = meta.genre.lowercase(Locale.ROOT)
+                        val targetGenre = genreName.lowercase(Locale.ROOT)
+                        val isGenreMatch = candGenre == targetGenre ||
+                            (targetGenre.contains("rap") && (candGenre.contains("rap") || candGenre.contains("hip"))) ||
+                            (targetGenre.contains("punjabi") && candGenre.contains("punjabi")) ||
+                            (targetGenre.contains("lofi") && candGenre.contains("lofi")) ||
+                            (targetGenre.contains("bollywood") && (candGenre.contains("bollywood") || candGenre.contains("hindi")))
                         val isMoodMatch = meta.mood.lowercase(Locale.ROOT) == config.targetMood.lowercase(Locale.ROOT)
+                        val isOfficialChannel = RecommendationManager.isOfficialArtistChannel(item.title, item.author)
                         
-                        if (isGenreMatch || isMoodMatch) {
+                        if ((isGenreMatch || isMoodMatch || isOfficialChannel) && meta.isOfficial) {
                             val similarity = RecommendationManager.calculateTasteSimilarity(meta, tasteDNA)
                             val officialBonus = if (meta.isOfficial) 0.15 else 0.0
                             val finalScore = similarity + officialBonus

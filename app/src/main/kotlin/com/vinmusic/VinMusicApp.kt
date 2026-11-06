@@ -37,8 +37,13 @@ class VinMusicApp : Application(), SingletonImageLoader.Factory {
         NewPipeInit.init()
         com.vinmusic.innertube.InnerTube.init(this)
         com.vinmusic.data.ArtistDataCache.init(this)
+        // Hydrate the persistent Tidal artwork cache before any `td:` track renders.
+        // Without this call TidalApi.prefs stays null and every Tidal thumbnail is
+        // lost on app restart (the SharedPreferences cache was never read back).
+        com.vinmusic.tidal.TidalApi.init(this)
         YTMusicApi.attachContext(this)
         com.vinmusic.config.RemoteConfigHelper.init()
+        com.vinmusic.recommendation.RecommendationRepository.RecentlySuggestedTracker.init(this)
         ReliabilityDiagnostics.init(this)
 
         // Warm up ExoPlayer caches and Recommendation DB asynchronously on Dispatchers.IO to eliminate Main thread disk scans

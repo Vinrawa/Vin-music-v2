@@ -177,7 +177,12 @@ class PlayerViewModel @Inject constructor(
 
     var shuffle: Boolean
         get() = PlayerSingleton.shuffle
-        set(value) { PlayerSingleton.shuffle = value }
+        set(value) {
+            PlayerSingleton.shuffle = value
+            if (value && PlayerSingleton.smartShuffle) {
+                PlayerSingleton.prefetchDiscoveryIfNeeded()
+            }
+        }
 
     var smartShuffle: Boolean
         get() = PlayerSingleton.smartShuffle
@@ -210,6 +215,10 @@ class PlayerViewModel @Inject constructor(
     var isTransliterating by mutableStateOf(false)
     var currentLyricIndex by mutableIntStateOf(-1)  // for synced lyrics highlight
     var currentSongDescription by mutableStateOf<String?>(null)
+
+    // ── Motion Artwork / Spotify Canvas ────────────────────────────────────────
+    var currentCanvasUrl by mutableStateOf<String?>(null)
+    var isCanvasLoading by mutableStateOf(false)
 
     // ── Rich Lyrics — Word-level karaoke ────────────────────────────────────────
     var currentWordIndex by mutableIntStateOf(-1)
@@ -396,6 +405,8 @@ class PlayerViewModel @Inject constructor(
         selectedLyricsSource = null
         lyricOffsetMs = 0L
         currentSongDescription = null
+        currentCanvasUrl = null
+        isCanvasLoading = false
         previousLyricsVideoId = song?.videoId
         cachedPlainTimelineText = null
         cachedPlainTimelineDurationMs = 0L
@@ -558,6 +569,28 @@ class PlayerViewModel @Inject constructor(
                             }
                         }
                     }
+
+                    // Fetch Spotify Canvas / Motion Artwork in parallel
+                    launch(Dispatchers.IO) {
+                        try {
+                            withContext(Dispatchers.Main) { isCanvasLoading = true }
+                            val canvasUrl = com.vinmusic.spotify.SpotifyCanvasClient.getCanvasUrl(
+                                context = getApplication(),
+                                title = song.title,
+                                artist = song.author,
+                                videoId = song.videoId
+                            )
+                            withContext(Dispatchers.Main) {
+                                if (currentSong?.videoId == song.videoId) {
+                                    currentCanvasUrl = canvasUrl
+                                }
+                                isCanvasLoading = false
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load canvas", e)
+                            withContext(Dispatchers.Main) { isCanvasLoading = false }
+                        }
+                    }
                 }
             }
         }
@@ -673,6 +706,7 @@ class PlayerViewModel @Inject constructor(
 
                 val fastRecs = com.vinmusic.recommendation.RecommendationManager
                     .curateRadioCandidates(song, relatedTracks)
+                    .let { recommendationRepository.dropRecentlySuggested(it) }
 
                 if (fastRecs.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
@@ -735,6 +769,7 @@ class PlayerViewModel @Inject constructor(
 
                     val curatedFallback = com.vinmusic.recommendation.RecommendationManager
                         .curateRadioCandidates(song, searchResults)
+                        .let { recommendationRepository.dropRecentlySuggested(it) }
 
                     if (curatedFallback.isNotEmpty()) {
                         withContext(Dispatchers.Main) {

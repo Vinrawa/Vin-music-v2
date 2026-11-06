@@ -1,5 +1,6 @@
 package com.vinmusic.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -42,6 +43,10 @@ fun ArtistProfileScreen(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+
+    BackHandler(enabled = true) {
+        onBack()
+    }
 
     val cachedInitial = remember(artist.channelId, artist.name) {
         com.vinmusic.data.ArtistDataCache.get(artist.channelId) ?: com.vinmusic.data.ArtistDataCache.get(artist.name)

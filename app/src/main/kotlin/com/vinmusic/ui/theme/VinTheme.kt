@@ -78,6 +78,7 @@ object MonetState {
 // ── Player background appearance global state ─────────────────────────────────
 object PlayerBackgroundState {
     var blurEnabled = mutableStateOf(true)
+    var canvasEnabled = mutableStateOf(true)
 }
 
 @Composable

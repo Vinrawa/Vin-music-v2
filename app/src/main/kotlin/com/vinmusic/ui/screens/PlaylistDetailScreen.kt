@@ -651,7 +651,10 @@ fun PlaylistDetailScreen(
                                      IconButton(
                                          onClick = {
                                              if (filteredSongs.isNotEmpty()) {
-                                                 val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }.shuffled()
+                                                 val videoItems = filteredSongs.map {
+                                                     val thumb = it.thumbnailUrl ?: if (it.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(it.videoId) else null
+                                                     VideoItem(it.videoId, it.title, it.author, it.durationText, customThumbnailUrl = thumb)
+                                                 }.shuffled()
                                                  vm.setQueue(videoItems, 0)
                                              }
                                          },
@@ -700,7 +703,10 @@ fun PlaylistDetailScreen(
                                          .background(VinColors.Accent)
                                          .clickable {
                                              if (filteredSongs.isNotEmpty()) {
-                                                 val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                                                 val videoItems = filteredSongs.map {
+                                                     val thumb = it.thumbnailUrl ?: if (it.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(it.videoId) else null
+                                                     VideoItem(it.videoId, it.title, it.author, it.durationText, customThumbnailUrl = thumb)
+                                                 }
                                                  vm.setQueue(videoItems, 0)
                                              }
                                          },
@@ -769,7 +775,10 @@ fun PlaylistDetailScreen(
                                                 else selectedIds.add(s.videoId)
                                                 if (selectedIds.isEmpty()) multiSelectMode = false
                                             } else {
-                                                val videoItems = filteredSongs.map { VideoItem(it.videoId, it.title, it.author, it.durationText) }
+                                                val videoItems = filteredSongs.map {
+                                                    val thumb = it.thumbnailUrl ?: if (it.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(it.videoId) else null
+                                                    VideoItem(it.videoId, it.title, it.author, it.durationText, customThumbnailUrl = thumb)
+                                                }
                                                 vm.setQueue(videoItems, index)
                                             }
                                         }
@@ -819,8 +828,12 @@ fun PlaylistDetailScreen(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(VinColors.White10)
                                 ) {
+                                    val thumbModel = s.thumbnailUrl
+                                        ?: if (s.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(s.videoId)
+                                           else if (s.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(s.videoId)
+                                           else "https://i.ytimg.com/vi/${s.videoId}/hqdefault.jpg"
                                     AsyncImage(
-                                        model = "https://i.ytimg.com/vi/${s.videoId}/hqdefault.jpg",
+                                        model = thumbModel,
                                         contentDescription = null,
                                         modifier = Modifier.fillMaxSize().scale(1.3f),
                                         contentScale = ContentScale.Crop
@@ -965,7 +978,7 @@ fun PlaylistDetailScreen(
                                             .background(VinColors.White10)
                                     ) {
                                         AsyncImage(
-                                            model = "https://i.ytimg.com/vi/${recSong.videoId}/hqdefault.jpg",
+                                            model = recSong.thumbnail,
                                             contentDescription = null,
                                             modifier = Modifier.fillMaxSize().scale(1.3f),
                                             contentScale = ContentScale.Crop
@@ -1449,7 +1462,12 @@ fun PlaylistCover(
             .clip(RoundedCornerShape(cornerRadius))
             .background(VinColors.Surface)
     ) {
-        val covers = songs.take(4).map { "https://i.ytimg.com/vi/${it.videoId}/hqdefault.jpg" }
+        val covers = songs.take(4).map {
+            it.thumbnailUrl
+                ?: if (it.videoId.startsWith("sp:")) com.vinmusic.spotify.SpotifySession.getCachedArtwork(it.videoId)
+                   else if (it.videoId.startsWith("sc:")) com.vinmusic.soundcloud.SoundCloudApi.getArtwork(it.videoId)
+                   else "https://i.ytimg.com/vi/${it.videoId}/hqdefault.jpg"
+        }
         if (covers.size >= 4) {
             // 2x2 Grid Collage
             Column(modifier = Modifier.fillMaxSize()) {

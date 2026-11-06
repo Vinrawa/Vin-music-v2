@@ -1,5 +1,6 @@
 package com.vinmusic.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -47,6 +48,11 @@ fun AlbumDetailScreen(
     onSongMore: (VideoItem) -> Unit
 ) {
     val context = LocalContext.current
+
+    BackHandler(enabled = true) {
+        onBack()
+    }
+
     var songs by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 

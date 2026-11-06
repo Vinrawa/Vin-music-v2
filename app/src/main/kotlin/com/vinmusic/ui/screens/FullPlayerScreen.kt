@@ -271,9 +271,28 @@ fun FullPlayerScreen(
             .fillMaxSize()
             .background(VinColors.BgColor)
     ) {
-        // ── 1. Album Art background (Atmospheric Blur or Crisp/Normal) ──
+        // ── 1. Background Layer: Canvas Video OR Album Art ──
+        val isCanvasAllowed = com.vinmusic.ui.theme.PlayerBackgroundState.canvasEnabled.value
+        val canvasUrl = vm.currentCanvasUrl
+        val hasActiveCanvas = isCanvasAllowed && !canvasUrl.isNullOrBlank()
         val isBlur = com.vinmusic.ui.theme.PlayerBackgroundState.blurEnabled.value
-        if (isBlur) {
+
+        if (hasActiveCanvas) {
+            // Keep underlying album art visible until video frames render to eliminate black flash
+            AsyncImage(
+                model = activeArtUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(alpha = 0.50f)
+            )
+            com.vinmusic.ui.components.CanvasVideoBackground(
+                videoUrl = canvasUrl!!,
+                isPlaying = isActuallyPlaying,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else if (isBlur) {
             AsyncImage(
                 model = activeArtUrl,
                 contentDescription = null,
@@ -300,7 +319,14 @@ fun FullPlayerScreen(
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        if (isBlur) {
+                        if (hasActiveCanvas) {
+                            listOf(
+                                Color.Black.copy(alpha = 0.35f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.45f),
+                                VinColors.BgColor.copy(alpha = 0.94f)
+                            )
+                        } else if (isBlur) {
                             listOf(
                                 Color.Black.copy(alpha = 0.12f),
                                 Color.Black.copy(alpha = 0.50f),
