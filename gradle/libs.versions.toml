@@ -32,6 +32,7 @@ sentry               = "8.1.0"
 sentryPlugin         = "4.14.1"
 tarsos               = "2.5"
 mockito              = "5.12.0"
+leakcanary           = "2.14"
 
 [libraries]
 # AndroidX Core
@@ -124,6 +125,7 @@ play-services-auth   = { group = "com.google.android.gms", name = "play-services
 sentry-android       = { group = "io.sentry", name = "sentry-android", version.ref = "sentry" }
 sentry-compose       = { group = "io.sentry", name = "sentry-compose-android", version.ref = "sentry" }
 tarsos-core          = { group = "be.tarsos.dsp", name = "core", version.ref = "tarsos" }
+leakcanary-android   = { group = "com.squareup.leakcanary", name = "leakcanary-android", version.ref = "leakcanary" }
 
 [plugins]
 android-application  = { id = "com.android.application",          version.ref = "agp" }

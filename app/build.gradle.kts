@@ -119,6 +119,7 @@ dependencies {
     implementation(libs.androidx.material.icons)
     implementation(libs.androidx.animation)
     debugImplementation(libs.androidx.ui.tooling)
+    debugImplementation(libs.leakcanary.android)
 
     // Navigation
     implementation(libs.androidx.navigation.compose)
