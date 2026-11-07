@@ -374,6 +374,7 @@ fun FullPlayerScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .nestedScroll(dragToCloseConnection)
                 .verticalScroll(scrollState, enabled = !isDjMode)
                 .graphicsLayer { translationY = (dragY * 0.25f) },
@@ -1206,7 +1207,7 @@ fun FullPlayerScreen(
                 }
             )
 
-            Spacer(Modifier.height(48.dp)) // Extra padding at bottom for beautiful scroll scroll space
+            Spacer(Modifier.navigationBarsPadding().height(48.dp)) // Extra padding at bottom for beautiful scroll space
         }
 
         // ── Floating Active Panel Slide-up Overlay ──
@@ -1238,6 +1239,7 @@ fun FullPlayerScreen(
                             .background(VinColors.Surface)
                             .border(1.dp, VinColors.GlassBorder, RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
                             .clickable(enabled = false) {}
+                            .navigationBarsPadding()
                             .padding(20.dp)
                     ) {
                         Column(

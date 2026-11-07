@@ -1892,7 +1892,7 @@ fun HomeScreen(
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize().background(Color.Transparent),
-                contentPadding = PaddingValues(bottom = 140.dp)
+                contentPadding = PaddingValues(bottom = 220.dp)
             ) {
 
             // ── Personalized Frosted Glass Top Header (Clean Minimal Profile Touchpoint) ──────
@@ -2320,6 +2320,8 @@ fun HomeScreen(
                             text = "Endless queue based on \"${radioSeedSong?.title}\"",
                             fontSize = 12.sp,
                             color = VinColors.Secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
                         )
                         LazyRow(
@@ -2781,6 +2783,8 @@ fun HomeScreen(
                             text = "Endless queue based on \"${radioSeedSong?.title}\"",
                             fontSize = 12.sp,
                             color = VinColors.Secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
                         )
                         LazyRow(
@@ -3797,7 +3801,7 @@ fun HomeRemotePlaylistDetailScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 220.dp)
         ) {
             item {
                 Row(
@@ -3957,7 +3961,7 @@ fun HomeSpotifyMixDetailScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 220.dp)
         ) {
             item {
                 Row(
