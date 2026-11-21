@@ -3,12 +3,14 @@
 [![GitHub Release](https://img.shields.io/github/v/release/Vinrawa/Vin-music-v2?color=orange&label=Release)](https://github.com/Vinrawa/Vin-music-v2/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://github.com/Vinrawa/Vin-music-v2)
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Vinrawa/badge.svg)](https://hub.xerj.org/contributors/Vinrawa)
 [![GitHub stars](https://img.shields.io/github/stars/Vinrawa/Vin-music-v2?style=social)](https://github.com/Vinrawa/Vin-music-v2)
 
 **VIN Music (VinMusic)** is a modern, high-performance, open-source Android music streaming and offline player. Built with Jetpack Compose, Kotlin, and an advanced 32-bit Audiophile DSP engine featuring zero-pumping bass boost, tactile kick haptics, synchronized real-time lyrics, and AI-driven music recommendations.
 
 > 🌐 **Website & Web Player:** [https://vinrawa.github.io/Vin-music-v2/](https://vinrawa.github.io/Vin-music-v2/)  
-> 📥 **Download Latest APK:** [VIN Music Releases](https://github.com/Vinrawa/Vin-music-v2/releases/latest)
+> 📥 **Download Latest APK:** [VIN Music Releases](https://github.com/Vinrawa/Vin-music-v2/releases/latest)  
+> 🧠 **AI Reference Memory:** [XERJ Corpus Hub (vinrawa--vin-music-v2)](https://hub.xerj.org/corpus/vinrawa--vin-music-v2)
 
 ---
 
