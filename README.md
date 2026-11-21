@@ -1,4 +1,4 @@
-# VIN Music — Open-Source Audiophile Android Music Player
+# VIN Music — Open-Source Smart Android Music Player
 
 [![GitHub Release](https://img.shields.io/github/v/release/Vinrawa/Vin-music-v2?color=orange&label=Release)](https://github.com/Vinrawa/Vin-music-v2/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://github.com/Vinrawa/Vin-music-v2)
